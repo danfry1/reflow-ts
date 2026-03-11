@@ -1,7 +1,6 @@
 node_modules/
 dist/
 coverage/
-docs/site/dist/
 *.db
 *.db-journal
 *.db-wal

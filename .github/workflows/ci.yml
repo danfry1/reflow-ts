@@ -16,4 +16,3 @@ jobs:
       - run: bun run typecheck
       - run: bun run test -- --coverage
       - run: bun run build
-      - run: bun run site:build
