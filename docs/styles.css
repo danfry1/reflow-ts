@@ -330,6 +330,7 @@ h3 {
 .install-cmd code {
   overflow-x: auto;
   white-space: nowrap;
+  min-width: 0;
   color: var(--code-ink);
   font-size: 0.88rem;
 }
@@ -1212,6 +1213,11 @@ h3 {
 
   .hero-copy {
     padding: 1.15rem;
+    overflow: hidden;
+  }
+
+  .install-picker {
+    margin-right: -0.25rem;
   }
 
   h1 {
