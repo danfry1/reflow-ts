@@ -142,6 +142,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     registry.set(wf.name, wf)
   }
 
+  const workflowNames = Array.from(registry.keys())
+
   async function enqueue(
     workflowName: string,
     input: PersistedValue,
@@ -193,9 +195,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       let prev: PersistedValue = undefined
 
       for (const stepDef of wf.steps) {
-        const latestRun = await storage.getRun(run.id)
-        if (!latestRun || latestRun.status === 'cancelled') {
-          return
+        if (activeRun.runAbortController.signal.aborted) {
+          const latestRun = await storage.getRun(run.id)
+          if (!latestRun || latestRun.status === 'cancelled') {
+            return
+          }
         }
 
         const existing = completedMap.get(stepDef.name)
@@ -208,10 +212,16 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           prev = await executeStep(run, activeRun, stepDef, prev)
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error))
-          const currentRun = await storage.getRun(run.id)
 
-          if (!currentRun || currentRun.status === 'cancelled' || err instanceof RunControlError) {
+          if (err instanceof RunControlError) {
             return
+          }
+
+          if (activeRun.runAbortController.signal.aborted) {
+            const currentRun = await storage.getRun(run.id)
+            if (!currentRun || currentRun.status === 'cancelled') {
+              return
+            }
           }
 
           const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
@@ -410,7 +420,6 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     tickInFlight = true
     const promise = (async () => {
       try {
-        const workflowNames = Array.from(registry.keys())
         const staleBefore = Date.now() - runLeaseDurationMs
         const runs: ClaimedRun[] = []
 

@@ -132,6 +132,8 @@ export class SQLiteStorage implements StorageAdapter {
         }
       }
 
+      const serializedInput = serializePersistedValue(run.input, 'Workflow input')
+
       try {
         this.db
           .prepare(
@@ -141,7 +143,7 @@ export class SQLiteStorage implements StorageAdapter {
           .run(
             run.id,
             run.workflow,
-            serializePersistedValue(run.input, 'Workflow input'),
+            serializedInput,
             run.idempotencyKey,
             run.status,
             run.createdAt,
@@ -164,7 +166,7 @@ export class SQLiteStorage implements StorageAdapter {
       return {
         run: {
           ...run,
-          input: deserializePersistedValue(serializePersistedValue(run.input, 'Workflow input')),
+          input: deserializePersistedValue(serializedInput),
         },
         created: true,
       }
