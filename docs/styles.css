@@ -1269,12 +1269,25 @@ h3 {
     font-size: 0.82rem;
   }
 
+  .install-picker {
+    margin: 1rem 0 0.5rem;
+  }
+
   .install-tabs {
     flex-wrap: wrap;
   }
 
   .install-cmd code {
     font-size: 0.8rem;
+  }
+
+  .hero-actions {
+    margin: 1rem 0 0.8rem;
+  }
+
+  .button {
+    padding: 0.7rem 1.1rem;
+    font-size: 0.9rem;
   }
 
   .fit-card {
