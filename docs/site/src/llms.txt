@@ -1,0 +1,435 @@
+# Reflow
+
+> Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery - powered by SQLite, no infrastructure required.
+
+## Install
+
+```
+# Bun (uses built-in bun:sqlite - no native dependencies)
+bun add reflow-ts
+
+# Node.js (requires better-sqlite3)
+npm install reflow-ts better-sqlite3
+```
+
+Pick a storage adapter based on your runtime:
+
+```typescript
+// Bun - zero native deps
+import { SQLiteStorage } from 'reflow-ts/sqlite-bun'
+const storage = new SQLiteStorage('./reflow.db')
+
+// Node.js - uses better-sqlite3
+import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+const storage = new SQLiteStorage('./reflow.db')
+```
+
+Reflow uses Standard Schema (https://github.com/standard-schema/standard-schema) for input validation. Bring any compatible library:
+
+```
+bun add zod        # or
+bun add valibot    # or
+bun add arktype    # or any Standard Schema-compatible library
+```
+
+## Quick Example
+
+```typescript
+import { createWorkflow, createEngine } from 'reflow-ts'
+import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+import { z } from 'zod' // or valibot, arktype, etc.
+
+const pipeline = createWorkflow({
+  name: 'process-content',
+  input: z.object({ url: z.string() }),
+})
+  .step('scrape', async ({ input }) => {
+    const page = await fetchPage(input.url)
+    return { content: page.text }
+  })
+  .step('summarize', {
+    retry: { maxAttempts: 3, backoff: 'exponential' },
+    handler: async ({ prev }) => {
+      const summary = await llm(prev.content)
+      return { summary }
+    },
+  })
+  .step('store', async ({ input, prev }) => {
+    await db.insert({ url: input.url, ...prev })
+  })
+
+const storage = new SQLiteStorage('./reflow.db')
+const engine = createEngine({ storage, workflows: [pipeline] })
+await engine.start()
+
+await engine.enqueue('process-content', {
+  url: 'https://example.com/article',
+})
+```
+
+## The Problem
+
+Multi-step operations (signups, imports, AI pipelines) written as normal async functions break when the process crashes mid-execution. You don't know which steps completed. Re-running everything causes duplicate charges, duplicate emails, or wasted LLM tokens.
+
+Reflow makes each step durable. If the process crashes after step 2 of 5, a new engine instance reclaims the stale run after its lease expires and picks up at step 3. Completed steps are never re-executed. Each step's output is persisted in SQLite.
+
+## Who Is This For
+
+Solo devs and small teams who need reliable multi-step workflows without Temporal clusters or cloud workflow services.
+
+- AI pipelines - LLM calls that cost money. Don't re-run them when the next step fails
+- SaaS apps - Background jobs that must complete: signup flows, billing, provisioning
+- CLI tools - Long-running imports or migrations that should resume after interruption
+
+Don't use Reflow when:
+- You need distributed execution across multiple machines
+- You need sub-second latency on workflow dispatch
+- You're already running Temporal or similar
+
+## Core Concepts
+
+### Workflows
+
+A workflow is a named sequence of steps with a validated input schema. Any Standard Schema-compatible library works (Zod, Valibot, ArkType, etc.).
+
+```typescript
+const workflow = createWorkflow({
+  name: 'send-welcome',
+  input: z.object({ userId: z.string(), email: z.email() }),
+})
+  .step('create-account', async ({ input }) => {
+    return { accountId: await createAccount(input.userId) }
+  })
+  .step('send-email', async ({ prev, input, signal }) => {
+    await sendEmail(input.email, 'Welcome!', { signal })
+  })
+```
+
+Each .step() receives:
+- input - the validated workflow input (same for every step)
+- prev - the return value of the previous step (undefined for the first step)
+- signal - an AbortSignal aborted on cancellation, lease loss, or timeout
+
+The builder is immutable - each .step() returns a new workflow instance.
+
+### Engine
+
+The engine connects workflows to storage and handles execution.
+
+```typescript
+const storage = new SQLiteStorage('./workflows.db')
+const engine = createEngine({
+  storage,
+  workflows: [orderWorkflow, emailWorkflow],
+})
+
+// start() auto-initializes storage
+await engine.start(1000) // poll every 1000ms (default)
+
+const run = await engine.enqueue('order-fulfillment', {
+  orderId: 'ORD_1',
+  amount: 100,
+})
+
+// If using tick() without start(), call storage.initialize() first
+await engine.tick()
+
+await engine.stop()
+```
+
+enqueue() is fully type-safe - only accepts registered workflow names and their corresponding input types.
+
+### Idempotency
+
+```typescript
+const run = await engine.enqueue(
+  'order-fulfillment',
+  { orderId: 'ORD_1', amount: 100 },
+  { idempotencyKey: 'checkout:ORD_1' },
+)
+```
+
+Same key + same input returns the existing run. Same key + different input throws.
+
+### Retry
+
+```typescript
+.step('call-api', {
+  retry: {
+    maxAttempts: 5,
+    backoff: 'exponential', // or 'linear'
+    initialDelayMs: 200,    // 200ms, 400ms, 800ms, 1600ms...
+  },
+  handler: async ({ input }) => {
+    const response = await fetch('https://api.example.com')
+    if (!response.ok) throw new Error('API error')
+    return await response.json()
+  },
+})
+```
+
+Without retry config, a failing step immediately fails the entire workflow run.
+
+### Failure Handling
+
+Attach an onFailure handler for compensation logic (saga pattern):
+
+```typescript
+const workflow = createWorkflow({ name: 'transfer', input: schema })
+  .step('debit', async ({ input }) => {
+    return await debitAccount(input.from, input.amount)
+  })
+  .step('credit', async ({ input }) => {
+    return await creditAccount(input.to, input.amount)
+  })
+  .onFailure(async ({ error, stepName, input }) => {
+    if (stepName === 'credit') {
+      await creditAccount(input.from, input.amount)
+    }
+  })
+```
+
+### Error Handling
+
+Three ways to handle errors, each serving a different purpose:
+
+Recover inside the step - try/catch when you can handle the error and continue:
+
+```typescript
+.step('fetch', async ({ input }) => {
+  try {
+    return await callAPI(input.url)
+  } catch {
+    return { data: null, failed: true }
+  }
+})
+```
+
+Retry transient failures - let the error throw and configure retry:
+
+```typescript
+.step('charge', {
+  retry: { maxAttempts: 3, backoff: 'exponential' },
+  handler: async ({ input }) => {
+    return await stripe.charge(input.amount)
+  },
+})
+```
+
+Clean up with onFailure - compensation after the workflow has failed (saga pattern):
+
+```typescript
+.onFailure(async ({ error, stepName, input }) => {
+  if (stepName === 'charge') {
+    await refundAccount(input.userId)
+  }
+})
+```
+
+Most workflows combine all three: try/catch for expected errors, retry for transient failures, onFailure for rollback.
+
+### Crash Recovery
+
+Reflow automatically resumes workflows from the last completed step. If the process crashes after step 2 of 5, a later engine instance reclaims the stale run after runLeaseDurationMs and continues at step 3. Completed steps are never re-executed.
+
+### Concurrency
+
+By default, the engine processes one run at a time. Set concurrency to process multiple runs in parallel per tick:
+
+```typescript
+const engine = createEngine({
+  storage,
+  workflows: [orderWorkflow],
+  concurrency: 5,
+})
+```
+
+Each tick claims up to concurrency pending runs and executes them concurrently. Steps within a single run still execute sequentially.
+
+### Cancellation
+
+```typescript
+const cancelled = await engine.cancel(run.id)
+```
+
+Cancellation aborts the current step's AbortSignal immediately and prevents later steps from starting.
+
+### Scheduled Workflows
+
+```typescript
+const scheduleId = engine.schedule('cleanup', { olderThanDays: 30 }, 60 * 60 * 1000)
+engine.unschedule(scheduleId)
+```
+
+### Step Timeouts
+
+```typescript
+.step('call-external-api', {
+  timeoutMs: 5000,
+  handler: async ({ input }) => {
+    return await fetch('https://slow-api.example.com')
+  },
+})
+```
+
+Step-level timeoutMs takes precedence over retry.timeoutMs.
+
+### Hooks
+
+```typescript
+const engine = createEngine({
+  storage,
+  workflows: [orderWorkflow],
+  hooks: {
+    onStepComplete: ({ runId, stepName, output, attempts }) => { },
+    onRunComplete: ({ runId, workflow }) => { },
+    onRunFailed: ({ runId, workflow, stepName, error }) => { },
+    onError: (error) => { }, // background failures (scheduled enqueues, poll cycles)
+  },
+})
+```
+
+### Storage
+
+SQLiteStorage - for Bun runtime. Uses built-in bun:sqlite, no native dependencies.
+
+```typescript
+import { SQLiteStorage } from 'reflow-ts/sqlite-bun'
+const storage = new SQLiteStorage('./workflows.db')
+```
+
+SQLiteStorage - for Node.js. Uses better-sqlite3 (native addon). WAL mode.
+
+```typescript
+import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+const storage = new SQLiteStorage('./workflows.db')
+```
+
+MemoryStorage - used internally by the test helper.
+
+Custom adapters implement the StorageAdapter interface:
+
+```typescript
+interface StorageAdapter {
+  initialize(): Promise<void>
+  createRun(run: WorkflowRun): Promise<CreateRunResult>
+  claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
+  heartbeatRun(runId: string, leaseId: string): Promise<boolean>
+  getRun(runId: string): Promise<WorkflowRun | null>
+  getStepResults(runId: string): Promise<StepResult[]>
+  saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
+  updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
+  updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean>
+}
+```
+
+Persisted data must be JSON-compatible: plain objects, arrays, strings, numbers, booleans, null, and undefined.
+
+## Testing
+
+```typescript
+import { testEngine } from 'reflow-ts/test'
+
+const te = testEngine({ workflows: [orderWorkflow] })
+const result = await te.run('order-fulfillment', { orderId: 'test', amount: 100 })
+
+result.status              // 'completed' | 'failed'
+result.steps.charge.output // { chargeId: string } - fully typed
+result.steps.charge.status // 'completed' | 'failed'
+result.steps.charge.error  // string | null
+```
+
+## Type Safety
+
+Reflow tracks types through the entire workflow chain:
+- Workflow name is a string literal type ('order-fulfillment', not string)
+- Input is validated by your schema library and inferred at the type level
+- Step chaining - each step's prev is typed as the return value of the previous step
+- Engine - enqueue() only accepts registered workflow names with matching input
+- Test engine - run() returns typed step results keyed by step name
+
+## API Reference
+
+### createWorkflow(config)
+
+| Parameter    | Type              | Description                                          |
+|-------------|-------------------|------------------------------------------------------|
+| config.name | string            | Unique workflow name (becomes a literal type)        |
+| config.input| StandardSchemaV1  | Any Standard Schema-compatible schema                |
+
+Returns a Workflow with .step(), .onFailure(), and .parseInput() methods.
+
+### workflow.step(name, handler | config)
+
+Handler form: .step('name', async ({ input, prev, signal }) => { return value })
+
+Config form:
+| Parameter  | Type                    | Description                              |
+|-----------|-------------------------|------------------------------------------|
+| handler   | (ctx) => Promise<T>     | Step handler                             |
+| retry     | RetryConfig             | Optional retry configuration             |
+| timeoutMs | number                  | Optional timeout per attempt (ms)        |
+
+RetryConfig:
+| Parameter      | Type                      | Description                          |
+|---------------|---------------------------|--------------------------------------|
+| maxAttempts   | number                    | Max attempts (default: 1)            |
+| backoff       | 'linear' | 'exponential'  | Backoff strategy                     |
+| initialDelayMs| number                    | Base delay ms (default: 1000)        |
+| timeoutMs     | number                    | Timeout per attempt                  |
+
+### workflow.onFailure(handler)
+
+Attaches failure handler. Receives { error, stepName, input }. Called when a step fails after exhausting retries.
+
+### createEngine(config)
+
+| Parameter                    | Type           | Default          | Description                                    |
+|-----------------------------|----------------|------------------|------------------------------------------------|
+| config.storage              | StorageAdapter | required         | Storage backend                                |
+| config.workflows            | Workflow[]     | required         | Workflows to register                          |
+| config.hooks                | EngineHooks    | undefined        | Lifecycle hooks                                |
+| config.concurrency          | number         | 1                | Runs to process in parallel per tick           |
+| config.runLeaseDurationMs   | number         | 30000            | Lease duration before reclaim                  |
+| config.heartbeatIntervalMs  | number         | leaseDuration/3  | Lease renewal interval                         |
+
+### engine.start(pollIntervalMs?)
+
+Initializes storage and starts polling loop. Default pollIntervalMs: 1000. Call once at startup.
+
+### engine.stop()
+
+Stops polling loop, clears all schedules, and waits for any in-flight tick to finish. Returns Promise<void>.
+
+### engine.tick()
+
+Claims up to concurrency pending/stale runs and executes them in parallel. For CLI tools or tests.
+
+### engine.enqueue(name, input, options?)
+
+Submits a workflow run. Type-safe. Returns WorkflowRun.
+Option: idempotencyKey (string) - prevents duplicate runs.
+
+### engine.cancel(runId)
+
+Cancels pending/running workflow. Returns boolean. Aborts current step's AbortSignal.
+
+### engine.schedule(name, input, intervalMs)
+
+Recurring workflow enqueue. Returns scheduleId. Cancel with engine.unschedule(scheduleId).
+
+### engine.getRunStatus(runId)
+
+Returns { run, steps } or null.
+
+### testEngine(config)
+
+Test engine with in-memory storage. Same config as createEngine minus storage.
+
+### SQLiteStorage(path) — Bun
+
+SQLite storage adapter for Bun runtime. Uses built-in bun:sqlite. No native dependencies. WAL mode. Transactional claiming.
+
+### SQLiteStorage(path) — Node.js
+
+SQLite storage adapter for Node.js. Uses better-sqlite3. WAL mode. Transactional claiming.

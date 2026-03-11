@@ -1,0 +1,940 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reflow | Documentation</title>
+    <meta
+      name="description"
+      content="Complete documentation for Reflow - a durable workflow engine for TypeScript with typed steps, retries, crash recovery, and SQLite persistence."
+    />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./docs.css" />
+    <script src="./main.js" defer></script>
+  </head>
+  <body>
+    <div class="site-shell">
+      <nav class="topbar topbar-docs">
+        <a class="brand" href="./" aria-label="Reflow home">
+          <span class="brand-mark">R</span>
+          <span class="brand-word">Reflow</span>
+        </a>
+        <div class="topbar-links">
+          <a href="./">Home</a>
+          <a href="./docs.html" class="is-active">Docs</a>
+          <a href="https://github.com/danfry1/reflow-ts" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </nav>
+
+      <div class="docs-layout">
+        <aside class="docs-sidebar">
+          <nav class="docs-nav">
+            <h4>Getting Started</h4>
+            <a href="#install">Install</a>
+            <a href="#the-problem">The Problem</a>
+            <a href="#who-is-this-for">Who Is This For</a>
+
+            <h4>Core Concepts</h4>
+            <a href="#workflows">Workflows</a>
+            <a href="#engine">Engine</a>
+            <a href="#retry">Retry</a>
+            <a href="#failure-handling">Failure Handling</a>
+            <a href="#error-handling">Error Handling</a>
+            <a href="#crash-recovery">Crash Recovery</a>
+            <a href="#concurrency">Concurrency</a>
+            <a href="#cancellation">Cancellation</a>
+            <a href="#scheduled-workflows">Scheduled Workflows</a>
+            <a href="#step-timeouts">Step Timeouts</a>
+            <a href="#hooks">Hooks</a>
+            <a href="#storage">Storage</a>
+            <a href="#deployment">Deployment</a>
+
+            <h4>Guides</h4>
+            <a href="#testing">Testing</a>
+            <a href="#type-safety">Type Safety</a>
+
+
+            <h4>API Reference</h4>
+            <a href="#api-createworkflow">createWorkflow</a>
+            <a href="#api-step">workflow.step</a>
+            <a href="#api-onfailure">workflow.onFailure</a>
+            <a href="#api-createengine">createEngine</a>
+            <a href="#api-engine-start">engine.start</a>
+            <a href="#api-engine-stop">engine.stop</a>
+            <a href="#api-engine-tick">engine.tick</a>
+            <a href="#api-engine-enqueue">engine.enqueue</a>
+            <a href="#api-engine-cancel">engine.cancel</a>
+            <a href="#api-engine-schedule">engine.schedule</a>
+            <a href="#api-engine-getrunstatus">engine.getRunStatus</a>
+            <a href="#api-testengine">testEngine</a>
+            <a href="#api-sqlitestorage-bun">SQLiteStorage (Bun)</a>
+            <a href="#api-sqlitestorage">SQLiteStorage (Node)</a>
+            <a href="#api-storageadapter">StorageAdapter</a>
+          </nav>
+        </aside>
+
+        <main class="docs-content">
+          <h1>Reflow Documentation</h1>
+          <p class="docs-lead">
+            Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery - powered by SQLite, no infrastructure required.
+          </p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>import { createWorkflow, createEngine } from 'reflow-ts'
+import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+import { z } from 'zod' // or valibot, arktype, etc.
+
+const pipeline = createWorkflow({
+  name: 'process-content',
+  input: z.object({ url: z.string() }),
+})
+  .step('scrape', async ({ input }) => {
+    const page = await fetchPage(input.url)
+    return { content: page.text }
+  })
+  .step('summarize', {
+    retry: { maxAttempts: 3, backoff: 'exponential' },
+    handler: async ({ prev }) => {
+      const summary = await llm(prev.content)
+      return { summary }
+    },
+  })
+  .step('store', async ({ input, prev }) => {
+    await db.insert({ url: input.url, ...prev })
+  })
+
+const storage = new SQLiteStorage('./reflow.db')
+const engine = createEngine({ storage, workflows: [pipeline] })
+await engine.start()
+
+await engine.enqueue('process-content', {
+  url: 'https://example.com/article',
+})</code></pre>
+
+          <!-- Install -->
+          <h2 id="install">Install</h2>
+
+          <pre class="code-block docs-code" data-language="bash" data-line-numbers="false" data-compact="true"><code># Bun (uses built-in bun:sqlite - no native dependencies)
+bun add reflow-ts
+
+# Node.js (requires better-sqlite3)
+npm install reflow-ts better-sqlite3</code></pre>
+
+          <p>Then pick a storage adapter based on your runtime:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>// Bun - zero native deps
+import { SQLiteStorage } from 'reflow-ts/sqlite-bun'
+const storage = new SQLiteStorage('./reflow.db')
+
+// Node.js - uses better-sqlite3
+import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+const storage = new SQLiteStorage('./reflow.db')</code></pre>
+
+          <p>Reflow uses <a href="https://github.com/standard-schema/standard-schema">Standard Schema</a> for input validation, so you can bring any compatible library:</p>
+
+          <pre class="code-block docs-code" data-language="bash" data-line-numbers="false" data-compact="true"><code>bun add zod        # or
+bun add valibot    # or
+bun add arktype    # or any Standard Schema-compatible library</code></pre>
+
+          <!-- The Problem -->
+          <h2 id="the-problem">The Problem</h2>
+
+          <p>You have a multi-step operation - a signup, an import, an AI pipeline. You write it as a normal async function:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>app.post('/signup', async (req, res) => {
+  await createAccount(req.body)     // done
+  await chargeStripe(req.body)      // done
+  // process crashes, deploy happens, laptop sleeps
+  await sendWelcomeEmail(req.body)  // never runs
+})</code></pre>
+
+          <p>Now the user is charged but never got their welcome email. Worse - you don't know which steps completed. Do you re-run everything? Then they get double-charged.</p>
+
+          <p>The usual fix is to build manual checkpoint logic: state columns, retry loops, deduplication. That's 200 lines of infrastructure code that's hard to test and easy to get wrong.</p>
+
+          <p><strong>Reflow makes each step durable.</strong> If the process crashes after step 2 of 5, a new engine instance can reclaim the stale run after its lease expires and pick up at step 3. Active workers heartbeat their lease while they run, completed steps are never re-executed, and each step's output is persisted in SQLite - no external services required.</p>
+
+          <!-- Who Is This For -->
+          <h2 id="who-is-this-for">Who Is This For</h2>
+
+          <p><strong>Solo devs and small teams</strong> who need reliable multi-step workflows but don't want to run Temporal clusters or pay for cloud workflow services.</p>
+
+          <ul>
+            <li><strong>AI pipelines</strong> - LLM calls that cost money. Don't re-run a $0.12 call because the next step failed</li>
+            <li><strong>SaaS apps</strong> - Background jobs that must complete: signup flows, billing, provisioning</li>
+            <li><strong>CLI tools</strong> - Long-running imports or migrations that should resume after interruption</li>
+          </ul>
+
+          <div class="docs-table-wrap">
+            <table>
+              <thead>
+                <tr><th></th><th>Reflow</th><th>Temporal</th><th>Inngest</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Infrastructure</td><td>None (SQLite file)</td><td>Temporal Server + DB</td><td>Cloud service</td></tr>
+                <tr><td>Type safety</td><td>Full end-to-end</td><td>Partial</td><td>Partial</td></tr>
+                <tr><td>Setup</td><td><code>bun add reflow-ts</code></td><td>Cluster deployment</td><td>Account + SDK</td></tr>
+                <tr><td>Best for</td><td>Single-process apps, CLIs, AI agents</td><td>Large distributed systems</td><td>Serverless</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p><strong>Don't use Reflow when:</strong></p>
+          <ul>
+            <li>You need distributed execution across multiple machines</li>
+            <li>You need sub-second latency on workflow dispatch</li>
+            <li>You're already running Temporal or similar</li>
+          </ul>
+
+          <!-- Workflows -->
+          <h2 id="workflows">Workflows</h2>
+
+          <p>A workflow is a named sequence of steps with a validated input schema. Any <a href="https://github.com/standard-schema/standard-schema">Standard Schema</a>-compatible library works (Zod, Valibot, ArkType, etc.).</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>const workflow = createWorkflow({
+  name: 'send-welcome',
+  input: z.object({ userId: z.string(), email: z.email() }),
+})
+  .step('create-account', async ({ input }) => {
+    // input is typed as { userId: string, email: string }
+    return { accountId: await createAccount(input.userId) }
+  })
+  .step('send-email', async ({ prev, input, signal }) => {
+    // prev is typed as { accountId: string }
+    // input is still available
+    // signal is aborted on cancellation / timeout
+    await sendEmail(input.email, 'Welcome!', { signal })
+  })</code></pre>
+
+          <p>Each <code>.step()</code> receives:</p>
+          <ul>
+            <li><code>input</code> - the validated workflow input (same for every step)</li>
+            <li><code>prev</code> - the return value of the previous step (<code>undefined</code> for the first step)</li>
+            <li><code>signal</code> - an <code>AbortSignal</code> that is aborted when the run is cancelled, its lease is lost, or the step times out</li>
+          </ul>
+
+          <p>The builder is <strong>immutable</strong> - each <code>.step()</code> returns a new workflow instance, so you can safely branch:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const base = createWorkflow({ name: 'base', input: z.object({}) })
+const withLogging = base.step('log', async () => { })
+const withMetrics = base.step('metric', async () => { })
+// base, withLogging, and withMetrics are all independent</code></pre>
+
+          <!-- Engine -->
+          <h2 id="engine">Engine</h2>
+
+          <p>The engine connects workflows to storage and handles execution.</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>const storage = new SQLiteStorage('./workflows.db')
+const engine = createEngine({
+  storage,
+  workflows: [orderWorkflow, emailWorkflow],
+})
+
+// Start polling (processes runs continuously)
+// start() auto-initializes storage — no need to call storage.initialize()
+await engine.start(1000) // poll every 1000ms (default)
+
+// Enqueue runs as work arrives
+const run = await engine.enqueue('order-fulfillment', {
+  orderId: 'ORD_1',
+  amount: 100,
+})
+
+// Or process one run manually (call storage.initialize() first if not using start())
+await engine.tick()
+
+// Stop polling (waits for in-flight work to finish)
+await engine.stop()</code></pre>
+
+          <p>By default, claimed runs use a <code>30_000ms</code> lease. If a worker crashes and stops updating a run, a later <code>tick()</code> can reclaim it after that lease expires:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const engine = createEngine({
+  storage,
+  workflows: [orderWorkflow],
+  runLeaseDurationMs: 30_000,
+  heartbeatIntervalMs: 10_000,
+})</code></pre>
+
+          <p>The engine heartbeats active runs while they execute so long-running steps do not get reclaimed before they finish.</p>
+
+          <p><code>enqueue()</code> is fully type-safe - it only accepts registered workflow names and their corresponding input types:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>engine.enqueue('order-fulfillment', { orderId: 'x', amount: 1 }) // OK
+engine.enqueue('order-fulfillment', { wrong: 'shape' })          // Type error
+engine.enqueue('nonexistent', {})                                 // Type error</code></pre>
+
+          <p>If callers may retry <code>enqueue()</code>, give the run an idempotency key:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const run = await engine.enqueue(
+  'order-fulfillment',
+  { orderId: 'ORD_1', amount: 100 },
+  { idempotencyKey: 'checkout:ORD_1' },
+)</code></pre>
+
+          <p>Reusing the same idempotency key for the same workflow returns the existing run instead of creating a duplicate. Reusing it with different input throws.</p>
+
+          <!-- Retry -->
+          <h2 id="retry">Retry</h2>
+
+          <p>Steps can be configured with automatic retry and backoff:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>.step('call-api', {
+  retry: {
+    maxAttempts: 5,
+    backoff: 'exponential', // or 'linear'
+    initialDelayMs: 200,    // 200ms, 400ms, 800ms, 1600ms...
+  },
+  handler: async ({ input }) => {
+    const response = await fetch('https://api.example.com')
+    if (!response.ok) throw new Error('API error')
+    return await response.json()
+  },
+})</code></pre>
+
+          <p>Without retry config, a failing step immediately fails the entire workflow run.</p>
+
+          <!-- Failure Handling -->
+          <h2 id="failure-handling">Failure Handling</h2>
+
+          <p>Attach an <code>onFailure</code> handler for compensation logic (saga pattern):</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>const workflow = createWorkflow({
+  name: 'transfer',
+  input: schema,
+})
+  .step('debit', async ({ input }) => {
+    return await debitAccount(input.from, input.amount)
+  })
+  .step('credit', async ({ input }) => {
+    return await creditAccount(input.to, input.amount)
+  })
+  .onFailure(async ({ error, stepName, input }) => {
+    if (stepName === 'credit') {
+      // Debit succeeded but credit failed - reverse the debit
+      await creditAccount(input.from, input.amount)
+    }
+    await notifyOps('Transfer failed: ' + error.message)
+  })</code></pre>
+
+          <!-- Error Handling -->
+          <h2 id="error-handling">Error Handling</h2>
+
+          <p>There are three ways to handle errors in Reflow, and they serve different purposes:</p>
+
+          <h3>Recover inside the step</h3>
+          <p>Use a try/catch when you can handle the error and continue the workflow. Return a fallback value so the next step still runs.</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>.step('fetch', async ({ input }) => {
+  try {
+    return await callAPI(input.url)
+  } catch {
+    return { data: null, failed: true }
+  }
+})</code></pre>
+
+          <h3>Retry transient failures</h3>
+          <p>For rate limits, network blips, and flaky APIs - let the error throw and configure retry. If it exhausts all attempts, the run fails.</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>.step('charge', {
+  retry: { maxAttempts: 3, backoff: 'exponential' },
+  handler: async ({ input }) => {
+    return await stripe.charge(input.amount)
+  },
+})</code></pre>
+
+          <h3>Clean up with onFailure</h3>
+          <p>Use <code>onFailure</code> for compensation after the workflow has already failed. It does not recover the run - it cleans up side effects (saga pattern).</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>.onFailure(async ({ error, stepName, input }) => {
+  if (stepName === 'charge') {
+    await refundAccount(input.userId)
+  }
+})</code></pre>
+
+          <p>Most workflows combine all three: try/catch for expected errors, retry for transient failures, and onFailure for rollback.</p>
+
+          <!-- Crash Recovery -->
+          <h2 id="crash-recovery">Crash Recovery</h2>
+
+          <p>Reflow automatically resumes workflows from the last completed step. If your process crashes after step 2 of 5, a later engine instance can reclaim the stale <code>running</code> run after <code>runLeaseDurationMs</code> and continue at step 3 - completed steps are never re-executed.</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>// Process crashes here after 'charge' completed but before 'fulfill'
+// On restart, the engine claims the run and skips 'charge'
+await engine.start()</code></pre>
+
+          <p>This is especially valuable for AI pipelines where each LLM call costs money. If the store step fails after two successful LLM calls, Reflow resumes from the store step - the LLM calls are not repeated.</p>
+
+          <!-- Concurrency -->
+          <h2 id="concurrency">Concurrency</h2>
+
+          <p>By default, the engine processes one run at a time. Set <code>concurrency</code> to process multiple runs in parallel per tick:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const engine = createEngine({
+  storage,
+  workflows: [orderWorkflow],
+  concurrency: 5, // Process up to 5 runs in parallel per tick
+})</code></pre>
+
+          <p>With <code>concurrency: 5</code>, each tick claims up to 5 pending runs and executes them concurrently. Steps within a single run still execute sequentially.</p>
+
+          <!-- Cancellation -->
+          <h2 id="cancellation">Cancellation</h2>
+
+          <p>Cancel pending or running workflows:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const run = await engine.enqueue('order-fulfillment', {
+  orderId: 'ORD_1',
+  amount: 100,
+})
+
+const cancelled = await engine.cancel(run.id)
+// true if cancelled, false if already completed/failed/cancelled</code></pre>
+
+          <p>Cancellation aborts the current step's <code>AbortSignal</code> immediately and prevents later steps from starting. If your step handler cooperates with the signal, cancellation stops it cleanly:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>.step('fetch-profile', async ({ input, signal }) => {
+  const response = await fetch(
+    'https://api.example.com/users/' + input.userId,
+    { signal },
+  )
+  return await response.json()
+})</code></pre>
+
+          <p>To see which steps completed before cancellation, use <code>getRunStatus()</code>:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>await engine.cancel(run.id)
+
+const info = await engine.getRunStatus(run.id)
+// info.run.status === 'cancelled'
+// info.steps contains all completed step results and their outputs</code></pre>
+
+          <!-- Scheduled Workflows -->
+          <h2 id="scheduled-workflows">Scheduled Workflows</h2>
+
+          <p>Enqueue workflows on a recurring interval:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>// Enqueue a cleanup workflow every hour
+const scheduleId = engine.schedule(
+  'cleanup',
+  { olderThanDays: 30 },
+  60 * 60 * 1000,
+)
+
+// Stop the schedule
+engine.unschedule(scheduleId)
+
+// await engine.stop() also clears all schedules</code></pre>
+
+          <!-- Step Timeouts -->
+          <h2 id="step-timeouts">Step Timeouts</h2>
+
+          <p>Prevent steps from hanging indefinitely:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>.step('call-external-api', {
+  timeoutMs: 5000, // Fail after 5 seconds
+  handler: async ({ input }) => {
+    return await fetch('https://slow-api.example.com')
+  },
+})</code></pre>
+
+          <p>Timeouts can also be set via the retry config:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>.step('flaky-service', {
+  retry: {
+    maxAttempts: 3,
+    backoff: 'exponential',
+    initialDelayMs: 500,
+    timeoutMs: 10000, // Each attempt times out after 10s
+  },
+  handler: async ({ input }) => { },
+})</code></pre>
+
+          <p>Step-level <code>timeoutMs</code> takes precedence over <code>retry.timeoutMs</code>.</p>
+
+          <!-- Hooks -->
+          <h2 id="hooks">Hooks</h2>
+
+          <p>Add observability with lifecycle hooks:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>const engine = createEngine({
+  storage,
+  workflows: [orderWorkflow],
+  hooks: {
+    onStepComplete: ({ runId, stepName, output, attempts }) => {
+      console.log(stepName + ' completed in ' + attempts + ' attempt(s)')
+    },
+    onRunComplete: ({ runId, workflow }) => {
+      metrics.increment('workflow.completed', { workflow })
+    },
+    onRunFailed: ({ runId, workflow, stepName, error }) => {
+      alerting.notify(workflow + ' failed at ' + stepName)
+    },
+    onError: (error) => {
+      // Fires on background failures (scheduled enqueues, poll cycles)
+      console.error('Engine error:', error)
+    },
+  },
+})</code></pre>
+
+          <!-- Storage -->
+          <h2 id="storage">Storage</h2>
+
+          <p>Reflow ships with three storage adapters:</p>
+
+          <p><strong>SQLiteStorage</strong> - for Bun runtime. Uses the built-in <code>bun:sqlite</code> module with zero native dependencies.</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>import { SQLiteStorage } from 'reflow-ts/sqlite-bun'
+
+const storage = new SQLiteStorage('./workflows.db')</code></pre>
+
+          <p><strong>SQLiteStorage</strong> - for Node.js. Uses <code>better-sqlite3</code> (native addon). Persists to disk, uses WAL mode.</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+
+const storage = new SQLiteStorage('./workflows.db')</code></pre>
+
+          <p><strong>MemoryStorage</strong> - used internally by the test helper. For custom use, import from <code>reflow-ts/test</code>.</p>
+
+          <p>You can implement your own adapter by conforming to the <code>StorageAdapter</code> interface:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>interface StorageAdapter {
+  initialize(): Promise&lt;void&gt;
+  createRun(run: WorkflowRun): Promise&lt;CreateRunResult&gt;
+  claimNextRun(
+    workflowNames: readonly string[],
+    staleBefore?: number,
+  ): Promise&lt;ClaimedRun | null&gt;
+  heartbeatRun(runId: string, leaseId: string): Promise&lt;boolean&gt;
+  getRun(runId: string): Promise&lt;WorkflowRun | null&gt;
+  getStepResults(runId: string): Promise&lt;StepResult[]&gt;
+  saveStepResult(
+    result: StepResult,
+    leaseId?: string,
+  ): Promise&lt;boolean&gt;
+  updateRunStatus(
+    runId: string,
+    status: RunStatus,
+  ): Promise&lt;boolean&gt;
+  updateClaimedRunStatus(
+    runId: string,
+    leaseId: string,
+    status: RunStatus,
+  ): Promise&lt;boolean&gt;
+}</code></pre>
+
+          <p>Persisted workflow input and step output must be JSON-compatible data: plain objects, arrays, strings, numbers, booleans, <code>null</code>, and <code>undefined</code>.</p>
+
+          <!-- Deployment -->
+          <h2 id="deployment">Deployment</h2>
+
+          <p>The SQLite file is Reflow's source of truth - not a cache. Each step's result is written to disk before moving to the next step. When your process restarts, the new engine reads the file and resumes incomplete runs.</p>
+
+          <p><strong>This works out of the box</strong> on any deployment with a persistent filesystem: a VPS (DigitalOcean, Hetzner, EC2), a dedicated server, or your local machine. Process restarts don't touch the filesystem.</p>
+
+          <p><strong>Ephemeral containers</strong> (vanilla Docker, Fly Machines, Railway, Lambda) get a fresh filesystem on each deploy. Mount a persistent volume so the SQLite file survives:</p>
+
+          <pre class="code-block docs-code" data-language="bash" data-line-numbers="false" data-compact="true"><code># Docker
+docker run -v /data:/app/data myapp
+
+# fly.toml
+[mounts]
+  source = "reflow_data"
+  destination = "/data"</code></pre>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>// Point Reflow at the mounted volume
+const storage = new SQLiteStorage('/data/workflows.db')  // Bun
+const storage = new SQLiteStorage('/data/workflows.db')     // Node.js</code></pre>
+
+          <p>This is the same requirement any SQLite-based app has. It's one config line, not infrastructure.</p>
+
+          <!-- Testing -->
+          <h2 id="testing">Testing</h2>
+
+          <p>Reflow includes a test helper that runs workflows synchronously and returns typed results:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>import { testEngine } from 'reflow-ts/test'
+
+const te = testEngine({ workflows: [orderWorkflow] })
+
+const result = await te.run('order-fulfillment', {
+  orderId: 'test',
+  amount: 100,
+})
+
+result.status              // 'completed' | 'failed'
+result.steps.charge.output // { chargeId: string } - fully typed
+result.steps.charge.status // 'completed' | 'failed'
+result.steps.charge.error  // string | null</code></pre>
+
+          <p>Use it in your test suite:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>import { describe, it, expect } from 'vitest'
+import { testEngine } from 'reflow-ts/test'
+
+describe('order workflow', () => {
+  it('charges and fulfills', async () => {
+    const te = testEngine({ workflows: [orderWorkflow] })
+    const result = await te.run('order-fulfillment', {
+      orderId: 'ORD_1',
+      amount: 100,
+    })
+
+    expect(result.status).toBe('completed')
+    expect(result.steps.charge.output.chargeId).toBeTruthy()
+  })
+})</code></pre>
+
+          <!-- Type Safety -->
+          <h2 id="type-safety">Type Safety</h2>
+
+          <p>Reflow tracks types through the entire workflow chain:</p>
+
+          <ul>
+            <li><strong>Workflow name</strong> is a string literal type (<code>'order-fulfillment'</code>, not <code>string</code>)</li>
+            <li><strong>Input</strong> is validated by your schema library and inferred at the type level</li>
+            <li><strong>Step chaining</strong> - each step's <code>prev</code> is typed as the return value of the previous step</li>
+            <li><strong>Engine</strong> - <code>enqueue()</code> only accepts registered workflow names with matching input</li>
+            <li><strong>Test engine</strong> - <code>run()</code> returns typed step results keyed by step name</li>
+          </ul>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>// These are all compile-time errors, not runtime surprises:
+engine.enqueue('typo', {})                    // not a registered workflow
+engine.enqueue('order-fulfillment', {})       // missing required fields
+workflow.step('x', async ({ prev }) => {
+  prev.nonexistent                            // property doesn't exist
+})</code></pre>
+
+          <!-- API Reference -->
+          <h2 id="api-reference">API Reference</h2>
+
+          <div class="api-section">
+            <div class="api-card" id="api-createworkflow">
+              <div class="api-header">
+                <span class="api-badge">function</span>
+                <h3>createWorkflow(config)</h3>
+              </div>
+              <p>Creates a new workflow builder.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>createWorkflow({ name: 'my-workflow', input: schema })</code></pre>
+              <div class="api-params">
+                <div class="api-param">
+                  <span class="api-param-name">name</span>
+                  <span class="api-param-type">string</span>
+                  <span class="api-param-desc">Unique workflow name (becomes a literal type)</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">input</span>
+                  <span class="api-param-type">StandardSchemaV1</span>
+                  <span class="api-param-desc">Any Standard Schema-compatible schema (Zod, Valibot, ArkType, etc.)</span>
+                </div>
+              </div>
+              <div class="api-returns">Returns <code>Workflow</code> with <code>.step()</code>, <code>.onFailure()</code>, and <code>.parseInput()</code> methods.</div>
+            </div>
+
+            <div class="api-card" id="api-step">
+              <div class="api-header">
+                <span class="api-badge">method</span>
+                <h3>workflow.step(name, handler | config)</h3>
+              </div>
+              <p>Adds a step to the workflow. Accepts either a handler function or a config object.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>// Simple handler
+.step('name', async ({ input, prev, signal }) => {
+  return { result: 'value' }
+})
+
+// Config with retry
+.step('name', {
+  retry: { maxAttempts: 3, backoff: 'exponential' },
+  timeoutMs: 5000,
+  handler: async ({ input, prev, signal }) => {
+    return { result: 'value' }
+  },
+})</code></pre>
+              <div class="api-params">
+                <p class="api-params-label">Handler context</p>
+                <div class="api-param">
+                  <span class="api-param-name">input</span>
+                  <span class="api-param-type">TInput</span>
+                  <span class="api-param-desc">The validated workflow input (same for every step)</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">prev</span>
+                  <span class="api-param-type">TPrev</span>
+                  <span class="api-param-desc">Return value of the previous step (<code>undefined</code> for first step)</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">signal</span>
+                  <span class="api-param-type">AbortSignal</span>
+                  <span class="api-param-desc">Aborted on cancellation, lease loss, or timeout</span>
+                </div>
+              </div>
+              <div class="api-params">
+                <p class="api-params-label">Config options</p>
+                <div class="api-param">
+                  <span class="api-param-name">handler</span>
+                  <span class="api-param-type">(ctx) =&gt; Promise&lt;T&gt;</span>
+                  <span class="api-param-desc">Step handler function</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">retry</span>
+                  <span class="api-param-type">RetryConfig</span>
+                  <span class="api-param-desc">Optional. See retry config below</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">timeoutMs</span>
+                  <span class="api-param-type">number</span>
+                  <span class="api-param-desc">Optional. Timeout per attempt in milliseconds</span>
+                </div>
+              </div>
+              <div class="api-params">
+                <p class="api-params-label">RetryConfig</p>
+                <div class="api-param">
+                  <span class="api-param-name">maxAttempts</span>
+                  <span class="api-param-type">number</span>
+                  <span class="api-param-desc">Maximum number of attempts. Default: <code>1</code> (no retry)</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">backoff</span>
+                  <span class="api-param-type">'linear' | 'exponential'</span>
+                  <span class="api-param-desc">Backoff strategy between retries</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">initialDelayMs</span>
+                  <span class="api-param-type">number</span>
+                  <span class="api-param-desc">Base delay in ms. Default: <code>1000</code></span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">timeoutMs</span>
+                  <span class="api-param-type">number</span>
+                  <span class="api-param-desc">Timeout per attempt. Step-level <code>timeoutMs</code> takes precedence</span>
+                </div>
+              </div>
+              <div class="api-returns">Returns a new <code>Workflow</code> with the step appended. The builder is immutable.</div>
+            </div>
+
+            <div class="api-card" id="api-onfailure">
+              <div class="api-header">
+                <span class="api-badge">method</span>
+                <h3>workflow.onFailure(handler)</h3>
+              </div>
+              <p>Attaches a failure handler for compensation logic (saga pattern). Called when a step fails after exhausting all retry attempts.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>.onFailure(async ({ error, stepName, input }) => {
+  // compensate or alert
+})</code></pre>
+              <div class="api-params">
+                <div class="api-param">
+                  <span class="api-param-name">error</span>
+                  <span class="api-param-type">Error</span>
+                  <span class="api-param-desc">The error that caused the failure</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">stepName</span>
+                  <span class="api-param-type">string</span>
+                  <span class="api-param-desc">Which step failed</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">input</span>
+                  <span class="api-param-type">TInput</span>
+                  <span class="api-param-desc">The original workflow input</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="api-section">
+            <div class="api-card" id="api-createengine">
+              <div class="api-header">
+                <span class="api-badge">function</span>
+                <h3>createEngine(config)</h3>
+              </div>
+              <p>Creates an engine that connects workflows to storage and handles execution.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const engine = createEngine({
+  storage,
+  workflows: [pipeline],
+  concurrency: 5,
+  runLeaseDurationMs: 30_000,
+})</code></pre>
+              <div class="api-params">
+                <div class="api-param">
+                  <span class="api-param-name">storage</span>
+                  <span class="api-param-type">StorageAdapter</span>
+                  <span class="api-param-desc">Storage backend. Required</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">workflows</span>
+                  <span class="api-param-type">Workflow[]</span>
+                  <span class="api-param-desc">Workflows to register. Required</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">hooks</span>
+                  <span class="api-param-type">EngineHooks</span>
+                  <span class="api-param-desc">Lifecycle hooks: <code>onStepComplete</code>, <code>onRunComplete</code>, <code>onRunFailed</code>, <code>onError</code></span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">concurrency</span>
+                  <span class="api-param-type">number</span>
+                  <span class="api-param-desc">Runs to process in parallel per tick. Default: <code>1</code></span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">runLeaseDurationMs</span>
+                  <span class="api-param-type">number</span>
+                  <span class="api-param-desc">How long a run stays claimed before another engine may reclaim it. Default: <code>30000</code></span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">heartbeatIntervalMs</span>
+                  <span class="api-param-type">number</span>
+                  <span class="api-param-desc">How often the worker renews its lease. Default: <code>leaseDuration / 3</code></span>
+                </div>
+              </div>
+              <div class="api-returns">Returns an <code>Engine</code> with the methods below.</div>
+            </div>
+
+            <div class="api-card" id="api-engine-start">
+              <div class="api-header">
+                <span class="api-badge api-badge-async">async</span>
+                <h3>engine.start(pollIntervalMs?)</h3>
+              </div>
+              <p>Initializes storage and starts the polling loop. Call this once at startup, then <code>enqueue()</code> work as it arrives.</p>
+              <div class="api-params">
+                <div class="api-param">
+                  <span class="api-param-name">pollIntervalMs</span>
+                  <span class="api-param-type">number</span>
+                  <span class="api-param-desc">Polling interval in ms. Default: <code>1000</code></span>
+                </div>
+              </div>
+              <div class="api-returns">Returns <code>Promise&lt;void&gt;</code></div>
+            </div>
+
+            <div class="api-card" id="api-engine-stop">
+              <div class="api-header">
+                <span class="api-badge api-badge-async">async</span>
+                <h3>engine.stop()</h3>
+              </div>
+              <p>Stops the polling loop, clears all schedules, and waits for any in-flight tick to finish.</p>
+              <div class="api-returns">Returns <code>Promise&lt;void&gt;</code></div>
+            </div>
+
+            <div class="api-card" id="api-engine-tick">
+              <div class="api-header">
+                <span class="api-badge api-badge-async">async</span>
+                <h3>engine.tick()</h3>
+              </div>
+              <p>Claims up to <code>concurrency</code> pending or stale runs and executes them in parallel. Useful for CLI tools or tests where you want explicit control instead of polling.</p>
+              <div class="api-returns">Returns <code>Promise&lt;void&gt;</code></div>
+            </div>
+
+            <div class="api-card" id="api-engine-enqueue">
+              <div class="api-header">
+                <span class="api-badge api-badge-async">async</span>
+                <h3>engine.enqueue(name, input, options?)</h3>
+              </div>
+              <p>Submits a workflow run. Type-safe - only accepts registered workflow names with their corresponding input types.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const run = await engine.enqueue('process-content', {
+  url: 'https://example.com/article',
+})</code></pre>
+              <div class="api-params">
+                <p class="api-params-label">Options</p>
+                <div class="api-param">
+                  <span class="api-param-name">idempotencyKey</span>
+                  <span class="api-param-type">string</span>
+                  <span class="api-param-desc">Prevents duplicate runs. Same key + same input returns existing run. Same key + different input throws</span>
+                </div>
+              </div>
+              <div class="api-returns">Returns <code>Promise&lt;WorkflowRun&gt;</code> with <code>run.id</code> as the unique identifier.</div>
+            </div>
+
+            <div class="api-card" id="api-engine-cancel">
+              <div class="api-header">
+                <span class="api-badge api-badge-async">async</span>
+                <h3>engine.cancel(runId)</h3>
+              </div>
+              <p>Cancels a pending or running workflow. Aborts the current step's <code>AbortSignal</code> immediately and prevents later steps from starting.</p>
+              <div class="api-returns">Returns <code>Promise&lt;boolean&gt;</code> - <code>true</code> if cancelled, <code>false</code> if already completed/failed/cancelled.</div>
+            </div>
+
+            <div class="api-card" id="api-engine-schedule">
+              <div class="api-header">
+                <span class="api-badge api-badge-sync">sync</span>
+                <h3>engine.schedule(name, input, intervalMs)</h3>
+              </div>
+              <p>Enqueues a workflow run on a recurring interval.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const scheduleId = engine.schedule('cleanup', { days: 30 }, 60 * 60 * 1000)
+engine.unschedule(scheduleId)</code></pre>
+              <div class="api-returns">Returns <code>string</code> schedule ID. Cancel with <code>engine.unschedule(scheduleId)</code>. Cleared automatically by <code>engine.stop()</code>.</div>
+            </div>
+
+            <div class="api-card" id="api-engine-getrunstatus">
+              <div class="api-header">
+                <span class="api-badge api-badge-async">async</span>
+                <h3>engine.getRunStatus(runId)</h3>
+              </div>
+              <p>Query the status of any run and its step results.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const info = await engine.getRunStatus(run.id)
+// info.run.status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+// info.steps: StepResult[] with output, error, and attempt count</code></pre>
+              <div class="api-returns">Returns <code>Promise&lt;RunInfo | null&gt;</code></div>
+            </div>
+          </div>
+
+          <div class="api-section">
+            <div class="api-card" id="api-testengine">
+              <div class="api-header">
+                <span class="api-badge">function</span>
+                <h3>testEngine(config)</h3>
+              </div>
+              <p>Creates a test engine with in-memory storage for synchronous workflow execution. Same config as <code>createEngine</code> minus <code>storage</code>.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>import { testEngine } from 'reflow-ts/test'
+
+const te = testEngine({ workflows: [pipeline] })
+const result = await te.run('process-content', { url: '...' })
+result.status              // 'completed' | 'failed'
+result.steps.scrape.output // fully typed</code></pre>
+              <div class="api-returns">Returns a test engine with a <code>.run()</code> method that returns typed step results keyed by step name.</div>
+            </div>
+
+            <div class="api-card" id="api-sqlitestorage-bun">
+              <div class="api-header">
+                <span class="api-badge">class</span>
+                <h3>SQLiteStorage(path)</h3>
+              </div>
+              <p>SQLite storage adapter for Bun runtime. Uses the built-in <code>bun:sqlite</code> module - no native dependencies required.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>import { SQLiteStorage } from 'reflow-ts/sqlite-bun'
+
+const storage = new SQLiteStorage('./workflows.db')
+await storage.initialize()</code></pre>
+            </div>
+
+            <div class="api-card" id="api-sqlitestorage">
+              <div class="api-header">
+                <span class="api-badge">class</span>
+                <h3>SQLiteStorage(path)</h3>
+              </div>
+              <p>SQLite storage adapter for Node.js. Uses <code>better-sqlite3</code> (native addon). WAL mode and transactional claiming.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+
+const storage = new SQLiteStorage('./workflows.db')
+await storage.initialize()</code></pre>
+            </div>
+
+            <div class="api-card" id="api-storageadapter">
+              <div class="api-header">
+                <span class="api-badge">interface</span>
+                <h3>StorageAdapter</h3>
+              </div>
+              <p>Interface for implementing custom storage backends. See the <a href="#storage">Storage</a> section for the full interface definition and method signatures.</p>
+            </div>
+          </div>
+        </main>
+      </div>
+
+      <footer class="footer docs-footer">
+        <p>Reflow is a small, honest workflow engine for TypeScript.</p>
+        <p class="footer-meta">Built for <code>bun add</code>, not a platform migration.</p>
+        <div class="footer-links">
+          <a href="https://github.com/danfry1/reflow-ts" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://www.npmjs.com/package/reflow-ts" target="_blank" rel="noopener">npm</a>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>

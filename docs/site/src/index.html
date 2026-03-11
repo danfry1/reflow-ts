@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reflow | Durable Workflow Execution for TypeScript</title>
+    <meta
+      name="description"
+      content="Reflow is a SQLite-backed workflow engine for TypeScript with typed steps, retries, lease recovery, cooperative cancellation, and idempotent enqueue."
+    />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./main.js" defer></script>
+  </head>
+  <body>
+    <div class="site-shell">
+      <div class="site-orb site-orb-a"></div>
+      <div class="site-orb site-orb-b"></div>
+      <div class="site-orb site-orb-c"></div>
+
+      <header class="hero">
+        <nav class="topbar">
+          <a class="brand" href="#top" aria-label="Reflow home">
+            <span class="brand-mark">R</span>
+            <span class="brand-word">Reflow</span>
+          </a>
+          <div class="topbar-links">
+            <a href="#demo">Why It Matters</a>
+            <a href="#quickstart">Quickstart</a>
+            <a href="./docs.html">Docs</a>
+            <a href="https://github.com/danfry1/reflow-ts" target="_blank" rel="noopener">GitHub</a>
+          </div>
+        </nav>
+
+        <section class="hero-grid" id="top">
+          <div class="hero-copy reveal">
+            <p class="eyebrow">Durable workflow execution for TypeScript</p>
+            <h1>Keep your background work alive when the process dies.</h1>
+            <p class="lede">
+              Reflow is a durable workflow engine for TypeScript. It checkpoints every step to SQLite
+              and resumes from the last completed step after a crash - no repeated LLM calls,
+              no wasted tokens, no duplicate side effects. One package. Zero infrastructure.
+            </p>
+
+            <div class="install-picker">
+              <div class="install-tabs" id="install-tabs">
+                <button class="install-tab is-active" data-pm="bun">bun</button>
+                <button class="install-tab" data-pm="pnpm">pnpm</button>
+                <button class="install-tab" data-pm="npm">npm</button>
+                <button class="install-tab" data-pm="yarn">yarn</button>
+              </div>
+              <div class="install-cmd">
+                <code id="install-cmd">bun add reflow-ts</code>
+                <button class="install-copy" id="install-copy" data-copy="bun add reflow-ts">Copy</button>
+              </div>
+            </div>
+
+            <div class="hero-actions">
+              <a class="button button-primary" href="#quickstart">Get Started</a>
+              <a class="button button-secondary" href="https://github.com/danfry1/reflow-ts" target="_blank" rel="noopener">GitHub</a>
+            </div>
+
+            <ul class="hero-list">
+              <li>Completed steps are never re-executed - even after a crash</li>
+              <li>Per-step retry with backoff for flaky APIs and rate limits</li>
+              <li>Typed inputs, outputs, and <code>prev</code> chaining between steps</li>
+              <li>Standard Schema support - bring Zod, Valibot, ArkType, or any compatible library</li>
+            </ul>
+          </div>
+
+          <div class="hero-terminal reveal">
+            <div class="code-shell-bar">
+              <div class="terminal-top">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <div class="code-shell-meta">
+                <span class="code-file">ai-pipeline.ts</span>
+                <span class="code-badge">TypeScript</span>
+              </div>
+            </div>
+            <pre class="code-block" id="hero-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const pipeline = createWorkflow({
+  name: 'process-content',
+  input: z.object({ url: z.string() }),
+})
+  .step('scrape', async ({ input }) => {
+    const page = await fetchPage(input.url)
+    return { content: page.text }
+  })
+  .step('summarize', {
+    retry: { maxAttempts: 3, backoff: 'exponential' },
+    handler: async ({ prev }) => {
+      const summary = await llm(prev.content)
+      return { summary }
+    },
+  })
+  .step('store', async ({ input, prev }) => {
+    await db.insert({ url: input.url, ...prev })
+  })
+
+await engine.enqueue('process-content', {
+  url: 'https://example.com/article',
+})</code></pre>
+            <div class="hero-output-bar">
+              <span class="hero-output-label">Output</span>
+            </div>
+            <pre class="hero-output" id="hero-output"></pre>
+          </div>
+        </section>
+      </header>
+
+      <main>
+        <section class="stats reveal">
+          <article class="stat-card">
+            <span class="stat-value">No re-runs</span>
+            <p>Each step is checkpointed. Completed LLM calls, API requests, and payments are never repeated.</p>
+          </article>
+          <article class="stat-card">
+            <span class="stat-value">Typed</span>
+            <p>Workflow names, validated inputs, and chained step outputs stay aligned at compile time.</p>
+          </article>
+          <article class="stat-card">
+            <span class="stat-value">SQLite</span>
+            <p>Durable state in a single file. Easy to ship in CLIs, small SaaS apps, and agent tools.</p>
+          </article>
+          <article class="stat-card">
+            <span class="stat-value">0 infra</span>
+            <p>No brokers, no control plane, no workflow cluster. Start with a package and a database file.</p>
+          </article>
+        </section>
+
+        <section class="demo-section reveal" id="demo">
+          <div class="section-copy demo-section-copy">
+            <p class="eyebrow">Why It Matters</p>
+            <h2>Same crash. Only one wastes your money.</h2>
+            <p>
+              Both pipelines scrape a page, run two LLM calls, then store results. Both crash during storage. Watch what happens next.
+            </p>
+          </div>
+
+          <div class="crash-compare">
+            <div class="crash-demo crash-demo-bad">
+              <div class="crash-demo-bar">
+                <span class="crash-demo-label">Without Reflow</span>
+                <span class="crash-demo-badge is-running" id="bad-badge">Running</span>
+              </div>
+              <ol class="crash-timeline">
+                <li class="crash-step is-complete" id="bad-scrape">
+                  <span class="crash-dot"></span>
+                  <div class="crash-step-info">
+                    <span class="crash-step-name">scrape</span>
+                    <span class="crash-step-status">completed</span>
+                  </div>
+                </li>
+                <li class="crash-step is-running" id="bad-summarize">
+                  <span class="crash-dot"></span>
+                  <div class="crash-step-info">
+                    <span class="crash-step-name">summarize <span class="step-cost">$0.12</span></span>
+                    <span class="crash-step-status">running...</span>
+                  </div>
+                </li>
+                <li class="crash-step is-pending" id="bad-extract">
+                  <span class="crash-dot"></span>
+                  <div class="crash-step-info">
+                    <span class="crash-step-name">extract <span class="step-cost">$0.08</span></span>
+                    <span class="crash-step-status">pending</span>
+                  </div>
+                </li>
+                <li class="crash-step is-pending" id="bad-store">
+                  <span class="crash-dot"></span>
+                  <div class="crash-step-info">
+                    <span class="crash-step-name">store</span>
+                    <span class="crash-step-status">pending</span>
+                  </div>
+                </li>
+              </ol>
+              <div class="crash-outcome" id="bad-outcome"></div>
+            </div>
+
+            <div class="crash-demo crash-demo-good">
+              <div class="crash-demo-bar">
+                <span class="crash-demo-label">With Reflow</span>
+                <span class="crash-demo-badge is-running" id="good-badge">Running</span>
+              </div>
+              <ol class="crash-timeline">
+                <li class="crash-step is-complete" id="good-scrape">
+                  <span class="crash-dot"></span>
+                  <div class="crash-step-info">
+                    <span class="crash-step-name">scrape</span>
+                    <span class="crash-step-status">completed</span>
+                  </div>
+                </li>
+                <li class="crash-step is-running" id="good-summarize">
+                  <span class="crash-dot"></span>
+                  <div class="crash-step-info">
+                    <span class="crash-step-name">summarize <span class="step-cost">$0.12</span></span>
+                    <span class="crash-step-status">running...</span>
+                  </div>
+                </li>
+                <li class="crash-step is-pending" id="good-extract">
+                  <span class="crash-dot"></span>
+                  <div class="crash-step-info">
+                    <span class="crash-step-name">extract <span class="step-cost">$0.08</span></span>
+                    <span class="crash-step-status">pending</span>
+                  </div>
+                </li>
+                <li class="crash-step is-pending" id="good-store">
+                  <span class="crash-dot"></span>
+                  <div class="crash-step-info">
+                    <span class="crash-step-name">store</span>
+                    <span class="crash-step-status">pending</span>
+                  </div>
+                </li>
+              </ol>
+              <div class="crash-outcome" id="good-outcome"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section quickstart-section reveal" id="quickstart">
+          <div class="section-copy">
+            <p class="eyebrow">Quickstart</p>
+            <h2>Three steps. One file. Zero infrastructure.</h2>
+            <button class="button button-secondary button-compact qs-copy-btn" data-copy-block="qs-full-code">
+              Copy Full Example
+            </button>
+          </div>
+
+          <div class="qs-steps">
+            <pre class="code-block" id="qs-full-code" data-language="typescript" style="display:none"><code>import { createEngine, createWorkflow } from 'reflow-ts'
+import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+import { z } from 'zod'
+
+const pipeline = createWorkflow({
+  name: 'process-content',
+  input: z.object({ url: z.string() }),
+})
+  // Fetch the page content
+  .step('scrape', async ({ input }) => {
+    const page = await fetchPage(input.url)
+    return { content: page.text }
+  })
+  // LLM call with retry for rate limits
+  .step('summarize', {
+    retry: { maxAttempts: 3, backoff: 'exponential' },
+    handler: async ({ prev }) => {
+      const summary = await llm(prev.content)
+      return { summary }
+    },
+  })
+  // Extract entities from the summary
+  .step('extract', async ({ prev }) => {
+    const entities = await llm(prev.summary)
+    return { ...prev, entities }
+  })
+  // Store results - if this fails, the LLM calls won't re-run
+  .step('store', async ({ input, prev }) => {
+    await db.insert({ url: input.url, ...prev })
+  })
+
+// One file. Schema managed automatically.
+const storage = new SQLiteStorage('./reflow.db')
+const engine = createEngine({
+  storage,
+  workflows: [pipeline],
+})
+
+// Starts polling. Survives crashes.
+await engine.start()
+
+await engine.enqueue('process-content', {
+  url: 'https://example.com/article',
+})</code></pre>
+
+            <article class="qs-step">
+              <div class="qs-step-header">
+                <span class="qs-step-number">1</span>
+                <div>
+                  <h3 class="qs-step-title">Define your pipeline</h3>
+                  <p class="qs-step-desc">Scrape a page, summarize with an LLM, extract entities, store results. Each step's return value flows to the next via <code>prev</code>. LLM calls have automatic retry with exponential backoff.</p>
+                </div>
+              </div>
+              <pre class="code-block qs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const pipeline = createWorkflow({
+  name: 'process-content',
+  input: z.object({ url: z.string() }),
+})
+  // Fetch the page content
+  .step('scrape', async ({ input }) => {
+    const page = await fetchPage(input.url)
+    return { content: page.text }
+  })
+  // LLM call with retry for rate limits
+  .step('summarize', {
+    retry: { maxAttempts: 3, backoff: 'exponential' },
+    handler: async ({ prev }) => {
+      const summary = await llm(prev.content)
+      return { summary }
+    },
+  })
+  // Extract entities from the summary
+  .step('extract', async ({ prev }) => {
+    const entities = await llm(prev.summary)
+    return { ...prev, entities }
+  })
+  // Store results - if this fails, the LLM calls won't re-run
+  .step('store', async ({ input, prev }) => {
+    await db.insert({ url: input.url, ...prev })
+  })</code></pre>
+            </article>
+
+            <article class="qs-step">
+              <div class="qs-step-header">
+                <span class="qs-step-number">2</span>
+                <div>
+                  <h3 class="qs-step-title">Connect storage</h3>
+                  <p class="qs-step-desc">Point at a SQLite file. Reflow handles schema, checkpoints, and lease management.</p>
+                </div>
+              </div>
+              <pre class="code-block qs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>// One file. start() handles schema automatically.
+const storage = new SQLiteStorage('./reflow.db')
+const engine = createEngine({
+  storage,
+  workflows: [pipeline],
+})</code></pre>
+            </article>
+
+            <article class="qs-step">
+              <div class="qs-step-header">
+                <span class="qs-step-number">3</span>
+                <div>
+                  <h3 class="qs-step-title">Start and enqueue</h3>
+                  <p class="qs-step-desc">Start the engine, then submit work as it arrives. If the process crashes, the next engine picks up where it left off.</p>
+                </div>
+              </div>
+              <pre class="code-block qs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>// Starts polling. Survives crashes.
+await engine.start()
+
+await engine.enqueue('process-content', {
+  url: 'https://example.com/article',
+})</code></pre>
+            </article>
+          </div>
+        </section>
+
+        <section class="section fit-section reveal" id="fit">
+          <div class="section-copy">
+            <p class="eyebrow">Where Reflow Fits</p>
+            <h2>Best when you need durable local workflows, not distributed orchestration.</h2>
+          </div>
+
+          <div class="fit-grid">
+            <article class="fit-card fit-card-good">
+              <h3>Use Reflow for</h3>
+              <ul>
+                <li>AI and LLM pipelines where repeated calls waste tokens and money</li>
+                <li>Multi-step agent workflows that need crash recovery</li>
+                <li>SaaS onboarding, billing, and provisioning flows</li>
+                <li>CLI imports and long-running local automation</li>
+              </ul>
+            </article>
+
+            <article class="fit-card fit-card-bad">
+              <h3>Do not use Reflow for</h3>
+              <ul>
+                <li>Distributed workers across many machines</li>
+                <li>Sub-second workflow dispatch guarantees</li>
+                <li>Massive event fan-out and queue throughput</li>
+                <li>Teams that already need a full workflow platform</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer reveal">
+        <p>Reflow is a small, honest workflow engine for TypeScript.</p>
+        <p class="footer-meta">Built for <code>bun add</code>, not a platform migration.</p>
+        <div class="footer-links">
+          <a href="https://github.com/danfry1/reflow-ts" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://www.npmjs.com/package/reflow-ts" target="_blank" rel="noopener">npm</a>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>

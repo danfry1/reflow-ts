@@ -1,0 +1,83 @@
+{
+  "name": "reflow-ts",
+  "version": "0.1.0",
+  "description": "Durable workflow execution for TypeScript",
+  "author": "Daniel Fry",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danfry1/reflow-ts.git"
+  },
+  "homepage": "https://github.com/danfry1/reflow-ts#readme",
+  "bugs": "https://github.com/danfry1/reflow-ts/issues",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./sqlite-node": {
+      "types": "./dist/storage/sqlite-node.d.mts",
+      "import": "./dist/storage/sqlite-node.mjs"
+    },
+    "./sqlite-bun": {
+      "types": "./dist/storage/sqlite-bun.d.mts",
+      "import": "./dist/storage/sqlite-bun.mjs"
+    },
+    "./test": {
+      "types": "./dist/test/index.d.mts",
+      "import": "./dist/test/index.mjs"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "site:build": "node scripts/build-site.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run typecheck && bun run test && bun run build"
+  },
+  "keywords": [
+    "workflow",
+    "durable",
+    "sqlite",
+    "background-jobs",
+    "retry",
+    "typescript",
+    "pipeline"
+  ],
+  "peerDependencies": {
+    "better-sqlite3": ">=9.0.0"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@vitest/coverage-v8": "^4.0.18",
+    "better-sqlite3": "^12.6.2",
+    "tsdown": "^0.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18",
+    "zod": "^4.3.6"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.1.0"
+  }
+}

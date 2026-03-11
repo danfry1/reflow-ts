@@ -1,0 +1,351 @@
+.topbar-docs {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--surface-strong);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar-links .is-active {
+  color: var(--accent);
+}
+
+.docs-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 0;
+  max-width: var(--max-width);
+  margin: 0 auto;
+  min-height: calc(100vh - 60px);
+}
+
+.docs-sidebar {
+  position: sticky;
+  top: 60px;
+  height: calc(100vh - 60px);
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 2rem 1.5rem 2rem 1rem;
+  border-right: 1px solid var(--line);
+}
+
+.docs-sidebar::-webkit-scrollbar {
+  display: none;
+}
+
+.docs-nav h4 {
+  margin: 1.6rem 0 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.docs-nav h4:first-child {
+  margin-top: 0;
+}
+
+.docs-nav a {
+  display: block;
+  padding: 0.25rem 0;
+  font-size: 0.85rem;
+  color: var(--ink);
+  text-decoration: none;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+}
+
+.docs-nav a:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.docs-nav a.is-active {
+  opacity: 1;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.docs-content {
+  padding: 2.5rem 3rem 4rem;
+  max-width: 800px;
+}
+
+.docs-lead {
+  font-size: 1.1rem;
+  line-height: 1.7;
+  color: var(--muted);
+  margin-bottom: 2rem;
+}
+
+.docs-content h1 {
+  font-size: 2.2rem;
+  font-weight: 800;
+  margin: 0 0 0.75rem;
+  letter-spacing: -0.02em;
+}
+
+.docs-content h2,
+.docs-content .api-card {
+  scroll-margin-top: 80px;
+}
+
+.docs-content h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 3rem 0 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  letter-spacing: -0.01em;
+}
+
+.docs-content h2:first-of-type {
+  margin-top: 2rem;
+}
+
+.docs-content h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 2rem 0 0.5rem;
+}
+
+.docs-content p {
+  line-height: 1.7;
+  margin: 0.75rem 0;
+}
+
+.docs-content ul,
+.docs-content ol {
+  line-height: 1.7;
+  padding-left: 1.5rem;
+  margin: 0.75rem 0;
+}
+
+.docs-content li {
+  margin: 0.35rem 0;
+}
+
+.docs-content code {
+  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
+  font-size: 0.85em;
+  background: rgba(24, 49, 40, 0.06);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+
+.docs-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.docs-content strong {
+  font-weight: 600;
+}
+
+.docs-content a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.docs-content a:hover {
+  text-decoration: underline;
+}
+
+.docs-code {
+  margin: 1rem 0;
+  border-radius: var(--radius-md) !important;
+}
+
+.docs-table-wrap {
+  margin: 1rem 0;
+  overflow-x: auto;
+}
+
+.docs-content table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.docs-content th {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.6rem 1rem;
+  border-bottom: 2px solid var(--line);
+  white-space: nowrap;
+}
+
+.docs-content td {
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.docs-content td code {
+  font-size: 0.82em;
+  white-space: nowrap;
+}
+
+.api-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  margin: 1.5rem 0 2.5rem;
+}
+
+.api-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 1.5rem;
+}
+
+.api-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.api-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
+}
+
+.api-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.api-badge-async {
+  background: rgba(29, 122, 103, 0.12);
+  color: var(--teal);
+}
+
+.api-badge-sync {
+  background: rgba(208, 164, 54, 0.15);
+  color: #8a6d1b;
+}
+
+.api-card p {
+  margin: 0.4rem 0 0.75rem;
+  font-size: 0.92rem;
+}
+
+.api-card .docs-code {
+  margin: 0.75rem 0;
+}
+
+.api-params {
+  margin: 0.75rem 0 0;
+}
+
+.api-params-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 1rem 0 0.4rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.api-param {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 0 0.75rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid rgba(24, 49, 40, 0.06);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.api-param:last-child {
+  border-bottom: none;
+}
+
+.api-param-name {
+  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.api-param-type {
+  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
+  font-size: 0.78rem;
+  color: var(--teal);
+  grid-column: 1;
+}
+
+.api-param-desc {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--muted);
+  align-self: center;
+}
+
+.api-returns {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.api-returns code {
+  font-size: 0.82em;
+}
+
+.docs-footer {
+  border-radius: 0;
+  border: none;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 768px) {
+  .docs-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .docs-sidebar {
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding: 1rem;
+  }
+
+  .docs-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1rem;
+  }
+
+  .docs-nav h4 {
+    width: 100%;
+    margin: 0.75rem 0 0.25rem;
+  }
+
+  .docs-content {
+    padding: 1.5rem 1rem 3rem;
+  }
+
+  .docs-content h1 {
+    font-size: 1.6rem;
+  }
+}
