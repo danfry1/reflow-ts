@@ -206,8 +206,7 @@ main,
 .demo-panel,
 .architecture-card,
 .code-panel,
-.fit-card,
-.footer {
+.fit-card {
   backdrop-filter: blur(10px);
   background: var(--surface);
   border: 1px solid var(--line);
