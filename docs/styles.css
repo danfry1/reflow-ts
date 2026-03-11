@@ -1198,7 +1198,8 @@ h3 {
   }
 
   .section {
-    padding-top: 3rem;
+    padding-top: 1.5rem;
+    scroll-margin-top: -1rem;
   }
 
   .demo-section {
@@ -1207,8 +1208,9 @@ h3 {
   }
 
   .quickstart-section {
-    padding-top: 3rem;
+    padding-top: 1.5rem;
     padding-bottom: 3rem;
+    scroll-margin-top: -1rem;
   }
 
   .hero-copy {
