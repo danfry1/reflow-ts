@@ -343,9 +343,43 @@
 
   .docs-content {
     padding: 1.5rem 1rem 3rem;
+    overflow-x: hidden;
   }
 
   .docs-content h1 {
     font-size: 1.6rem;
+  }
+
+  .docs-content h2 {
+    font-size: 1.25rem;
+  }
+
+  .docs-code {
+    margin-left: -1rem;
+    margin-right: -1rem;
+    border-radius: 0 !important;
+  }
+
+  .api-card {
+    padding: 1rem;
+  }
+
+  .api-param {
+    grid-template-columns: 1fr;
+    gap: 0.15rem;
+  }
+
+  .api-param-desc {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .api-header {
+    flex-wrap: wrap;
+  }
+
+  .api-header h3 {
+    font-size: 0.92rem;
+    word-break: break-all;
   }
 }

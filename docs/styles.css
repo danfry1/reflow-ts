@@ -530,6 +530,7 @@ h3 {
   width: min(calc(100% - 2rem), var(--max-width));
   margin: 0 auto;
   padding: 6rem 0 4rem;
+  scroll-margin-top: 4rem;
 }
 
 .demo-section-copy {
@@ -830,6 +831,7 @@ h3 {
   z-index: 0;
   padding-top: 5rem;
   padding-bottom: 5rem;
+  scroll-margin-top: 4rem;
 }
 
 .quickstart-section::before {
@@ -1196,11 +1198,28 @@ h3 {
   }
 
   .section {
-    padding-top: 4.5rem;
+    padding-top: 3rem;
+  }
+
+  .demo-section {
+    padding: 3rem 0 2.5rem;
+  }
+
+  .quickstart-section {
+    padding-top: 3rem;
+    padding-bottom: 3rem;
   }
 
   .hero-copy {
     padding: 1.15rem;
+  }
+
+  h1 {
+    font-size: 1.75rem !important;
+  }
+
+  .lede {
+    font-size: 0.95rem;
   }
 
   .footer {
@@ -1224,6 +1243,38 @@ h3 {
     grid-template-columns: 2.4rem minmax(0, 1fr);
     gap: 0.8rem;
     padding: 0 0.8rem;
+  }
+
+  .code-block {
+    font-size: 0.82rem;
+  }
+
+  .qs-step-header {
+    padding: 1rem;
+  }
+
+  .qs-step-title {
+    font-size: 0.95rem;
+  }
+
+  .qs-step-desc {
+    font-size: 0.82rem;
+  }
+
+  .install-tabs {
+    flex-wrap: wrap;
+  }
+
+  .install-cmd code {
+    font-size: 0.8rem;
+  }
+
+  .fit-card {
+    padding: 1.2rem;
+  }
+
+  .stat-card {
+    padding: 1.2rem;
   }
 }
 
