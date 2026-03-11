@@ -531,7 +531,6 @@ h3 {
   width: min(calc(100% - 2rem), var(--max-width));
   margin: 0 auto;
   padding: 6rem 0 4rem;
-  scroll-margin-top: 4rem;
 }
 
 .demo-section-copy {
@@ -1203,7 +1202,8 @@ h3 {
   }
 
   .demo-section {
-    padding: 3rem 0 2.5rem;
+    padding: 1.5rem 0 2.5rem;
+    scroll-margin-top: -1rem;
   }
 
   .quickstart-section {
