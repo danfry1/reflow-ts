@@ -129,7 +129,9 @@ const workflow = createWorkflow({
 Each `.step()` receives:
 - `input` — the validated workflow input (same for every step)
 - `prev` — the return value of the previous step (`undefined` for the first step)
+- `steps` — typed access to all previously completed step results by name (e.g. `steps.charge.chargeId`)
 - `signal` — an `AbortSignal` that is aborted when the run is cancelled, its lease is lost, or the step times out
+- `complete(value?)` — finish the workflow early, skipping remaining steps (optionally persist a final value)
 
 The builder is **immutable** — each `.step()` returns a new workflow instance, so you can safely branch:
 
@@ -233,6 +235,46 @@ const workflow = createWorkflow({ name: 'transfer', input: schema })
     await notifyOps(`Transfer failed at ${stepName}: ${error.message}`)
   })
 ```
+
+### Steps Context
+
+Each step handler receives a typed `steps` object with access to all previously completed step results by name. No need to forward data through `prev` across intermediate steps:
+
+```typescript
+const workflow = createWorkflow({ name: 'pipeline', input: schema })
+  .step('fetch', async ({ input }) => {
+    return { url: input.url, body: await fetchPage(input.url) }
+  })
+  .step('parse', async ({ prev }) => {
+    return { title: extractTitle(prev.body), links: extractLinks(prev.body) }
+  })
+  .step('save', async ({ steps }) => {
+    // Access any previous step directly — no forwarding needed
+    await save(steps.fetch.url, steps.parse.title, steps.parse.links)
+  })
+```
+
+The `steps` object is a frozen, deep-cloned snapshot — mutations to `prev` in one step will never affect what later steps see through `steps`.
+
+### Early Completion
+
+A step can finish the workflow early by calling `complete()`, skipping all remaining steps:
+
+```typescript
+const workflow = createWorkflow({ name: 'conditional', input: schema })
+  .step('check', async ({ input, complete }) => {
+    if (!input.eligible) {
+      return complete({ reason: 'ineligible' })
+    }
+    return { eligible: true }
+  })
+  .step('process', async ({ prev }) => {
+    // Only runs if check didn't call complete()
+    return await doWork(prev)
+  })
+```
+
+The optional value passed to `complete()` is persisted as the step result and visible via `getRunStatus()`. Early completion is crash-safe — if the engine crashes after saving the step but before marking the run completed, recovery will detect the early-complete marker and finish the run without re-executing later steps.
 
 ### Run Status
 
@@ -407,7 +449,7 @@ interface StorageAdapter {
 }
 ```
 
-Persisted workflow input and step output must be JSON-compatible data: plain objects, arrays, strings, numbers, booleans, `null`, and `undefined`.
+Persisted workflow input and step output must be plain data: objects, arrays, strings, numbers, booleans, `null`, `undefined`, and `Date`.
 
 ## Testing
 
@@ -539,16 +581,26 @@ Adds a step to the workflow. Accepts either a handler function or a config objec
 **Handler function form:**
 
 ```typescript
-.step('name', async ({ input, prev, signal }) => {
+.step('name', async ({ input, prev, steps, signal, complete }) => {
   return { result: 'value' }
 })
 ```
+
+**Step context:**
+
+| Field | Type | Description |
+|---|---|---|
+| `input` | `TInput` | Validated workflow input (same for every step) |
+| `prev` | `TPrev` | Return value of the previous step (`undefined` for the first step) |
+| `steps` | `TStepsSoFar` | Typed record of all previously completed step results by name |
+| `signal` | `AbortSignal` | Aborted on cancellation, lease loss, or step timeout |
+| `complete` | `(value?) => never` | Finish the workflow early, skipping remaining steps |
 
 **Config object form:**
 
 | Parameter | Type | Description |
 |---|---|---|
-| `handler` | `(ctx) => Promise<T>` | Step handler. Receives `{ input, prev, signal }` |
+| `handler` | `(ctx) => Promise<T>` | Step handler. Receives `{ input, prev, steps, signal, complete }` |
 | `retry` | `RetryConfig` | Optional retry configuration (see below) |
 | `timeoutMs` | `number` | Optional timeout per attempt in milliseconds |
 
