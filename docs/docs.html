@@ -220,7 +220,9 @@ bun add arktype    # or any Standard Schema-compatible library</code></pre>
           <ul>
             <li><code>input</code> - the validated workflow input (same for every step)</li>
             <li><code>prev</code> - the return value of the previous step (<code>undefined</code> for the first step)</li>
+            <li><code>steps</code> - typed access to all previously completed step results by name (e.g. <code>steps.charge.chargeId</code>)</li>
             <li><code>signal</code> - an <code>AbortSignal</code> that is aborted when the run is cancelled, its lease is lost, or the step times out</li>
+            <li><code>complete(value?)</code> - finish the workflow early, skipping remaining steps (optionally persist a final value)</li>
           </ul>
 
           <p>The builder is <strong>immutable</strong> - each <code>.step()</code> returns a new workflow instance, so you can safely branch:</p>
@@ -363,6 +365,44 @@ engine.enqueue('nonexistent', {})                                 // Type error<
 })</code></pre>
 
           <p>Most workflows combine all three: try/catch for expected errors, retry for transient failures, and onFailure for rollback.</p>
+
+          <!-- Steps Context -->
+          <h2 id="steps-context">Steps Context</h2>
+
+          <p>Each step handler receives a typed <code>steps</code> object with access to all previously completed step results by name. No need to forward data through <code>prev</code> across intermediate steps:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const workflow = createWorkflow({ name: 'pipeline', input: schema })
+  .step('fetch', async ({ input }) => {
+    return { url: input.url, body: await fetchPage(input.url) }
+  })
+  .step('parse', async ({ prev }) => {
+    return { title: extractTitle(prev.body), links: extractLinks(prev.body) }
+  })
+  .step('save', async ({ steps }) => {
+    // Access any previous step directly
+    await save(steps.fetch.url, steps.parse.title, steps.parse.links)
+  })</code></pre>
+
+          <p>The <code>steps</code> object is a frozen, deep-cloned snapshot — mutations to <code>prev</code> in one step will never affect what later steps see through <code>steps</code>.</p>
+
+          <!-- Early Completion -->
+          <h2 id="early-completion">Early Completion</h2>
+
+          <p>A step can finish the workflow early by calling <code>complete()</code>, skipping all remaining steps:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const workflow = createWorkflow({ name: 'conditional', input: schema })
+  .step('check', async ({ input, complete }) => {
+    if (!input.eligible) {
+      return complete({ reason: 'ineligible' })
+    }
+    return { eligible: true }
+  })
+  .step('process', async ({ prev }) => {
+    // Only runs if check didn't call complete()
+    return await doWork(prev)
+  })</code></pre>
+
+          <p>The optional value passed to <code>complete()</code> is persisted as the step result and visible via <code>getRunStatus()</code>. Early completion is crash-safe — if the engine crashes after saving the step but before marking the run completed, recovery detects the marker and finishes the run without re-executing later steps.</p>
 
           <!-- Crash Recovery -->
           <h2 id="crash-recovery">Crash Recovery</h2>
@@ -533,7 +573,7 @@ const storage = new SQLiteStorage('./workflows.db')</code></pre>
   ): Promise&lt;boolean&gt;
 }</code></pre>
 
-          <p>Persisted workflow input and step output must be JSON-compatible data: plain objects, arrays, strings, numbers, booleans, <code>null</code>, and <code>undefined</code>.</p>
+          <p>Persisted workflow input and step output must be plain data: objects, arrays, strings, numbers, booleans, <code>null</code>, <code>undefined</code>, and <code>Date</code>.</p>
 
           <!-- Deployment -->
           <h2 id="deployment">Deployment</h2>
@@ -648,7 +688,7 @@ workflow.step('x', async ({ prev }) => {
               </div>
               <p>Adds a step to the workflow. Accepts either a handler function or a config object.</p>
               <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>// Simple handler
-.step('name', async ({ input, prev, signal }) => {
+.step('name', async ({ input, prev, steps, signal, complete }) => {
   return { result: 'value' }
 })
 
@@ -656,7 +696,7 @@ workflow.step('x', async ({ prev }) => {
 .step('name', {
   retry: { maxAttempts: 3, backoff: 'exponential' },
   timeoutMs: 5000,
-  handler: async ({ input, prev, signal }) => {
+  handler: async ({ input, prev, steps, signal, complete }) => {
     return { result: 'value' }
   },
 })</code></pre>
@@ -673,9 +713,19 @@ workflow.step('x', async ({ prev }) => {
                   <span class="api-param-desc">Return value of the previous step (<code>undefined</code> for first step)</span>
                 </div>
                 <div class="api-param">
+                  <span class="api-param-name">steps</span>
+                  <span class="api-param-type">TStepsSoFar</span>
+                  <span class="api-param-desc">Typed record of all previously completed step results by name</span>
+                </div>
+                <div class="api-param">
                   <span class="api-param-name">signal</span>
                   <span class="api-param-type">AbortSignal</span>
                   <span class="api-param-desc">Aborted on cancellation, lease loss, or timeout</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">complete</span>
+                  <span class="api-param-type">(value?) =&gt; never</span>
+                  <span class="api-param-desc">Finish the workflow early, skipping remaining steps</span>
                 </div>
               </div>
               <div class="api-params">
