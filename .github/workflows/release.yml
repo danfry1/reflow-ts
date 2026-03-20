@@ -47,7 +47,7 @@ jobs:
       - name: Check package exports
         run: |
           npm pack --pack-destination /tmp
-          npx --yes @arethetypeswrong/cli /tmp/reflow-ts-*.tgz --ignore-rules cjs-resolves-to-esm
+          npx --yes @arethetypeswrong/cli /tmp/reflow-ts-*.tgz --ignore-rules cjs-resolves-to-esm no-resolution
 
       - name: Publish to npm
         run: npm publish --provenance --access public
