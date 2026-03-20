@@ -2,6 +2,7 @@ import { SerializationError } from '../core/errors'
 import type { PersistedObject, PersistedValue } from '../core/types'
 
 const UNDEFINED_SENTINEL_KEY = '__reflowUndefined__'
+const DATE_SENTINEL_KEY = '__reflowDate__'
 
 export function serializePersistedValue(value: PersistedValue, context: string): string {
   return JSON.stringify(encodePersistedValue(value, context, '$'))
@@ -24,6 +25,9 @@ export function persistedValuesEqual(left: PersistedValue, right: PersistedValue
   if (left === null || right === null || left === undefined || right === undefined) return left === right
   if (typeof left !== typeof right) return false
   if (typeof left !== 'object') return left === right
+  if (left instanceof Date || right instanceof Date) {
+    return left instanceof Date && right instanceof Date && left.getTime() === right.getTime()
+  }
   if (Array.isArray(left) !== Array.isArray(right)) return false
   if (Array.isArray(left) && Array.isArray(right)) {
     if (left.length !== right.length) return false
@@ -57,6 +61,13 @@ function encodePersistedValue(value: PersistedValue, context: string, path: stri
     return value
   }
 
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) {
+      throw new SerializationError(`${context} must not contain an invalid Date at ${path}`, path)
+    }
+    return { [DATE_SENTINEL_KEY]: value.toISOString() }
+  }
+
   if (Array.isArray(value)) {
     return value.map((entry, index) => encodePersistedValue(entry, context, `${path}[${index}]`))
   }
@@ -65,6 +76,13 @@ function encodePersistedValue(value: PersistedValue, context: string, path: stri
     if (Object.prototype.hasOwnProperty.call(value, UNDEFINED_SENTINEL_KEY)) {
       throw new SerializationError(
         `${context} must not use the reserved key "${UNDEFINED_SENTINEL_KEY}" at ${path}`,
+        path,
+      )
+    }
+
+    if (Object.prototype.hasOwnProperty.call(value, DATE_SENTINEL_KEY)) {
+      throw new SerializationError(
+        `${context} must not use the reserved key "${DATE_SENTINEL_KEY}" at ${path}`,
         path,
       )
     }
@@ -103,6 +121,20 @@ function decodePersistedValue(value: unknown): PersistedValue {
       && value[UNDEFINED_SENTINEL_KEY] === true
     ) {
       return undefined
+    }
+
+    if (
+      Object.keys(value).length === 1
+      && typeof value[DATE_SENTINEL_KEY] === 'string'
+    ) {
+      const date = new Date(value[DATE_SENTINEL_KEY] as string)
+      if (!Number.isFinite(date.getTime())) {
+        throw new SerializationError(
+          `Stored value contains an invalid Date string: "${value[DATE_SENTINEL_KEY]}"`,
+          '$',
+        )
+      }
+      return date
     }
 
     const decoded: PersistedObject = {}

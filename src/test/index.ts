@@ -72,7 +72,7 @@ export function testEngine<const TWorkflows extends readonly AnyWorkflow[]>(conf
       const steps: Record<string, StepOutput> = {}
 
       for (const step of stepResults) {
-        steps[step.name] = step.status === 'completed'
+        steps[step.name] = step.status === 'completed' || step.status === 'completed-early'
           ? {
               status: 'completed',
               output: step.output,

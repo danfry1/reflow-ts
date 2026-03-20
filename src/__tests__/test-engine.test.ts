@@ -110,6 +110,23 @@ describe('testEngine', () => {
     })
   })
 
+  describe('early complete', () => {
+    it('handles workflows that complete early', async () => {
+      const wf = createWorkflow({ name: 'early', input: z.object({}) })
+        .step('check', async ({ complete }) => complete({ done: true }))
+        .step('never', async () => ({}))
+
+      const engine = testEngine({ workflows: [wf] })
+      const result = await engine.run('early', {})
+
+      expect(result.status).toBe('completed')
+      expect(result.steps.check).toEqual({
+        status: 'completed', output: { done: true }, error: null,
+      })
+      expect(result.steps.never).toBeUndefined()
+    })
+  })
+
   describe('multiple workflows', () => {
     it('runs the correct workflow when multiple are registered', async () => {
       const wfA = createWorkflow({

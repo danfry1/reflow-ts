@@ -1753,4 +1753,294 @@ describe('Engine', () => {
       expect(r).toBeNull()
     })
   })
+
+  describe('steps context', () => {
+    it('step handler receives steps accumulator with previous step results', async () => {
+      const captured: Record<string, unknown>[] = []
+      const wf = createWorkflow({ name: 'steps-ctx', input: z.object({ x: z.number() }) })
+        .step('a', async ({ steps }) => {
+          captured.push({ ...steps })
+          return { fromA: 1 }
+        })
+        .step('b', async ({ steps }) => {
+          captured.push({ ...steps })
+          return { fromB: 2 }
+        })
+        .step('c', async ({ steps }) => {
+          captured.push({ ...steps })
+          return { fromC: 3 }
+        })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      await engine.enqueue('steps-ctx', { x: 0 })
+      await engine.tick()
+
+      expect(captured[0]).toEqual({})
+      expect(captured[1]).toEqual({ a: { fromA: 1 } })
+      expect(captured[2]).toEqual({ a: { fromA: 1 }, b: { fromB: 2 } })
+    })
+
+    it('steps accumulator is populated from persisted results on crash recovery', async () => {
+      const captured: Record<string, unknown>[] = []
+      let failOnce = true
+      const wf = createWorkflow({ name: 'steps-resume', input: z.object({}) })
+        .step('a', async () => {
+          return { fromA: 'hello' }
+        })
+        .step('b', {
+          retry: { maxAttempts: 2, backoff: 'linear', initialDelayMs: 0 },
+          handler: async ({ steps }) => {
+            if (failOnce) {
+              failOnce = false
+              throw new Error('transient failure')
+            }
+            captured.push({ ...steps })
+            return { fromB: 'world' }
+          },
+        })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      await engine.enqueue('steps-resume', {})
+      await engine.tick()
+
+      expect(captured[0]).toEqual({ a: { fromA: 'hello' } })
+    })
+
+    it('freezing steps does not freeze prev', async () => {
+      let prevFrozen = false
+      const wf = createWorkflow({ name: 'steps-prev', input: z.object({}) })
+        .step('a', async () => ({ nested: { val: 1 } }))
+        .step('b', async ({ prev }) => {
+          prevFrozen = Object.isFrozen(prev)
+          return {}
+        })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      await engine.enqueue('steps-prev', {})
+      await engine.tick()
+
+      expect(prevFrozen).toBe(false)
+    })
+
+    it('steps object is deeply frozen', async () => {
+      let outerFrozen = false
+      let innerFrozen = false
+      const wf = createWorkflow({ name: 'steps-frozen', input: z.object({}) })
+        .step('a', async () => ({ nested: { val: 1 } }))
+        .step('b', async ({ steps }) => {
+          outerFrozen = Object.isFrozen(steps)
+          innerFrozen = Object.isFrozen((steps as Record<string, Record<string, unknown>>).a.nested)
+          return {}
+        })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      await engine.enqueue('steps-frozen', {})
+      await engine.tick()
+
+      expect(outerFrozen).toBe(true)
+      expect(innerFrozen).toBe(true)
+    })
+  })
+
+  describe('early complete', () => {
+    it('complete() stops workflow and marks run as completed', async () => {
+      const steps: string[] = []
+      const wf = createWorkflow({ name: 'early', input: z.object({}) })
+        .step('check', async ({ complete }) => {
+          steps.push('check')
+          return complete()
+        })
+        .step('never-runs', async () => {
+          steps.push('never-runs')
+          return {}
+        })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('early', {})
+      await engine.tick()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+      expect(steps).toEqual(['check'])
+    })
+
+    it('complete(value) persists the value as step result', async () => {
+      const wf = createWorkflow({ name: 'early-val', input: z.object({}) })
+        .step('check', async ({ complete }) => {
+          return complete({ reason: 'ineligible' })
+        })
+        .step('never-runs', async () => ({}))
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('early-val', {})
+      await engine.tick()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+      expect(info.steps).toHaveLength(1)
+      expect(info.steps[0].output).toEqual({ reason: 'ineligible' })
+    })
+
+    it('complete() does not trigger onFailure', async () => {
+      const failureCalled = vi.fn()
+      const wf = createWorkflow({ name: 'early-nofail', input: z.object({}) })
+        .step('check', async ({ complete }) => complete())
+        .step('b', async () => ({}))
+        .onFailure(async () => { failureCalled() })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('early-nofail', {})
+      await engine.tick()
+
+      expect(failureCalled).not.toHaveBeenCalled()
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+    })
+
+    it('complete() fires onRunComplete hook', async () => {
+      const hookCalled = vi.fn()
+      const wf = createWorkflow({ name: 'early-hook', input: z.object({}) })
+        .step('check', async ({ complete }) => complete())
+        .step('b', async () => ({}))
+
+      const engine = createEngine({
+        storage, workflows: [wf],
+        hooks: { onRunComplete: hookCalled },
+      })
+      const run = await engine.enqueue('early-hook', {})
+      await engine.tick()
+
+      expect(hookCalled).toHaveBeenCalledWith({ runId: run.id, workflow: 'early-hook' })
+    })
+
+    it('complete() fires onStepComplete hook', async () => {
+      const stepHook = vi.fn()
+      const wf = createWorkflow({ name: 'early-step-hook', input: z.object({}) })
+        .step('check', async ({ complete }) => complete({ done: true }))
+        .step('b', async () => ({}))
+
+      const engine = createEngine({
+        storage, workflows: [wf],
+        hooks: { onStepComplete: stepHook },
+      })
+      const run = await engine.enqueue('early-step-hook', {})
+      await engine.tick()
+
+      expect(stepHook).toHaveBeenCalledWith({
+        runId: run.id,
+        stepName: 'check',
+        output: { done: true },
+        attempts: 1,
+      })
+    })
+
+    it('steps context is populated when complete() is called from a non-first step', async () => {
+      let capturedSteps: Record<string, unknown> | undefined
+      const wf = createWorkflow({ name: 'early-steps', input: z.object({}) })
+        .step('a', async () => ({ fromA: 42 }))
+        .step('b', async ({ steps, complete }) => {
+          capturedSteps = { ...steps }
+          return complete({ fromB: 99 })
+        })
+        .step('never', async () => ({}))
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('early-steps', {})
+      await engine.tick()
+
+      expect(capturedSteps).toEqual({ a: { fromA: 42 } })
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+      expect(info.steps).toHaveLength(2)
+    })
+
+    it('complete() on the last step behaves like normal completion', async () => {
+      const wf = createWorkflow({ name: 'early-last', input: z.object({}) })
+        .step('a', async () => ({ fromA: 1 }))
+        .step('last', async ({ complete }) => complete({ final: true }))
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('early-last', {})
+      await engine.tick()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+      expect(info.steps).toHaveLength(2)
+      expect(info.steps[1].output).toEqual({ final: true })
+    })
+
+    it('complete() without value persists step with undefined output', async () => {
+      const wf = createWorkflow({ name: 'early-noval', input: z.object({}) })
+        .step('check', async ({ complete }) => complete())
+        .step('b', async () => ({}))
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('early-noval', {})
+      await engine.tick()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.steps).toHaveLength(1)
+      expect(info.steps[0].status).toBe('completed-early')
+    })
+
+    it('completed-early step is detected on crash recovery', async () => {
+      const stepHook = vi.fn()
+      const runHook = vi.fn()
+      const neverRuns = vi.fn()
+      const wf = createWorkflow({ name: 'early-recover', input: z.object({}) })
+        .step('check', async ({ complete }) => complete({ done: true }))
+        .step('after', async () => {
+          neverRuns()
+          return {}
+        })
+
+      // First engine: enqueue the run and simulate a partial execution
+      // where the early-complete step was saved but the run was not marked completed
+      const engine1 = createEngine({ storage, workflows: [wf] })
+      const run = await engine1.enqueue('early-recover', {})
+
+      // Manually claim and save the early-complete step result (simulating crash after step save)
+      const claimed = expectPresent(await storage.claimNextRun(['early-recover']))
+      await storage.saveStepResult({
+        id: 'step-early',
+        runId: run.id,
+        name: 'check',
+        status: 'completed-early',
+        output: { done: true },
+        error: null,
+        attempts: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }, claimed.leaseId)
+
+      // Simulate lease expiry so a second engine can reclaim
+      // Force the run back to reclaimable by updating its timestamp
+      await storage.heartbeatRun(run.id, claimed.leaseId)
+
+      // Second engine: reclaims the stale run and should detect completed-early
+      const engine2 = createEngine({
+        storage,
+        workflows: [wf],
+        hooks: { onStepComplete: stepHook, onRunComplete: runHook },
+        runLeaseDurationMs: 10,
+        heartbeatIntervalMs: 5,
+      })
+
+      // Small delay to ensure the lease is stale
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      await engine2.tick()
+
+      // The run should be completed without executing the 'after' step
+      const info = expectPresent(await engine2.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+      expect(neverRuns).not.toHaveBeenCalled()
+      expect(stepHook).toHaveBeenCalledWith({
+        runId: run.id,
+        stepName: 'check',
+        output: { done: true },
+        attempts: 1,
+      })
+      expect(runHook).toHaveBeenCalledWith({ runId: run.id, workflow: 'early-recover' })
+    })
+  })
 })

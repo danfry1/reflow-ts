@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0 — 2026-03-20
+
+### Added
+
+- **Date support** — `Date` is now a valid `PersistedValue` type, automatically serialized and deserialized through storage
+- **`complete(value?)`** — step handlers can finish a workflow early, skipping remaining steps and optionally persisting a final value as the step result
+- **Typed `steps` context** — each step handler receives a `steps` object with typed access to all previously completed step results by name, removing the need to forward data through `prev` across intermediate steps
+
+### Changed
+
+- `PersistedPrimitive` now includes `Date`
+- `StepContext` has two new fields: `complete` and `steps`
+- `StepStatus` has a new value: `completed-early` (used internally for crash-safe early completion)
+- `executeStep` internals refactored to return a discriminated union instead of using exceptions for control flow
+
 ## 0.1.0 — 2026-03-11
 
 Initial release.

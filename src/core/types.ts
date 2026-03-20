@@ -2,10 +2,10 @@
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 /** Lifecycle state of a single step within a run. */
-export type StepStatus = 'pending' | 'running' | 'completed' | 'failed'
+export type StepStatus = 'pending' | 'running' | 'completed' | 'completed-early' | 'failed'
 
 /** Primitive values that can be persisted to storage. */
-export type PersistedPrimitive = string | number | boolean | null | undefined
+export type PersistedPrimitive = string | number | boolean | null | undefined | Date
 
 /** Object whose values are all persistable. */
 export interface PersistedObject {
@@ -14,7 +14,7 @@ export interface PersistedObject {
 
 /**
  * Any value that can be stored as step input/output.
- * Must be JSON-compatible: plain objects, arrays, strings, numbers, booleans, null, or undefined.
+ * Supports plain objects, arrays, strings, numbers, booleans, null, undefined, and Date.
  */
 export type PersistedValue = PersistedPrimitive | PersistedValue[] | PersistedObject
 

@@ -42,9 +42,24 @@ describe('codec', () => {
       expect(() => serializePersistedValue(-Infinity, 'Input')).toThrow(/NaN or Infinity/)
     })
 
-    it('rejects the reserved sentinel key', () => {
+    it('rejects the reserved undefined sentinel key', () => {
       expect(() =>
         serializePersistedValue({ __reflowUndefined__: true }, 'Input'),
+      ).toThrow(/reserved key/)
+    })
+
+    it('rejects invalid Date values on serialization', () => {
+      expect(() => serializePersistedValue(new Date('not-a-date'), 'Input')).toThrow(/invalid Date/)
+    })
+
+    it('rejects invalid Date strings on deserialization', () => {
+      const corrupted = JSON.stringify({ __reflowDate__: 'not-a-date' })
+      expect(() => deserializePersistedValue(corrupted)).toThrow(/invalid Date/)
+    })
+
+    it('rejects the reserved Date sentinel key', () => {
+      expect(() =>
+        serializePersistedValue({ __reflowDate__: '2025-01-01' }, 'Input'),
       ).toThrow(/reserved key/)
     })
 
@@ -54,7 +69,28 @@ describe('codec', () => {
     })
 
     it('rejects non-plain objects (class instances)', () => {
-      expect(() => serializePersistedValue(new Date() as any, 'Input')).toThrow(/JSON-compatible/)
+      expect(() => serializePersistedValue(new Map() as any, 'Input')).toThrow(/JSON-compatible/)
+    })
+
+    it('roundtrips Date objects', () => {
+      const date = new Date('2025-06-15T12:00:00.000Z')
+      const result = deserializePersistedValue(serializePersistedValue(date, 'test'))
+      expect(result).toBeInstanceOf(Date)
+      expect((result as Date).toISOString()).toBe('2025-06-15T12:00:00.000Z')
+    })
+
+    it('roundtrips Date inside nested objects', () => {
+      const value = { createdAt: new Date('2025-01-01'), tags: ['a'] }
+      const result = deserializePersistedValue(serializePersistedValue(value, 'test'))
+      expect((result as Record<string, unknown>).createdAt).toBeInstanceOf(Date)
+      expect((result as Record<string, unknown>).tags).toEqual(['a'])
+    })
+
+    it('roundtrips Date inside arrays', () => {
+      const value = [new Date('2025-01-01'), new Date('2025-06-01')]
+      const result = deserializePersistedValue(serializePersistedValue(value, 'test'))
+      expect((result as unknown[])[0]).toBeInstanceOf(Date)
+      expect((result as unknown[])[1]).toBeInstanceOf(Date)
     })
 
     it('roundtrips empty string', () => {
