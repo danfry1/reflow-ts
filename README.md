@@ -1,6 +1,6 @@
 # Reflow
 
-Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery via stale-run reclamation — powered by SQLite, no infrastructure required.
+Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery via stale-run reclamation — powered by SQLite, no external services required.
 
 ```typescript
 import { createWorkflow, createEngine } from 'reflow-ts'

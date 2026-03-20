@@ -11,12 +11,12 @@
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Reflow" />
     <meta property="og:title" content="Reflow - Durable Workflow Execution for TypeScript" />
-    <meta property="og:description" content="SQLite-backed workflows with typed steps, retries, and crash recovery. One package. Zero infrastructure." />
+    <meta property="og:description" content="SQLite-backed workflows with typed steps, retries, and crash recovery. One package. No services to deploy." />
     <meta property="og:url" content="https://danfry1.github.io/reflow-ts/" />
     <meta property="og:image" content="https://danfry1.github.io/reflow-ts/og-card.png" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Reflow - Durable Workflow Execution for TypeScript" />
-    <meta name="twitter:description" content="SQLite-backed workflows with typed steps, retries, and crash recovery. One package. Zero infrastructure." />
+    <meta name="twitter:description" content="SQLite-backed workflows with typed steps, retries, and crash recovery. One package. No services to deploy." />
     <meta name="twitter:image" content="https://danfry1.github.io/reflow-ts/og-card.png" />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./styles.css" />
@@ -49,7 +49,7 @@
             <p class="lede">
               Reflow is a durable workflow engine for TypeScript. It checkpoints every step to SQLite
               and resumes from the last completed step after a crash - no repeated LLM calls,
-              no wasted tokens, no duplicate side effects. One package. Zero infrastructure.
+              no wasted tokens, no duplicate side effects. One package. No services to deploy.
             </p>
 
             <div class="install-picker">
@@ -135,7 +135,7 @@ await engine.enqueue('process-content', {
             <p>Durable state in a single file. Easy to ship in CLIs, small SaaS apps, and agent tools.</p>
           </article>
           <article class="stat-card">
-            <span class="stat-value">0 infra</span>
+            <span class="stat-value">No services</span>
             <p>No brokers, no control plane, no workflow cluster. Start with a package and a database file.</p>
           </article>
         </section>
@@ -231,7 +231,7 @@ await engine.enqueue('process-content', {
         <section class="section quickstart-section reveal" id="quickstart">
           <div class="section-copy">
             <p class="eyebrow">Quickstart</p>
-            <h2>Three steps. One file. Zero infrastructure.</h2>
+            <h2>Three steps. One file. No services to deploy.</h2>
             <button class="button button-secondary button-compact qs-copy-btn" data-copy-block="qs-full-code">
               Copy Full Example
             </button>
