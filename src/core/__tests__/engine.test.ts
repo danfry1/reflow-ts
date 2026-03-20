@@ -1982,5 +1982,65 @@ describe('Engine', () => {
       expect(info.steps).toHaveLength(1)
       expect(info.steps[0].status).toBe('completed-early')
     })
+
+    it('completed-early step is detected on crash recovery', async () => {
+      const stepHook = vi.fn()
+      const runHook = vi.fn()
+      const neverRuns = vi.fn()
+      const wf = createWorkflow({ name: 'early-recover', input: z.object({}) })
+        .step('check', async ({ complete }) => complete({ done: true }))
+        .step('after', async () => {
+          neverRuns()
+          return {}
+        })
+
+      // First engine: enqueue the run and simulate a partial execution
+      // where the early-complete step was saved but the run was not marked completed
+      const engine1 = createEngine({ storage, workflows: [wf] })
+      const run = await engine1.enqueue('early-recover', {})
+
+      // Manually claim and save the early-complete step result (simulating crash after step save)
+      const claimed = expectPresent(await storage.claimNextRun(['early-recover']))
+      await storage.saveStepResult({
+        id: 'step-early',
+        runId: run.id,
+        name: 'check',
+        status: 'completed-early',
+        output: { done: true },
+        error: null,
+        attempts: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }, claimed.leaseId)
+
+      // Simulate lease expiry so a second engine can reclaim
+      // Force the run back to reclaimable by updating its timestamp
+      await storage.heartbeatRun(run.id, claimed.leaseId)
+
+      // Second engine: reclaims the stale run and should detect completed-early
+      const engine2 = createEngine({
+        storage,
+        workflows: [wf],
+        hooks: { onStepComplete: stepHook, onRunComplete: runHook },
+        runLeaseDurationMs: 10,
+        heartbeatIntervalMs: 5,
+      })
+
+      // Small delay to ensure the lease is stale
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      await engine2.tick()
+
+      // The run should be completed without executing the 'after' step
+      const info = expectPresent(await engine2.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+      expect(neverRuns).not.toHaveBeenCalled()
+      expect(stepHook).toHaveBeenCalledWith({
+        runId: run.id,
+        stepName: 'check',
+        output: { done: true },
+        attempts: 1,
+      })
+      expect(runHook).toHaveBeenCalledWith({ runId: run.id, workflow: 'early-recover' })
+    })
   })
 })
