@@ -264,7 +264,7 @@ export class SQLiteStorage implements StorageAdapter {
       runId: row.run_id,
       name: row.name,
       status: row.status as StepResult['status'],
-      output: deserializePersistedValue(row.output),
+      output: row.output === null ? null : deserializePersistedValue(row.output),
       error: row.error,
       attempts: row.attempts,
       createdAt: row.created_at,
