@@ -1,3 +1,5 @@
+import type { PersistedValue } from './types'
+
 /**
  * Typed error hierarchy for Reflow.
  *
@@ -138,6 +140,14 @@ export class RunControlError extends ReflowError {
   constructor(message: string) {
     super(message)
     this.name = 'RunControlError'
+  }
+}
+
+/** Thrown when a step calls `complete()` to finish the workflow early. */
+export class EarlyCompleteError extends RunControlError {
+  constructor(public readonly value?: PersistedValue) {
+    super('Workflow completed early')
+    this.name = 'EarlyCompleteError'
   }
 }
 

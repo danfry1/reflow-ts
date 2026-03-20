@@ -3,6 +3,7 @@ import { persistedValuesEqual } from '../storage/codec'
 import {
   ConfigError,
   DuplicateWorkflowError,
+  EarlyCompleteError,
   IdempotencyConflictError,
   LeaseExpiredError,
   RunCancelledError,
@@ -193,6 +194,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       const existingSteps = await storage.getStepResults(run.id)
       const completedMap = new Map(existingSteps.map((step) => [step.name, step]))
       let prev: PersistedValue = undefined
+      const stepsAccumulator: Record<string, PersistedValue> = {}
 
       for (const stepDef of wf.steps) {
         if (activeRun.runAbortController.signal.aborted) {
@@ -203,15 +205,109 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         }
 
         const existing = completedMap.get(stepDef.name)
+        if (existing?.status === 'completed-early') {
+          // This step called complete() in a previous execution — finish the run
+          try {
+            hooks?.onStepComplete?.({
+              runId: run.id,
+              stepName: stepDef.name,
+              output: existing.output,
+              attempts: existing.attempts,
+            })
+          } catch { /* hooks must not affect engine state */ }
+
+          const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
+          if (!completed) {
+            throw new LeaseExpiredError(run.id)
+          }
+
+          try {
+            hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow })
+          } catch { /* hooks must not affect engine state */ }
+
+          return
+        }
         if (existing?.status === 'completed') {
           prev = existing.output
+          stepsAccumulator[stepDef.name] = structuredClone(existing.output)
           continue
         }
 
+        const frozenSteps = snapshotSteps(stepsAccumulator)
+
         try {
-          prev = await executeStep(run, activeRun, stepDef, prev)
+          const outcome = await executeStep(run, activeRun, stepDef, prev, frozenSteps)
+
+          if (outcome.kind === 'failed') {
+            // Persist the failed step result
+            const now = Date.now()
+            const saved = await storage.saveStepResult({
+              id: randomUUID(),
+              runId: run.id,
+              name: stepDef.name,
+              status: 'failed',
+              output: null,
+              error: outcome.error.message,
+              attempts: outcome.attempts,
+              createdAt: now,
+              updatedAt: now,
+            }, run.leaseId)
+
+            if (!saved) {
+              throw new LeaseExpiredError(run.id)
+            }
+
+            throw outcome.error
+          }
+
+          // Unified success path for both normal and early completion
+          const now = Date.now()
+          const saved = await storage.saveStepResult({
+            id: randomUUID(),
+            runId: run.id,
+            name: stepDef.name,
+            status: outcome.kind === 'early-complete' ? 'completed-early' : 'completed',
+            output: outcome.output,
+            error: null,
+            attempts: outcome.attempts,
+            createdAt: now,
+            updatedAt: now,
+          }, run.leaseId)
+
+          if (!saved) {
+            throw new LeaseExpiredError(run.id)
+          }
+
+          try {
+            hooks?.onStepComplete?.({
+              runId: run.id,
+              stepName: stepDef.name,
+              output: outcome.output,
+              attempts: outcome.attempts,
+            })
+          } catch { /* hooks must not affect engine state */ }
+
+          if (outcome.kind === 'early-complete') {
+            const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
+            if (!completed) {
+              throw new LeaseExpiredError(run.id)
+            }
+
+            try {
+              hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow })
+            } catch { /* hooks must not affect engine state */ }
+
+            return
+          }
+
+          prev = outcome.output
+          stepsAccumulator[stepDef.name] = structuredClone(prev)
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error))
+
+          if (err instanceof EarlyCompleteError) {
+            throw new Error(`EarlyCompleteError escaped executeStep for step "${stepDef.name}"`)
+          }
 
           if (err instanceof RunControlError) {
             return
@@ -265,12 +361,18 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }
   }
 
+  type StepOutcome =
+    | { kind: 'completed'; output: PersistedValue; attempts: number }
+    | { kind: 'early-complete'; output: PersistedValue; attempts: number }
+    | { kind: 'failed'; error: Error; attempts: number }
+
   async function executeStep(
     run: ClaimedRun,
     activeRun: ActiveRunState,
     stepDef: StepDefinition,
     prev: PersistedValue,
-  ): Promise<PersistedValue> {
+    steps: Record<string, PersistedValue>,
+  ): Promise<StepOutcome> {
     const maxAttempts = stepDef.retry?.maxAttempts ?? 1
     if (maxAttempts < 1) {
       throw new ConfigError(`Step "${stepDef.name}" retry maxAttempts must be at least 1`)
@@ -285,40 +387,22 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       const attemptSignal = createAttemptSignal(activeRun.runAbortController.signal, timeoutMs)
 
       try {
+        const complete = (value?: PersistedValue): never => {
+          throw new EarlyCompleteError(value)
+        }
         const rawOutput = await runWithSignal(
-          () => stepDef.handler({ input: run.input, prev, signal: attemptSignal.signal }),
+          () => stepDef.handler({ input: run.input, prev, signal: attemptSignal.signal, complete, steps }),
           attemptSignal.signal,
         )
         const output: PersistedValue = rawOutput === undefined ? undefined : rawOutput
-        const now = Date.now()
-        const stepResult: StepResult = {
-          id: randomUUID(),
-          runId: run.id,
-          name: stepDef.name,
-          status: 'completed',
-          output,
-          error: null,
-          attempts: attempt,
-          createdAt: now,
-          updatedAt: now,
-        }
 
-        const saved = await storage.saveStepResult(stepResult, run.leaseId)
-        if (!saved) {
-          throw new LeaseExpiredError(run.id)
-        }
-
-        try {
-          hooks?.onStepComplete?.({
-            runId: run.id,
-            stepName: stepDef.name,
-            output,
-            attempts: attempt,
-          })
-        } catch { /* hooks must not affect engine state */ }
-
-        return output
+        return { kind: 'completed', output, attempts: attempt }
       } catch (error) {
+        if (error instanceof EarlyCompleteError) {
+          const earlyOutput: PersistedValue = error.value === undefined ? undefined : error.value
+          return { kind: 'early-complete', output: earlyOutput, attempts: attempt }
+        }
+
         const err = error instanceof Error ? error : new Error(String(error))
 
         if (err instanceof RunControlError) {
@@ -345,24 +429,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       throw lastError
     }
 
-    const now = Date.now()
-    const saved = await storage.saveStepResult({
-      id: randomUUID(),
-      runId: run.id,
-      name: stepDef.name,
-      status: 'failed',
-      output: null,
-      error: lastError?.message ?? 'Unknown error',
-      attempts: maxAttempts,
-      createdAt: now,
-      updatedAt: now,
-    }, run.leaseId)
-
-    if (!saved) {
-      throw new LeaseExpiredError(run.id)
-    }
-
-    throw lastError!
+    return { kind: 'failed', error: lastError ?? new Error('Unknown error'), attempts: maxAttempts }
   }
 
   async function cancel(runId: string): Promise<boolean> {
@@ -691,3 +758,17 @@ function toError(error: unknown): Error {
 }
 
 function noop() {}
+
+function snapshotSteps(accumulator: Record<string, PersistedValue>): Readonly<Record<string, PersistedValue>> {
+  return deepFreeze(structuredClone(accumulator))
+}
+
+function deepFreeze<T extends Record<string, unknown>>(obj: T): T {
+  Object.freeze(obj)
+  for (const value of Object.values(obj)) {
+    if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+      deepFreeze(value as Record<string, unknown>)
+    }
+  }
+  return obj
+}

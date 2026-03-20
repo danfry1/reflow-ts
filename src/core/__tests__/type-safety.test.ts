@@ -127,11 +127,30 @@ describe('type safety', () => {
     >()
   })
 
-  it('StepContext exposes signal alongside input and prev', () => {
+  it('StepContext exposes signal, complete, and steps alongside input and prev', () => {
     expectTypeOf<StepContext<{ value: string }, { ok: boolean }>>().toEqualTypeOf<{
       input: { value: string }
       prev: { ok: boolean }
       signal: AbortSignal
+      complete: (value?: import('../../core/types').PersistedValue) => never
+      steps: Record<string, import('../../core/types').PersistedValue>
     }>()
+  })
+
+  it('steps context is typed with previous step outputs only', () => {
+    createWorkflow({ name: 'steps-typed', input: z.object({ x: z.number() }) })
+      .step('a', async ({ steps }) => {
+        expectTypeOf(steps).toEqualTypeOf<{}>()
+        return { fromA: 1 }
+      })
+      .step('b', async ({ steps }) => {
+        expectTypeOf(steps.a).toEqualTypeOf<{ fromA: number }>()
+        return { fromB: 2 }
+      })
+      .step('c', async ({ steps }) => {
+        expectTypeOf(steps.a).toEqualTypeOf<{ fromA: number }>()
+        expectTypeOf(steps.b).toEqualTypeOf<{ fromB: number }>()
+        return {}
+      })
   })
 })

@@ -15,8 +15,8 @@ describe('core types', () => {
   })
 
   it('StepStatus accepts valid values', () => {
-    const statuses: StepStatus[] = ['pending', 'running', 'completed', 'failed']
-    expect(statuses).toHaveLength(4)
+    const statuses: StepStatus[] = ['pending', 'running', 'completed', 'completed-early', 'failed']
+    expect(statuses).toHaveLength(5)
   })
 
   it('WorkflowRun has required fields', () => {

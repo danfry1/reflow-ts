@@ -3,19 +3,27 @@ import { DuplicateStepError, ValidationError } from './errors'
 import type { PersistedValue, RetryConfig } from './types'
 
 /** Context passed to every step handler. */
-export interface StepContext<TInput extends PersistedValue, TPrev extends PersistedValue> {
+export interface StepContext<
+  TInput extends PersistedValue,
+  TPrev extends PersistedValue,
+  TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
+> {
   /** The validated workflow input (same for every step in the run). */
   input: TInput
   /** The return value of the previous step (`undefined` for the first step). */
   prev: TPrev
   /** Aborted on cancellation, lease loss, or step timeout. */
   signal: AbortSignal
+  /** Complete the workflow early, skipping remaining steps. Optionally persist a value as the final result. */
+  complete: (value?: PersistedValue) => never
+  /** Results of all previously completed steps, keyed by step name. */
+  steps: TStepsSoFar
 }
 
 /** Internal representation of a step used by the engine. */
 export interface StepDefinition {
   name: string
-  handler: (ctx: StepContext<PersistedValue, PersistedValue>) => Promise<PersistedValue | void>
+  handler: (ctx: StepContext<PersistedValue, PersistedValue, Record<string, PersistedValue>>) => Promise<PersistedValue | void>
   retry?: RetryConfig
   timeoutMs?: number
 }
@@ -25,11 +33,12 @@ export interface StepConfig<
   TInput extends PersistedValue,
   TPrev extends PersistedValue,
   TOutput extends PersistedValue | void,
+  TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
 > {
   retry?: RetryConfig
   /** Timeout per attempt in milliseconds. Takes precedence over `retry.timeoutMs`. */
   timeoutMs?: number
-  handler: (ctx: StepContext<TInput, TPrev>) => Promise<TOutput>
+  handler: (ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>
 }
 
 /** Context passed to the `onFailure` handler when a workflow run fails. */
@@ -63,12 +72,12 @@ export interface Workflow<
 
   step<TStepName extends string, TOutput extends PersistedValue | void>(
     name: TStepName,
-    handler: (ctx: StepContext<TInput, TPrev>) => Promise<TOutput>,
+    handler: (ctx: StepContext<TInput, TPrev, TSteps>) => Promise<TOutput>,
   ): Workflow<TName, TInput, NormalizeOutput<TOutput>, TSteps & Record<TStepName, NormalizeOutput<TOutput>>>
 
   step<TStepName extends string, TOutput extends PersistedValue | void>(
     name: TStepName,
-    config: StepConfig<TInput, TPrev, TOutput>,
+    config: StepConfig<TInput, TPrev, TOutput, TSteps>,
   ): Workflow<TName, TInput, NormalizeOutput<TOutput>, TSteps & Record<TStepName, NormalizeOutput<TOutput>>>
 
   onFailure(
@@ -147,8 +156,8 @@ function buildWorkflow<
     step<TStepName extends string, TOutput extends PersistedValue | void>(
       stepName: TStepName,
       handlerOrConfig:
-        | ((ctx: StepContext<TInput, TPrev>) => Promise<TOutput>)
-        | StepConfig<TInput, TPrev, TOutput>,
+        | ((ctx: StepContext<TInput, TPrev, TSteps>) => Promise<TOutput>)
+        | StepConfig<TInput, TPrev, TOutput, TSteps>,
     ): Workflow<
       TName,
       TInput,
