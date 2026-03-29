@@ -23,6 +23,8 @@ import type { AnyWorkflow, StepDefinition, WorkflowInputMap } from './workflow'
 
 /** Lifecycle hooks fired during workflow execution. */
 export interface EngineHooks {
+  onRunStart?: (event: { runId: string; workflow: string }) => void
+  onStepStart?: (event: { runId: string; stepName: string }) => void
   onStepComplete?: (event: { runId: string; stepName: string; output: PersistedValue; attempts: number }) => void
   onRunComplete?: (event: { runId: string; workflow: string }) => void
   onRunFailed?: (event: { runId: string; workflow: string; stepName: string; error: Error }) => void
@@ -191,6 +193,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     const activeRun = registerActiveRun(run)
 
     try {
+      try {
+        hooks?.onRunStart?.({ runId: run.id, workflow: run.workflow })
+      } catch { /* hooks must not affect engine state */ }
+
       const existingSteps = await storage.getStepResults(run.id)
       const completedMap = new Map(existingSteps.map((step) => [step.name, step]))
       let prev: PersistedValue = undefined
@@ -236,6 +242,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         const frozenSteps = snapshotSteps(stepsAccumulator)
 
         try {
+          try {
+            hooks?.onStepStart?.({ runId: run.id, stepName: stepDef.name })
+          } catch { /* hooks must not affect engine state */ }
+
           const outcome = await executeStep(run, activeRun, stepDef, prev, frozenSteps)
 
           if (outcome.kind === 'failed') {
