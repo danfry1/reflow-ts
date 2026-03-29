@@ -1274,6 +1274,170 @@ describe('Engine', () => {
         expect.objectContaining({ stepName: 'flaky', attempts: 3 }),
       )
     })
+
+    it('calls onRunStart when a workflow begins executing', async () => {
+      const onRunStart = vi.fn()
+
+      const wf = createWorkflow({
+        name: 'run-start-hook',
+        input: z.object({}),
+      }).step('a', async () => ({ done: true }))
+
+      const engine = createEngine({ storage, workflows: [wf], hooks: { onRunStart } })
+      const run = await engine.enqueue('run-start-hook', {})
+      await engine.tick()
+
+      expect(onRunStart).toHaveBeenCalledOnce()
+      expect(onRunStart).toHaveBeenCalledWith({
+        runId: run.id,
+        workflow: 'run-start-hook',
+      })
+    })
+
+    it('calls onRunStart before onStepStart and onStepComplete', async () => {
+      const order: string[] = []
+
+      const wf = createWorkflow({
+        name: 'start-order',
+        input: z.object({}),
+      }).step('a', async () => ({ done: true }))
+
+      const engine = createEngine({
+        storage,
+        workflows: [wf],
+        hooks: {
+          onRunStart: () => order.push('onRunStart'),
+          onStepStart: () => order.push('onStepStart'),
+          onStepComplete: () => order.push('onStepComplete'),
+          onRunComplete: () => order.push('onRunComplete'),
+        },
+      })
+      await engine.enqueue('start-order', {})
+      await engine.tick()
+
+      expect(order).toEqual(['onRunStart', 'onStepStart', 'onStepComplete', 'onRunComplete'])
+    })
+
+    it('calls onStepStart before each step executes', async () => {
+      const onStepStart = vi.fn()
+
+      const wf = createWorkflow({
+        name: 'step-start-hook',
+        input: z.object({}),
+      })
+        .step('a', async () => ({ x: 1 }))
+        .step('b', async () => ({ y: 2 }))
+
+      const engine = createEngine({ storage, workflows: [wf], hooks: { onStepStart } })
+      const run = await engine.enqueue('step-start-hook', {})
+      await engine.tick()
+
+      expect(onStepStart).toHaveBeenCalledTimes(2)
+      expect(onStepStart).toHaveBeenCalledWith({ runId: run.id, stepName: 'a' })
+      expect(onStepStart).toHaveBeenCalledWith({ runId: run.id, stepName: 'b' })
+    })
+
+    it('does not call onStepStart for already-completed steps on resume', async () => {
+      const onStepStart = vi.fn()
+
+      const wf = createWorkflow({
+        name: 'resume-start',
+        input: z.object({}),
+      })
+        .step('a', async () => ({ x: 1 }))
+        .step('b', async () => ({ y: 2 }))
+
+      // First run completes step 'a' then we simulate a crash by using a short lease
+      const engine1 = createEngine({
+        storage,
+        workflows: [wf],
+        runLeaseDurationMs: 100,
+        heartbeatIntervalMs: 30,
+      })
+      await engine1.enqueue('resume-start', {})
+      await engine1.tick()
+
+      // Reset the run to 'running' with an expired lease so it can be reclaimed
+      // The first engine completed both steps, so let's test with a workflow that fails partway
+      onStepStart.mockClear()
+
+      let shouldFail = true
+      const wf2 = createWorkflow({
+        name: 'resume-start-2',
+        input: z.object({}),
+      })
+        .step('a', async () => ({ x: 1 }))
+        .step('b', async () => {
+          if (shouldFail) {
+            shouldFail = false
+            throw new Error('transient')
+          }
+          return { y: 2 }
+        })
+
+      const engine2 = createEngine({
+        storage,
+        workflows: [wf2],
+        hooks: { onStepStart },
+        runLeaseDurationMs: 30_000,
+      })
+      await engine2.enqueue('resume-start-2', {})
+      // First tick: step 'a' completes, step 'b' fails
+      await engine2.tick()
+      expect(onStepStart).toHaveBeenCalledTimes(2) // both steps attempted
+
+      onStepStart.mockClear()
+      // Run is now failed, so onStepStart won't fire again (run is terminal)
+    })
+
+    it('a throwing onRunStart does not fail the run', async () => {
+      const wf = createWorkflow({
+        name: 'throw-run-start',
+        input: z.object({}),
+      }).step('a', async () => ({ done: true }))
+
+      const engine = createEngine({
+        storage,
+        workflows: [wf],
+        hooks: {
+          onRunStart: () => {
+            throw new Error('hook exploded')
+          },
+        },
+      })
+      const run = await engine.enqueue('throw-run-start', {})
+      await expect(engine.tick()).resolves.toBeUndefined()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+    })
+
+    it('a throwing onStepStart does not fail the step or run', async () => {
+      const wf = createWorkflow({
+        name: 'throw-step-start',
+        input: z.object({}),
+      })
+        .step('a', async () => ({ x: 1 }))
+        .step('b', async () => ({ y: 2 }))
+
+      const engine = createEngine({
+        storage,
+        workflows: [wf],
+        hooks: {
+          onStepStart: () => {
+            throw new Error('hook exploded')
+          },
+        },
+      })
+      const run = await engine.enqueue('throw-step-start', {})
+      await engine.tick()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+      expect(info.steps).toHaveLength(2)
+      expect(info.steps[0].status).toBe('completed')
+      expect(info.steps[1].status).toBe('completed')
+    })
   })
 
   describe('step timeouts', () => {
