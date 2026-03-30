@@ -354,188 +354,33 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
             return
           }
         } else {
-          // unit.kind === 'parallel'
-          const branches = unit.branches
-
-          if (activeRun.runAbortController.signal.aborted) {
-            const latestRun = await storage.getRun(run.id)
-            if (!latestRun || latestRun.status === 'cancelled') {
-              return
-            }
+          const result = await executeParallelGroup(run, activeRun, unit.branches, prev, stepsAccumulator, completedMap)
+          if (result.kind === 'skipped-cancelled') {
+            return
           }
-
-          // Check crash recovery: if ALL branches have completed results, skip the group
-          const allCompleted = branches.every((b) => completedMap.get(b.name)?.status === 'completed')
-          if (allCompleted) {
-            const merged: Record<string, PersistedValue> = {}
-            for (const branchDef of branches) {
-              const existing = completedMap.get(branchDef.name)
-              if (existing) {
-                merged[branchDef.name] = existing.output
-                stepsAccumulator[branchDef.name] = structuredClone(existing.output)
-              }
-            }
-            prev = merged
-            continue
-          }
-
-          // Not all completed — re-run the entire group
-          const frozenSteps = snapshotSteps(stepsAccumulator)
-
-          const groupAbort = new AbortController()
-          const onRunAbort = () => {
-            if (!groupAbort.signal.aborted) {
-              groupAbort.abort(activeRun.runAbortController.signal.reason)
-            }
-          }
-          if (activeRun.runAbortController.signal.aborted) {
-            groupAbort.abort(activeRun.runAbortController.signal.reason)
-          } else {
-            activeRun.runAbortController.signal.addEventListener('abort', onRunAbort, { once: true })
-          }
-
-          try {
-            for (const branchDef of branches) {
-              try {
-                hooks?.onStepStart?.({ runId: run.id, stepName: branchDef.name })
-              } catch { /* hooks must not affect engine state */ }
-            }
-
-            const groupActiveRun: ActiveRunState = {
-              ...activeRun,
-              runAbortController: groupAbort,
-            }
-
-            const results = await Promise.all(
-              branches.map(async (branchDef) => {
-                const guardedHandler: StepDefinition['handler'] = (ctx) => {
-                  const guardedComplete = (): never => {
-                    throw new ParallelCompleteError(branchDef.name)
-                  }
-                  return branchDef.handler({ ...ctx, complete: guardedComplete })
-                }
-
-                const guardedDef: StepDefinition = { ...branchDef, handler: guardedHandler }
-                const outcome = await executeStep(run, groupActiveRun, guardedDef, prev, frozenSteps)
-
-                if (outcome.kind === 'failed') {
-                  if (!groupAbort.signal.aborted) {
-                    groupAbort.abort(outcome.error)
-                  }
-                  throw new BranchFailedError(branchDef.name, outcome.error, outcome.attempts)
-                }
-
-                if (outcome.kind === 'early-complete') {
-                  const err = new ParallelCompleteError(branchDef.name)
-                  if (!groupAbort.signal.aborted) {
-                    groupAbort.abort(err)
-                  }
-                  throw new BranchFailedError(branchDef.name, err, outcome.attempts)
-                }
-
-                return { name: branchDef.name, output: outcome.output, attempts: outcome.attempts }
-              }),
-            )
-
-            // All branches succeeded — persist results
-            for (const result of results) {
-              const now = Date.now()
-              const saved = await storage.saveStepResult({
-                id: randomUUID(),
-                runId: run.id,
-                name: result.name,
-                status: 'completed',
-                output: result.output,
-                error: null,
-                attempts: result.attempts,
-                createdAt: now,
-                updatedAt: now,
-              }, run.leaseId)
-
-              if (!saved) {
-                throw new LeaseExpiredError(run.id)
-              }
-
-              try {
-                hooks?.onStepComplete?.({
-                  runId: run.id,
-                  stepName: result.name,
-                  output: result.output,
-                  attempts: result.attempts,
-                })
-              } catch { /* hooks must not affect engine state */ }
-
-              stepsAccumulator[result.name] = structuredClone(result.output)
-            }
-
-            const merged: Record<string, PersistedValue> = {}
-            for (const result of results) {
-              merged[result.name] = result.output
-            }
-            prev = merged
-          } catch (error) {
-            const err = error instanceof Error ? error : new Error(String(error))
-
-            if (err instanceof EarlyCompleteError) {
-              throw new Error('EarlyCompleteError escaped executeStep in parallel group')
-            }
-
-            if (err instanceof RunControlError) {
-              return
-            }
-
-            if (activeRun.runAbortController.signal.aborted) {
-              const currentRun = await storage.getRun(run.id)
-              if (!currentRun || currentRun.status === 'cancelled') {
-                return
-              }
-            }
-
-            const branchName = err instanceof BranchFailedError ? err.branchName : branches[0].name
-            const branchAttempts = err instanceof BranchFailedError ? err.attempts : 1
-            const branchError = err instanceof BranchFailedError ? err.branchError : err
-
-            // Persist the failed step result
-            const now = Date.now()
-            const saved = await storage.saveStepResult({
-              id: randomUUID(),
-              runId: run.id,
-              name: branchName,
-              status: 'failed',
-              output: null,
-              error: branchError.message,
-              attempts: branchAttempts,
-              createdAt: now,
-              updatedAt: now,
-            }, run.leaseId)
-
-            if (!saved) {
-              return
-            }
-
+          if (result.kind === 'failed') {
             const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
             if (!failed) {
               return
             }
 
             try {
-              hooks?.onRunFailed?.({ runId: run.id, workflow: run.workflow, stepName: branchName, error: branchError })
+              hooks?.onRunFailed?.({ runId: run.id, workflow: run.workflow, stepName: result.branchName, error: result.error })
             } catch { /* hooks must not affect engine state */ }
 
             if (wf.failureHandler) {
               try {
                 await wf.failureHandler({
-                  error: branchError,
-                  stepName: branchName,
+                  error: result.error,
+                  stepName: result.branchName,
                   input: run.input,
                 })
               } catch { /* onFailure must not affect engine state */ }
             }
 
             return
-          } finally {
-            activeRun.runAbortController.signal.removeEventListener('abort', onRunAbort)
           }
+          prev = result.merged
         }
       }
 
@@ -626,6 +471,178 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }
 
     return { kind: 'failed', error: lastError ?? new Error('Unknown error'), attempts: maxAttempts }
+  }
+
+  type ParallelGroupResult =
+    | { kind: 'completed'; merged: Record<string, PersistedValue> }
+    | { kind: 'skipped-cancelled' }
+    | { kind: 'failed'; branchName: string; error: Error }
+
+  async function executeParallelGroup(
+    run: ClaimedRun,
+    activeRun: ActiveRunState,
+    branches: readonly StepDefinition[],
+    prev: PersistedValue,
+    stepsAccumulator: Record<string, PersistedValue>,
+    completedMap: Map<string, { status: string; output: PersistedValue; attempts: number }>,
+  ): Promise<ParallelGroupResult> {
+    if (activeRun.runAbortController.signal.aborted) {
+      const latestRun = await storage.getRun(run.id)
+      if (!latestRun || latestRun.status === 'cancelled') {
+        return { kind: 'skipped-cancelled' }
+      }
+    }
+
+    // Crash recovery: if ALL branches have completed results, skip the group
+    const allCompleted = branches.every((b) => completedMap.get(b.name)?.status === 'completed')
+    if (allCompleted) {
+      const merged: Record<string, PersistedValue> = {}
+      for (const branchDef of branches) {
+        const existing = completedMap.get(branchDef.name)
+        if (existing) {
+          merged[branchDef.name] = existing.output
+          stepsAccumulator[branchDef.name] = structuredClone(existing.output)
+        }
+      }
+      return { kind: 'completed', merged }
+    }
+
+    // Not all completed — re-run the entire group
+    const frozenSteps = snapshotSteps(stepsAccumulator)
+
+    const groupAbort = new AbortController()
+    const onRunAbort = () => {
+      if (!groupAbort.signal.aborted) {
+        groupAbort.abort(activeRun.runAbortController.signal.reason)
+      }
+    }
+    if (activeRun.runAbortController.signal.aborted) {
+      groupAbort.abort(activeRun.runAbortController.signal.reason)
+    } else {
+      activeRun.runAbortController.signal.addEventListener('abort', onRunAbort, { once: true })
+    }
+
+    try {
+      for (const branchDef of branches) {
+        try {
+          hooks?.onStepStart?.({ runId: run.id, stepName: branchDef.name })
+        } catch { /* hooks must not affect engine state */ }
+      }
+
+      const groupActiveRun: ActiveRunState = {
+        ...activeRun,
+        runAbortController: groupAbort,
+      }
+
+      const results = await Promise.all(
+        branches.map(async (branchDef) => {
+          const guardedHandler: StepDefinition['handler'] = (ctx) => {
+            const guardedComplete = (): never => {
+              throw new ParallelCompleteError(branchDef.name)
+            }
+            return branchDef.handler({ ...ctx, complete: guardedComplete })
+          }
+
+          const guardedDef: StepDefinition = { ...branchDef, handler: guardedHandler }
+          const outcome = await executeStep(run, groupActiveRun, guardedDef, prev, frozenSteps)
+
+          if (outcome.kind === 'failed') {
+            if (!groupAbort.signal.aborted) {
+              groupAbort.abort(outcome.error)
+            }
+            throw new BranchFailedError(branchDef.name, outcome.error, outcome.attempts)
+          }
+
+          if (outcome.kind === 'early-complete') {
+            const err = new ParallelCompleteError(branchDef.name)
+            if (!groupAbort.signal.aborted) {
+              groupAbort.abort(err)
+            }
+            throw new BranchFailedError(branchDef.name, err, outcome.attempts)
+          }
+
+          return { name: branchDef.name, output: outcome.output, attempts: outcome.attempts }
+        }),
+      )
+
+      // All branches succeeded — persist results
+      const merged: Record<string, PersistedValue> = {}
+      for (const result of results) {
+        const now = Date.now()
+        const saved = await storage.saveStepResult({
+          id: randomUUID(),
+          runId: run.id,
+          name: result.name,
+          status: 'completed',
+          output: result.output,
+          error: null,
+          attempts: result.attempts,
+          createdAt: now,
+          updatedAt: now,
+        }, run.leaseId)
+
+        if (!saved) {
+          throw new LeaseExpiredError(run.id)
+        }
+
+        try {
+          hooks?.onStepComplete?.({
+            runId: run.id,
+            stepName: result.name,
+            output: result.output,
+            attempts: result.attempts,
+          })
+        } catch { /* hooks must not affect engine state */ }
+
+        stepsAccumulator[result.name] = structuredClone(result.output)
+        merged[result.name] = result.output
+      }
+
+      return { kind: 'completed', merged }
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error))
+
+      if (err instanceof EarlyCompleteError) {
+        throw new Error('EarlyCompleteError escaped executeStep in parallel group')
+      }
+
+      if (err instanceof RunControlError) {
+        return { kind: 'skipped-cancelled' }
+      }
+
+      if (activeRun.runAbortController.signal.aborted) {
+        const currentRun = await storage.getRun(run.id)
+        if (!currentRun || currentRun.status === 'cancelled') {
+          return { kind: 'skipped-cancelled' }
+        }
+      }
+
+      const branchName = err instanceof BranchFailedError ? err.branchName : branches[0].name
+      const branchAttempts = err instanceof BranchFailedError ? err.attempts : 1
+      const branchError = err instanceof BranchFailedError ? err.branchError : err
+
+      // Persist the failed step result
+      const now = Date.now()
+      const saved = await storage.saveStepResult({
+        id: randomUUID(),
+        runId: run.id,
+        name: branchName,
+        status: 'failed',
+        output: null,
+        error: branchError.message,
+        attempts: branchAttempts,
+        createdAt: now,
+        updatedAt: now,
+      }, run.leaseId)
+
+      if (!saved) {
+        return { kind: 'failed', branchName, error: branchError }
+      }
+
+      return { kind: 'failed', branchName, error: branchError }
+    } finally {
+      activeRun.runAbortController.signal.removeEventListener('abort', onRunAbort)
+    }
   }
 
   async function cancel(runId: string): Promise<boolean> {
@@ -969,7 +986,10 @@ function deepFreeze<T extends Record<string, unknown>>(obj: T): T {
   return obj
 }
 
-/** Internal wrapper for carrying branch metadata through Promise.all rejections. */
+/**
+ * Carries branch metadata (name, original error, attempts) through Promise.all rejections.
+ * @internal Not exported from the public API.
+ */
 class BranchFailedError extends Error {
   constructor(
     public readonly branchName: string,

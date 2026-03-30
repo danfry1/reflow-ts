@@ -503,4 +503,111 @@ describe('Parallel engine execution', () => {
       expect(afterStep?.output).toEqual({ a: { fromA: 'cached' }, b: { fromB: 'cached' } })
     })
   })
+
+  describe('single branch', () => {
+    it('executes a single-branch parallel group with correct prev shape', async () => {
+      const wf = createWorkflow({
+        name: 'test',
+        input: z.object({}),
+      })
+        .parallel({
+          only: async () => ({ value: 42 }),
+        })
+        .step('after', async ({ prev }) => ({ received: prev.only.value }))
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('test', {})
+      await engine.tick()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+
+      const afterStep = info.steps.find((s) => s.name === 'after')
+      expect(afterStep?.output).toEqual({ received: 42 })
+    })
+  })
+
+  describe('cancellation', () => {
+    it('cancels a run during parallel execution', async () => {
+      const aborted: string[] = []
+      const wf = createWorkflow({
+        name: 'test',
+        input: z.object({}),
+      }).parallel({
+        slow: async ({ signal }) => {
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(resolve, 5000)
+            signal.addEventListener('abort', () => {
+              clearTimeout(timer)
+              aborted.push('slow')
+              reject(signal.reason)
+            })
+          })
+          return { x: 1 }
+        },
+        slower: async ({ signal }) => {
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(resolve, 5000)
+            signal.addEventListener('abort', () => {
+              clearTimeout(timer)
+              aborted.push('slower')
+              reject(signal.reason)
+            })
+          })
+          return { y: 2 }
+        },
+      })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('test', {})
+
+      // Start the tick (non-blocking) then cancel immediately
+      const tickPromise = engine.tick()
+      // Small delay to let branches start
+      await new Promise((r) => setTimeout(r, 20))
+      await engine.cancel(run.id)
+      await tickPromise
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('cancelled')
+      expect(aborted.sort()).toEqual(['slow', 'slower'])
+    })
+  })
+
+  describe('sequential parallel groups', () => {
+    it('chains prev between consecutive parallel groups', async () => {
+      const wf = createWorkflow({
+        name: 'test',
+        input: z.object({}),
+      })
+        .parallel({
+          a: async () => ({ x: 10 }),
+          b: async () => ({ y: 20 }),
+        })
+        .parallel({
+          c: async ({ prev }) => ({ sum: prev.a.x + prev.b.y }),
+        })
+        .step('final', async ({ prev, steps }) => ({
+          cResult: prev.c.sum,
+          allSteps: {
+            a: steps.a.x,
+            b: steps.b.y,
+            c: steps.c.sum,
+          },
+        }))
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('test', {})
+      await engine.tick()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+
+      const finalStep = info.steps.find((s) => s.name === 'final')
+      expect(finalStep?.output).toEqual({
+        cResult: 30,
+        allSteps: { a: 10, b: 20, c: 30 },
+      })
+    })
+  })
 })
