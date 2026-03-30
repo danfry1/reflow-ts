@@ -64,6 +64,14 @@ export class DuplicateStepError extends ReflowError {
   }
 }
 
+/** Thrown when `complete()` is called inside a parallel step handler. */
+export class ParallelCompleteError extends ReflowError {
+  constructor(public readonly stepName: string) {
+    super(`complete() cannot be called inside parallel step "${stepName}"`)
+    this.name = 'ParallelCompleteError'
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Input validation
 // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ export {
   WorkflowNotFoundError,
   DuplicateWorkflowError,
   DuplicateStepError,
+  ParallelCompleteError,
   ValidationError,
   IdempotencyConflictError,
   SerializationError,
