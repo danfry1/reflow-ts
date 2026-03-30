@@ -28,6 +28,11 @@ export interface StepDefinition {
   timeoutMs?: number
 }
 
+/** A single execution unit: either a sequential step or a parallel group. */
+export type ExecutionUnit =
+  | { readonly kind: 'step'; readonly definition: StepDefinition }
+  | { readonly kind: 'parallel'; readonly branches: readonly StepDefinition[] }
+
 /** Configuration object form for `.step()` when you need retry or timeout options. */
 export interface StepConfig<
   TInput extends PersistedValue,
@@ -67,7 +72,7 @@ export interface Workflow<
 > {
   readonly name: TName
   readonly inputSchema: StandardSchemaV1<TInput>
-  readonly steps: readonly StepDefinition[]
+  readonly executionUnits: readonly ExecutionUnit[]
   readonly failureHandler?: (ctx: FailureContext<TInput>) => Promise<void>
 
   step<TStepName extends string, TOutput extends PersistedValue | void>(
@@ -136,6 +141,20 @@ export function createWorkflow<TName extends string, TInput extends PersistedVal
   return buildWorkflow(config.name, config.input, [])
 }
 
+function getAllStepNames(units: readonly ExecutionUnit[]): Set<string> {
+  const names = new Set<string>()
+  for (const unit of units) {
+    if (unit.kind === 'step') {
+      names.add(unit.definition.name)
+    } else {
+      for (const branch of unit.branches) {
+        names.add(branch.name)
+      }
+    }
+  }
+  return names
+}
+
 function buildWorkflow<
   TName extends string,
   TInput extends PersistedValue,
@@ -144,13 +163,13 @@ function buildWorkflow<
 >(
   name: TName,
   inputSchema: StandardSchemaV1<TInput>,
-  steps: StepDefinition[],
+  executionUnits: ExecutionUnit[],
   failureHandler?: (ctx: FailureContext<TInput>) => Promise<void>,
 ): Workflow<TName, TInput, TPrev, TSteps> {
   return {
     name,
     inputSchema,
-    steps,
+    executionUnits,
     failureHandler,
 
     step<TStepName extends string, TOutput extends PersistedValue | void>(
@@ -164,7 +183,7 @@ function buildWorkflow<
       NormalizeOutput<TOutput>,
       TSteps & Record<TStepName, NormalizeOutput<TOutput>>
     > {
-      if (steps.some((step) => step.name === stepName)) {
+      if (getAllStepNames(executionUnits).has(stepName)) {
         throw new DuplicateStepError(name, stepName)
       }
 
@@ -187,7 +206,7 @@ function buildWorkflow<
       >(
         name,
         inputSchema,
-        [...steps, newStep],
+        [...executionUnits, { kind: 'step', definition: newStep }],
         failureHandler,
       )
     },
@@ -195,7 +214,7 @@ function buildWorkflow<
     onFailure(
       handler: (ctx: FailureContext<TInput>) => Promise<void>,
     ): Workflow<TName, TInput, TPrev, TSteps> {
-      return buildWorkflow(name, inputSchema, steps, handler)
+      return buildWorkflow(name, inputSchema, executionUnits, handler)
     },
 
     parseInput(input: unknown): TInput {

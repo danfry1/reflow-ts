@@ -17,6 +17,7 @@ export type { ValidationIssue } from './core/errors'
 export type {
   Workflow,
   AnyWorkflow,
+  ExecutionUnit,
   StepContext,
   StepDefinition,
   StepConfig,

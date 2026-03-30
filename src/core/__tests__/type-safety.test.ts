@@ -34,7 +34,7 @@ describe('type safety', () => {
       expectTypeOf(input).toEqualTypeOf<OrderInput>()
       return { ok: true }
     })
-    expect(wf.steps).toHaveLength(1)
+    expect(wf.executionUnits).toHaveLength(1)
   })
 
   it('prev type flows from previous step output', () => {

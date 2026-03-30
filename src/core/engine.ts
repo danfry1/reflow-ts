@@ -202,7 +202,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       let prev: PersistedValue = undefined
       const stepsAccumulator: Record<string, PersistedValue> = {}
 
-      for (const stepDef of wf.steps) {
+      for (const unit of wf.executionUnits) {
+        if (unit.kind !== 'step') {
+          throw new Error(`Unsupported execution unit kind: ${unit.kind}`)
+        }
+        const stepDef = unit.definition
         if (activeRun.runAbortController.signal.aborted) {
           const latestRun = await storage.getRun(run.id)
           if (!latestRun || latestRun.status === 'cancelled') {

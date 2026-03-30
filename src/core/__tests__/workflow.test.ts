@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow } from '../workflow'
+import type { ExecutionUnit, StepDefinition } from '../workflow'
+
+function getStepDef(wf: { executionUnits: readonly ExecutionUnit[] }, index: number): StepDefinition {
+  const unit = wf.executionUnits[index]
+  if (unit.kind !== 'step') throw new Error(`Expected step at index ${index}`)
+  return unit.definition
+}
 
 describe('createWorkflow', () => {
   describe('builder basics', () => {
@@ -11,7 +18,7 @@ describe('createWorkflow', () => {
       })
 
       expect(wf.name).toBe('test')
-      expect(wf.steps).toHaveLength(0)
+      expect(wf.executionUnits).toHaveLength(0)
       expect(wf.failureHandler).toBeUndefined()
     })
 
@@ -32,9 +39,9 @@ describe('createWorkflow', () => {
         .step('first', async ({ input }) => ({ a: input.x + 1 }))
         .step('second', async ({ prev }) => ({ b: prev.a * 2 }))
 
-      expect(wf.steps).toHaveLength(2)
-      expect(wf.steps[0].name).toBe('first')
-      expect(wf.steps[1].name).toBe('second')
+      expect(wf.executionUnits).toHaveLength(2)
+      expect(getStepDef(wf, 0).name).toBe('first')
+      expect(getStepDef(wf, 1).name).toBe('second')
     })
 
     it('is immutable — each .step() returns a new workflow instance', () => {
@@ -46,11 +53,11 @@ describe('createWorkflow', () => {
       const withA = base.step('a', async () => ({ x: 1 }))
       const withB = base.step('b', async () => ({ y: 2 }))
 
-      expect(base.steps).toHaveLength(0)
-      expect(withA.steps).toHaveLength(1)
-      expect(withA.steps[0].name).toBe('a')
-      expect(withB.steps).toHaveLength(1)
-      expect(withB.steps[0].name).toBe('b')
+      expect(base.executionUnits).toHaveLength(0)
+      expect(withA.executionUnits).toHaveLength(1)
+      expect(getStepDef(withA, 0).name).toBe('a')
+      expect(withB.executionUnits).toHaveLength(1)
+      expect(getStepDef(withB, 0).name).toBe('b')
     })
 
     it('supports long chains (5+ steps)', () => {
@@ -64,8 +71,11 @@ describe('createWorkflow', () => {
         .step('s4', async ({ prev }) => ({ v: prev.v + 1 }))
         .step('s5', async ({ prev }) => ({ v: prev.v + 1 }))
 
-      expect(wf.steps).toHaveLength(5)
-      expect(wf.steps.map((s) => s.name)).toEqual(['s1', 's2', 's3', 's4', 's5'])
+      expect(wf.executionUnits).toHaveLength(5)
+      expect(wf.executionUnits.map((u) => {
+        if (u.kind !== 'step') throw new Error('expected step')
+        return u.definition.name
+      })).toEqual(['s1', 's2', 's3', 's4', 's5'])
     })
 
     it('preserves the workflow name through chaining', () => {
@@ -99,7 +109,7 @@ describe('createWorkflow', () => {
         input: z.object({}),
       }).step('simple', handler)
 
-      expect(wf.steps[0].retry).toBeUndefined()
+      expect(getStepDef(wf, 0).retry).toBeUndefined()
     })
 
     it('accepts a config object with handler and retry', () => {
@@ -111,8 +121,8 @@ describe('createWorkflow', () => {
         handler: async ({ input }) => ({ result: input.x }),
       })
 
-      expect(wf.steps[0].name).toBe('retryable')
-      expect(wf.steps[0].retry).toEqual({
+      expect(getStepDef(wf, 0).name).toBe('retryable')
+      expect(getStepDef(wf, 0).retry).toEqual({
         maxAttempts: 3,
         backoff: 'exponential',
       })
@@ -127,7 +137,7 @@ describe('createWorkflow', () => {
         handler: async () => ({}),
       })
 
-      expect(wf.steps[0].retry).toEqual({
+      expect(getStepDef(wf, 0).retry).toEqual({
         maxAttempts: 5,
         backoff: 'linear',
         initialDelayMs: 500,
@@ -220,7 +230,7 @@ describe('createWorkflow', () => {
         .step('b', async ({ prev }) => ({ y: prev.x + 1 }))
 
       expect(wf.failureHandler).toBe(failHandler)
-      expect(wf.steps).toHaveLength(2)
+      expect(wf.executionUnits).toHaveLength(2)
     })
   })
 })
