@@ -1,5 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import { DuplicateStepError, ValidationError } from './errors'
+import { ConfigError, DuplicateStepError, ValidationError } from './errors'
 import type { PersistedValue, RetryConfig } from './types'
 
 /** Context passed to every step handler. */
@@ -46,6 +46,22 @@ export interface StepConfig<
   handler: (ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>
 }
 
+/** A parallel branch: either a bare handler or a StepConfig with retry/timeout. */
+export type ParallelBranch<
+  TInput extends PersistedValue,
+  TPrev extends PersistedValue,
+  TOutput extends PersistedValue | void = PersistedValue | void,
+  TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
+> =
+  | ((ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>)
+  | StepConfig<TInput, TPrev, TOutput, TStepsSoFar>
+
+/** Extract the output type from a ParallelBranch. */
+export type InferBranchOutput<B> =
+  B extends (ctx: never) => Promise<infer O> ? O :
+  B extends { handler: (ctx: never) => Promise<infer O> } ? O :
+  never
+
 /** Context passed to the `onFailure` handler when a workflow run fails. */
 export interface FailureContext<TInput extends PersistedValue = PersistedValue> {
   /** The error that caused the failure. */
@@ -84,6 +100,15 @@ export interface Workflow<
     name: TStepName,
     config: StepConfig<TInput, TPrev, TOutput, TSteps>,
   ): Workflow<TName, TInput, NormalizeOutput<TOutput>, TSteps & Record<TStepName, NormalizeOutput<TOutput>>>
+
+  parallel<TBranches extends Record<string, ParallelBranch<TInput, TPrev, PersistedValue | void, TSteps>>>(
+    branches: TBranches,
+  ): Workflow<
+    TName,
+    TInput,
+    Prettify<{ [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }>,
+    TSteps & { [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }
+  >
 
   onFailure(
     handler: (ctx: FailureContext<TInput>) => Promise<void>,
@@ -207,6 +232,56 @@ function buildWorkflow<
         name,
         inputSchema,
         [...executionUnits, { kind: 'step', definition: newStep }],
+        failureHandler,
+      )
+    },
+
+    parallel<TBranches extends Record<string, ParallelBranch<TInput, TPrev, PersistedValue | void, TSteps>>>(
+      branches: TBranches,
+    ): Workflow<
+      TName,
+      TInput,
+      Prettify<{ [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }>,
+      TSteps & { [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }
+    > {
+      const branchEntries = Object.entries(branches)
+      if (branchEntries.length === 0) {
+        throw new ConfigError('parallel() requires at least one branch')
+      }
+
+      const existingNames = getAllStepNames(executionUnits)
+      for (const [branchName] of branchEntries) {
+        if (existingNames.has(branchName)) {
+          throw new DuplicateStepError(name, branchName)
+        }
+      }
+
+      const branchDefs: StepDefinition[] = branchEntries.map(([branchName, handlerOrConfig]) => {
+        if (typeof handlerOrConfig === 'object' && handlerOrConfig !== null && 'handler' in handlerOrConfig) {
+          return {
+            name: branchName,
+            handler: handlerOrConfig.handler as unknown as StepDefinition['handler'],
+            retry: handlerOrConfig.retry,
+            timeoutMs: handlerOrConfig.timeoutMs,
+          }
+        }
+        return {
+          name: branchName,
+          handler: handlerOrConfig as unknown as StepDefinition['handler'],
+          retry: undefined,
+          timeoutMs: undefined,
+        }
+      })
+
+      return buildWorkflow<
+        TName,
+        TInput,
+        Prettify<{ [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }>,
+        TSteps & { [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }
+      >(
+        name,
+        inputSchema,
+        [...executionUnits, { kind: 'parallel', branches: branchDefs }],
         failureHandler,
       )
     },
