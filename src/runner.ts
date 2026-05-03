@@ -5,8 +5,18 @@ import { SQLiteStorage } from './storage/sqlite-node'
 import type { AnyWorkflow, WorkflowInputMap } from './core/workflow'
 
 export interface EngineRunnerOptions {
+  /** Storage backend for persisting runs and step results. Defaults to an in-memory SQLite instance. */
   storage?: StorageAdapter
+  /** Optional lifecycle hooks. */
   hooks?: EngineHooks
+  /** Maximum runs to process in parallel per tick (default: 1). */
+  concurrency?: number
+  /** How long a run's lease is valid before another engine can reclaim it in ms (default: 30000). */
+  runLeaseDurationMs?: number
+  /** How often to renew the lease while a run is executing in ms (default: leaseDuration / 3). */
+  heartbeatIntervalMs?: number
+  /** How often the engine polls for new runs in ms (default: 1000). */
+  pollIntervalMs?: number
 }
 
 export interface EngineRunner<T> {
@@ -75,6 +85,9 @@ export function createEngine<T>(
   const engine = _createEngine({
     storage: options.storage ?? new SQLiteStorage(':memory:'),
     workflows,
+    concurrency: options.concurrency,
+    runLeaseDurationMs: options.runLeaseDurationMs,
+    heartbeatIntervalMs: options.heartbeatIntervalMs,
     hooks: {
       onRunStart: userHooks?.onRunStart,
       onStepStart: userHooks?.onStepStart,
@@ -100,7 +113,7 @@ export function createEngine<T>(
   async function ensureStarted(): Promise<void> {
     if (!started) {
       started = true
-      await engine.start()
+      await engine.start(options.pollIntervalMs)
     }
   }
 
