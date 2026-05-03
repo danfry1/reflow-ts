@@ -89,8 +89,10 @@ export interface StorageAdapter {
   getRun(runId: string): Promise<WorkflowRun | null>
   /** Fetch all step results for a run, ordered by creation time. */
   getStepResults(runId: string): Promise<StepResult[]>
-  /** Persist a step result. If `leaseId` is provided, fails when the lease is no longer held. */
-  saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
+  /** Persist a step result. If `leaseId` is provided, fails when the lease is no longer held. If `cacheKey` is provided, indexes the result for cross-run cache lookups. */
+  saveStepResult(result: StepResult, leaseId?: string, cacheKey?: string): Promise<boolean>
+  /** Look up the most recent completed result for a step by cache key. Excludes sentinel rows (attempts === 0). */
+  getCachedStepResult(stepName: string, cacheKey: string, ttlMs?: number): Promise<StepResult | null>
   /** Update run status without a lease check (used for cancellation). Returns false if the run does not exist. */
   updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
   /** Update run status only if the caller still holds the lease. */

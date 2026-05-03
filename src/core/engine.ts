@@ -23,13 +23,13 @@ import type { AnyWorkflow, StepDefinition, WorkflowInputMap } from './workflow'
 
 /** Lifecycle hooks fired during workflow execution. */
 export interface EngineHooks {
-  onRunStart?: (event: { runId: string; workflow: string }) => void
-  onStepStart?: (event: { runId: string; stepName: string }) => void
-  onStepComplete?: (event: { runId: string; stepName: string; output: PersistedValue; attempts: number }) => void
-  onRunComplete?: (event: { runId: string; workflow: string }) => void
-  onRunFailed?: (event: { runId: string; workflow: string; stepName: string; error: Error }) => void
+  onRunStart?: (event: { runId: string; workflow: string }) => Promise<void> | void
+  onStepStart?: (event: { runId: string; stepName: string }) => Promise<void> | void
+  onStepComplete?: (event: { runId: string; stepName: string; output: PersistedValue; attempts: number; cacheHit: boolean }) => Promise<void> | void
+  onRunComplete?: (event: { runId: string; workflow: string; output: PersistedValue }) => Promise<void> | void
+  onRunFailed?: (event: { runId: string; workflow: string; stepName: string; error: Error }) => Promise<void> | void
   /** Called when a background operation fails (scheduled enqueue, poll cycle). Without this hook, these errors are silently swallowed. */
-  onError?: (error: Error) => void
+  onError?: (error: Error) => Promise<void> | void
 }
 
 /** Configuration for {@link createEngine}. */
@@ -87,6 +87,14 @@ interface ActiveRunState {
   runAbortController: AbortController
   heartbeatTimer: ReturnType<typeof setInterval> | null
   heartbeatInFlight: boolean
+}
+
+function parseTtl(cache: true | `${number}h` | `${number}d` | undefined): number | undefined {
+  if (!cache || cache === true) return undefined
+  const match = /^(\d+)([hd])$/.exec(cache)
+  if (!match) return undefined
+  const n = parseInt(match[1], 10)
+  return match[2] === 'h' ? n * 3_600_000 : n * 86_400_000
 }
 
 /**
@@ -194,8 +202,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
     try {
       try {
-        hooks?.onRunStart?.({ runId: run.id, workflow: run.workflow })
-      } catch { /* hooks must not affect engine state */ }
+        await hooks?.onRunStart?.({ runId: run.id, workflow: run.workflow })
+      } catch (e) {
+        console.error('[reflow-ts] onRunStart hook threw:', e)
+      }
 
       const existingSteps = await storage.getStepResults(run.id)
       const completedMap = new Map(existingSteps.map((step) => [step.name, step]))
@@ -214,13 +224,16 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         if (existing?.status === 'completed-early') {
           // This step called complete() in a previous execution — finish the run
           try {
-            hooks?.onStepComplete?.({
+            await hooks?.onStepComplete?.({
               runId: run.id,
               stepName: stepDef.name,
               output: existing.output,
               attempts: existing.attempts,
+              cacheHit: false,
             })
-          } catch { /* hooks must not affect engine state */ }
+          } catch (e) {
+            console.error('[reflow-ts] onStepComplete hook threw:', e)
+          }
 
           const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
           if (!completed) {
@@ -228,8 +241,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           }
 
           try {
-            hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow })
-          } catch { /* hooks must not affect engine state */ }
+            await hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow, output: existing.output })
+          } catch (e) {
+            console.error('[reflow-ts] onRunComplete hook threw:', e)
+          }
 
           return
         }
@@ -239,17 +254,59 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           continue
         }
 
+        // Cross-run cache lookup — only runs when the step has not already completed in this run
+        if (stepDef.cache && stepDef.cacheKey) {
+          const key = stepDef.cacheKey(run.input)
+          const ttlMs = parseTtl(stepDef.cache)
+          const cached = await storage.getCachedStepResult(stepDef.name, key, ttlMs)
+          if (cached) {
+            const now = Date.now()
+            // Sentinel row (attempts: 0) records the cache hit in this run for within-run replay.
+            // cacheKey is intentionally omitted — sentinel rows must not enter the cache index.
+            const saved = await storage.saveStepResult(
+              {
+                id: randomUUID(),
+                runId: run.id,
+                name: stepDef.name,
+                status: 'completed',
+                output: cached.output,
+                error: null,
+                attempts: 0,
+                createdAt: now,
+                updatedAt: now,
+              },
+              run.leaseId,
+            )
+            if (!saved) throw new LeaseExpiredError(run.id)
+            try {
+              await hooks?.onStepComplete?.({
+                runId: run.id,
+                stepName: stepDef.name,
+                output: cached.output,
+                attempts: 0,
+                cacheHit: true,
+              })
+            } catch (e) {
+              console.error('[reflow-ts] onStepComplete hook threw:', e)
+            }
+            prev = cached.output
+            stepsAccumulator[stepDef.name] = structuredClone(cached.output)
+            continue
+          }
+        }
+
         const frozenSteps = snapshotSteps(stepsAccumulator)
 
         try {
           try {
-            hooks?.onStepStart?.({ runId: run.id, stepName: stepDef.name })
-          } catch { /* hooks must not affect engine state */ }
+            await hooks?.onStepStart?.({ runId: run.id, stepName: stepDef.name })
+          } catch (e) {
+            console.error('[reflow-ts] onStepStart hook threw:', e)
+          }
 
           const outcome = await executeStep(run, activeRun, stepDef, prev, frozenSteps)
 
           if (outcome.kind === 'failed') {
-            // Persist the failed step result
             const now = Date.now()
             const saved = await storage.saveStepResult({
               id: randomUUID(),
@@ -272,6 +329,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
           // Unified success path for both normal and early completion
           const now = Date.now()
+          const cacheKeyForStep = (stepDef.cache && stepDef.cacheKey)
+            ? stepDef.cacheKey(run.input)
+            : undefined
+
           const saved = await storage.saveStepResult({
             id: randomUUID(),
             runId: run.id,
@@ -282,20 +343,23 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
             attempts: outcome.attempts,
             createdAt: now,
             updatedAt: now,
-          }, run.leaseId)
+          }, run.leaseId, cacheKeyForStep)
 
           if (!saved) {
             throw new LeaseExpiredError(run.id)
           }
 
           try {
-            hooks?.onStepComplete?.({
+            await hooks?.onStepComplete?.({
               runId: run.id,
               stepName: stepDef.name,
               output: outcome.output,
               attempts: outcome.attempts,
+              cacheHit: false,
             })
-          } catch { /* hooks must not affect engine state */ }
+          } catch (e) {
+            console.error('[reflow-ts] onStepComplete hook threw:', e)
+          }
 
           if (outcome.kind === 'early-complete') {
             const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
@@ -304,8 +368,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
             }
 
             try {
-              hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow })
-            } catch { /* hooks must not affect engine state */ }
+              await hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow, output: outcome.output })
+            } catch (e) {
+              console.error('[reflow-ts] onRunComplete hook threw:', e)
+            }
 
             return
           }
@@ -336,8 +402,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           }
 
           try {
-            hooks?.onRunFailed?.({ runId: run.id, workflow: run.workflow, stepName: stepDef.name, error: err })
-          } catch { /* hooks must not affect engine state */ }
+            await hooks?.onRunFailed?.({ runId: run.id, workflow: run.workflow, stepName: stepDef.name, error: err })
+          } catch (e) {
+            console.error('[reflow-ts] onRunFailed hook threw:', e)
+          }
 
           if (wf.failureHandler) {
             try {
@@ -364,8 +432,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       }
 
       try {
-        hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow })
-      } catch { /* hooks must not affect engine state */ }
+        await hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow, output: prev })
+      } catch (e) {
+        console.error('[reflow-ts] onRunComplete hook threw:', e)
+      }
     } finally {
       cleanupActiveRun(run.id)
     }
@@ -472,7 +542,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     const scheduleId = randomUUID()
     const interval = setInterval(() => {
       void enqueue(workflowName, parsedInput).catch((error) => {
-        try { hooks?.onError?.(error instanceof Error ? error : new Error(String(error))) } catch { /* hooks must not throw */ }
+        void Promise.resolve(hooks?.onError?.(error instanceof Error ? error : new Error(String(error)))).catch(noop)
       })
     }, intervalMs)
 
@@ -533,7 +603,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
     const triggerPoll = () => {
       void runPollCycle().catch((error) => {
-        try { hooks?.onError?.(error instanceof Error ? error : new Error(String(error))) } catch { /* hooks must not throw */ }
+        void Promise.resolve(hooks?.onError?.(error instanceof Error ? error : new Error(String(error)))).catch(noop)
       })
     }
 

@@ -29,6 +29,7 @@ interface WorkflowStepRow {
   output: string | null
   error: string | null
   attempts: number
+  cache_key: string | null
   created_at: number
   updated_at: number
 }
@@ -85,6 +86,15 @@ export class SQLiteStorage implements StorageAdapter {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_workflow_idempotency
       ON workflow_runs(workflow, idempotency_key)
       WHERE idempotency_key IS NOT NULL;
+    `)
+
+    try {
+      this.db.exec(`ALTER TABLE workflow_steps ADD COLUMN cache_key TEXT`)
+    } catch { /* column already exists on existing databases */ }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_steps_cache_key
+      ON workflow_steps(name, cache_key)
+      WHERE cache_key IS NOT NULL
     `)
   }
 
@@ -252,7 +262,7 @@ export class SQLiteStorage implements StorageAdapter {
     }))
   }
 
-  async saveStepResult(result: StepResult, leaseId?: string): Promise<boolean> {
+  async saveStepResult(result: StepResult, leaseId?: string, cacheKey?: string): Promise<boolean> {
     const save = this.db.transaction(() => {
       if (leaseId) {
         const run = this.db
@@ -269,8 +279,8 @@ export class SQLiteStorage implements StorageAdapter {
 
       this.db
         .prepare(
-          `INSERT OR REPLACE INTO workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO workflow_steps (id, run_id, name, status, output, error, attempts, cache_key, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           result.id,
@@ -280,6 +290,7 @@ export class SQLiteStorage implements StorageAdapter {
           serializePersistedValue(result.output, 'Step output'),
           result.error,
           result.attempts,
+          cacheKey ?? null,
           result.createdAt,
           result.updatedAt,
         )
@@ -288,6 +299,35 @@ export class SQLiteStorage implements StorageAdapter {
     })
 
     return save()
+  }
+
+  async getCachedStepResult(stepName: string, cacheKey: string, ttlMs?: number): Promise<StepResult | null> {
+    const cutoff = ttlMs !== undefined ? Date.now() - ttlMs : null
+    const row = this.db
+      .prepare(
+        `SELECT * FROM workflow_steps
+         WHERE name = ?
+           AND cache_key = ?
+           AND status = 'completed'
+           AND attempts > 0
+           ${cutoff !== null ? 'AND updated_at >= ?' : ''}
+         ORDER BY updated_at DESC
+         LIMIT 1`,
+      )
+      .get(stepName, cacheKey, ...(cutoff !== null ? [cutoff] : [])) as WorkflowStepRow | undefined
+
+    if (!row) return null
+    return {
+      id: row.id,
+      runId: row.run_id,
+      name: row.name,
+      status: row.status as StepResult['status'],
+      output: row.output === null ? null : deserializePersistedValue(row.output),
+      error: row.error,
+      attempts: row.attempts,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }
   }
 
   async updateRunStatus(runId: string, status: RunStatus): Promise<boolean> {

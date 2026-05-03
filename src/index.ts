@@ -1,5 +1,7 @@
 export { createWorkflow } from './core/workflow'
 export { createEngine } from './core/engine'
+export { createEngineRunner } from './runner'
+export type { EngineRunner, EngineRunnerOptions } from './runner'
 export {
   ReflowError,
   ConfigError,
