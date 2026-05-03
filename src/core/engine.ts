@@ -109,7 +109,7 @@ function parseTtl(cache: true | `${number}h` | `${number}d` | undefined): number
  * await engine.start()
  * ```
  */
-export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
+export function _createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   config: EngineConfig<TWorkflows>,
 ): Engine<WorkflowInputMap<TWorkflows>> {
   const {

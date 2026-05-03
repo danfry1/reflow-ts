@@ -1,15 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow } from '../core/workflow'
-import { createEngineRunner } from '../runner'
+import { createEngine } from '../runner'
 import { MemoryStorage } from '../storage/memory'
 
-describe('createEngineRunner', () => {
+describe('createEngine', () => {
   it('yields the final output of a completed run', async () => {
     const wf = createWorkflow({ name: 'double', input: z.object({ x: z.number() }) })
       .step('calc', async ({ input }) => ({ result: input.x * 2 }))
 
-    const runner = createEngineRunner<{ result: number }>(wf, { storage: new MemoryStorage() })
+    const runner = createEngine<{ result: number }>(wf, { storage: new MemoryStorage() })
 
     const results: { result: number }[] = []
     const consume = (async () => {
@@ -36,7 +36,7 @@ describe('createEngineRunner', () => {
       })
 
     const storage = new MemoryStorage()
-    const runner = createEngineRunner<{ n: number }>(wf, { storage })
+    const runner = createEngine<{ n: number }>(wf, { storage })
 
     const results: { n: number }[] = []
     const consume = (async () => {
@@ -61,7 +61,7 @@ describe('createEngineRunner', () => {
     const wf = createWorkflow({ name: 'custom-storage', input: z.object({}) })
       .step('a', async () => ({ ok: true }))
 
-    const runner = createEngineRunner<{ ok: boolean }>(wf, { storage })
+    const runner = createEngine<{ ok: boolean }>(wf, { storage })
 
     const results: { ok: boolean }[] = []
     const consume = (async () => {
@@ -88,7 +88,7 @@ describe('createEngineRunner', () => {
       })
 
     const storage = new MemoryStorage()
-    const runner = createEngineRunner<{ n: number }>(wf, { storage })
+    const runner = createEngine<{ n: number }>(wf, { storage })
 
     const results: { n: number }[] = []
     const consume = (async () => {
@@ -114,7 +114,7 @@ describe('createEngineRunner', () => {
     const wf = createWorkflow({ name: 'dispose-test', input: z.object({}) })
       .step('a', async () => ({ done: true }))
 
-    const runner = createEngineRunner(wf, { storage: new MemoryStorage() })
+    const runner = createEngine(wf, { storage: new MemoryStorage() })
 
     // Should not hang
     runner.dispose()
@@ -124,7 +124,7 @@ describe('createEngineRunner', () => {
     const wf = createWorkflow({ name: 'async-dispose', input: z.object({ x: z.number() }) })
       .step('calc', async ({ input }) => ({ result: input.x * 3 }))
 
-    const runner = createEngineRunner<{ result: number }>(wf, { storage: new MemoryStorage() })
+    const runner = createEngine<{ result: number }>(wf, { storage: new MemoryStorage() })
 
     const results: { result: number }[] = []
     const consume = (async () => {

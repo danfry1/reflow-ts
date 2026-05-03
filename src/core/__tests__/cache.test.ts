@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow } from '../workflow'
-import { createEngine } from '../engine'
+import { _createEngine as createEngine } from '../engine'
 import { MemoryStorage } from '../../storage/memory'
 
 describe('step-level caching', () => {

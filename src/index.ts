@@ -1,7 +1,6 @@
 export { createWorkflow } from './core/workflow'
-export { createEngine } from './core/engine'
-export { createEngineRunner } from './runner'
-export type { EngineRunner, EngineRunnerOptions } from './runner'
+export { createEngine } from './runner'
+export type { EngineRunner, EngineRunnerOptions, MultiWorkflowEngineRunner, MultiWorkflowEngineRunnerOptions } from './runner'
 export {
   ReflowError,
   ConfigError,
@@ -28,7 +27,7 @@ export type {
   WorkflowInputMap,
   WorkflowStepsMap,
 } from './core/workflow'
-export type { Engine, EngineConfig, EngineHooks, EnqueueOptions } from './core/engine'
+export type { EngineHooks } from './core/engine'
 export type {
   ClaimedRun,
   CreateRunResult,
