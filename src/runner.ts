@@ -12,6 +12,7 @@ export interface EngineRunner<T> {
   [Symbol.asyncIterator](): AsyncIterator<T>
   finish(): Promise<void>
   dispose(): void
+  [Symbol.asyncDispose](): Promise<void>
 }
 
 /**
@@ -102,5 +103,6 @@ export function createEngineRunner<T>(
     [Symbol.asyncIterator]: generate,
     finish,
     dispose,
+    [Symbol.asyncDispose]: finish,
   }
 }

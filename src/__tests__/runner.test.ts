@@ -119,4 +119,25 @@ describe('createEngineRunner', () => {
     // Should not hang
     runner.dispose()
   })
+
+  it('[Symbol.asyncDispose] waits for in-flight run then stops', async () => {
+    const wf = createWorkflow({ name: 'async-dispose', input: z.object({ x: z.number() }) })
+      .step('calc', async ({ input }) => ({ result: input.x * 3 }))
+
+    const runner = createEngineRunner<{ result: number }>(wf, { storage: new MemoryStorage() })
+
+    const results: { result: number }[] = []
+    const consume = (async () => {
+      for await (const item of runner) {
+        results.push(item)
+        break
+      }
+    })()
+
+    await runner.enqueue({ x: 4 })
+    await consume
+    await runner[Symbol.asyncDispose]()
+
+    expect(results).toEqual([{ result: 12 }])
+  })
 })
