@@ -1,4 +1,4 @@
-import { createEngine } from '../core/engine'
+import { _createEngine as createEngine } from '../core/engine'
 import type { PersistedValue } from '../core/types'
 import { MemoryStorage } from '../storage/memory'
 import type {

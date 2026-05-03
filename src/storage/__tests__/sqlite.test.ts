@@ -399,6 +399,68 @@ describe('SQLiteStorage', () => {
     })
   })
 
+  describe('getCachedStepResult', () => {
+    it('returns null when no matching entry exists', async () => {
+      const result = await storage.getCachedStepResult('step-a', 'key1')
+      expect(result).toBeNull()
+    })
+
+    it('returns the cached result when a matching completed entry with attempts > 0 exists', async () => {
+      await storage.createRun(makeRun())
+      await storage.saveStepResult(makeStep(), undefined, 'cache-key')
+
+      const result = await storage.getCachedStepResult('step-a', 'cache-key')
+      expect(result).not.toBeNull()
+      expect(result?.output).toEqual({ result: true })
+      expect(result?.attempts).toBe(1)
+    })
+
+    it('excludes sentinel rows (attempts === 0)', async () => {
+      await storage.createRun(makeRun())
+      await storage.saveStepResult(makeStep({ attempts: 0 }), undefined, 'cache-key')
+
+      const result = await storage.getCachedStepResult('step-a', 'cache-key')
+      expect(result).toBeNull()
+    })
+
+    it('excludes entries older than ttlMs', async () => {
+      const staleTime = Date.now() - 2 * 3_600_000
+      await storage.createRun(makeRun())
+      await storage.saveStepResult(
+        makeStep({ id: 'step_stale', createdAt: staleTime, updatedAt: staleTime }),
+        undefined,
+        'cache-key',
+      )
+
+      const result = await storage.getCachedStepResult('step-a', 'cache-key', 3_600_000)
+      expect(result).toBeNull()
+    })
+
+    it('returns an entry within the TTL window', async () => {
+      await storage.createRun(makeRun())
+      await storage.saveStepResult(makeStep(), undefined, 'cache-key')
+
+      const result = await storage.getCachedStepResult('step-a', 'cache-key', 3_600_000)
+      expect(result).not.toBeNull()
+      expect(result?.output).toEqual({ result: true })
+    })
+
+    it('returns the most recent entry when multiple exist', async () => {
+      await storage.createRun(makeRun())
+      const older = Date.now() - 1000
+      await storage.saveStepResult(makeStep({ id: 'step_old', output: { v: 'old' }, updatedAt: older }), undefined, 'cache-key')
+      await storage.saveStepResult(makeStep({ id: 'step_new', output: { v: 'new' } }), undefined, 'cache-key')
+
+      const result = await storage.getCachedStepResult('step-a', 'cache-key')
+      expect(result?.output).toEqual({ v: 'new' })
+    })
+
+    it('cache_key column survives reinitialize (migration idempotency)', async () => {
+      // Re-initialize on an already-initialized DB should not throw
+      await expect(storage.initialize()).resolves.toBeUndefined()
+    })
+  })
+
   describe('persistence', () => {
     it('data survives across separate SQLiteStorage instances', async () => {
       await storage.createRun(makeRun({ id: 'run_1', input: { hello: 'world' } }))

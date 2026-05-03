@@ -3,7 +3,7 @@ import { existsSync, unlinkSync } from 'node:fs'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow } from '../workflow'
-import { createEngine } from '../engine'
+import { _createEngine as createEngine } from '../engine'
 import type { StorageAdapter } from '../types'
 import { MemoryStorage } from '../../storage/memory'
 import { SQLiteStorage } from '../../storage/sqlite-node'
@@ -558,7 +558,8 @@ describe('Engine', () => {
         },
         getRun: (runId) => delegate.getRun(runId),
         getStepResults: (runId) => delegate.getStepResults(runId),
-        saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
+        saveStepResult: (result, leaseId, cacheKey) => delegate.saveStepResult(result, leaseId, cacheKey),
+        getCachedStepResult: (stepName, cacheKey, ttlMs) => delegate.getCachedStepResult(stepName, cacheKey, ttlMs),
         updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
         updateClaimedRunStatus: (runId, leaseId, status) =>
           delegate.updateClaimedRunStatus(runId, leaseId, status),
@@ -1097,10 +1098,10 @@ describe('Engine', () => {
 
       expect(onStepComplete).toHaveBeenCalledTimes(2)
       expect(onStepComplete).toHaveBeenCalledWith(
-        expect.objectContaining({ stepName: 'a', output: { x: 1 }, attempts: 1 }),
+        expect.objectContaining({ stepName: 'a', output: { x: 1 }, attempts: 1, cacheHit: false }),
       )
       expect(onStepComplete).toHaveBeenCalledWith(
-        expect.objectContaining({ stepName: 'b', output: { y: 2 }, attempts: 1 }),
+        expect.objectContaining({ stepName: 'b', output: { y: 2 }, attempts: 1, cacheHit: false }),
       )
     })
 
@@ -1117,10 +1118,9 @@ describe('Engine', () => {
       await engine.tick()
 
       expect(onRunComplete).toHaveBeenCalledOnce()
-      expect(onRunComplete).toHaveBeenCalledWith({
-        runId: run.id,
-        workflow: 'complete-hook',
-      })
+      expect(onRunComplete).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: run.id, workflow: 'complete-hook' }),
+      )
     })
 
     it('calls onRunFailed when a workflow fails', async () => {
@@ -1271,7 +1271,7 @@ describe('Engine', () => {
       await engine.tick()
 
       expect(onStepComplete).toHaveBeenCalledWith(
-        expect.objectContaining({ stepName: 'flaky', attempts: 3 }),
+        expect.objectContaining({ stepName: 'flaky', attempts: 3, cacheHit: false }),
       )
     })
 
@@ -1306,10 +1306,10 @@ describe('Engine', () => {
         storage,
         workflows: [wf],
         hooks: {
-          onRunStart: () => order.push('onRunStart'),
-          onStepStart: () => order.push('onStepStart'),
-          onStepComplete: () => order.push('onStepComplete'),
-          onRunComplete: () => order.push('onRunComplete'),
+          onRunStart: () => { order.push('onRunStart') },
+          onStepStart: () => { order.push('onStepStart') },
+          onStepComplete: () => { order.push('onStepComplete') },
+          onRunComplete: () => { order.push('onRunComplete') },
         },
       })
       await engine.enqueue('start-order', {})
@@ -2074,7 +2074,7 @@ describe('Engine', () => {
       const run = await engine.enqueue('early-hook', {})
       await engine.tick()
 
-      expect(hookCalled).toHaveBeenCalledWith({ runId: run.id, workflow: 'early-hook' })
+      expect(hookCalled).toHaveBeenCalledWith(expect.objectContaining({ runId: run.id, workflow: 'early-hook' }))
     })
 
     it('complete() fires onStepComplete hook', async () => {
@@ -2090,12 +2090,9 @@ describe('Engine', () => {
       const run = await engine.enqueue('early-step-hook', {})
       await engine.tick()
 
-      expect(stepHook).toHaveBeenCalledWith({
-        runId: run.id,
-        stepName: 'check',
-        output: { done: true },
-        attempts: 1,
-      })
+      expect(stepHook).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: run.id, stepName: 'check', output: { done: true }, attempts: 1 }),
+      )
     })
 
     it('steps context is populated when complete() is called from a non-first step', async () => {
@@ -2198,13 +2195,10 @@ describe('Engine', () => {
       const info = expectPresent(await engine2.getRunStatus(run.id))
       expect(info.run.status).toBe('completed')
       expect(neverRuns).not.toHaveBeenCalled()
-      expect(stepHook).toHaveBeenCalledWith({
-        runId: run.id,
-        stepName: 'check',
-        output: { done: true },
-        attempts: 1,
-      })
-      expect(runHook).toHaveBeenCalledWith({ runId: run.id, workflow: 'early-recover' })
+      expect(stepHook).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: run.id, stepName: 'check', output: { done: true }, attempts: 1 }),
+      )
+      expect(runHook).toHaveBeenCalledWith(expect.objectContaining({ runId: run.id, workflow: 'early-recover' }))
     })
   })
 })

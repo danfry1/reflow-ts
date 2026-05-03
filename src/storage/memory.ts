@@ -16,6 +16,7 @@ interface StoredRun extends WorkflowRun {
 export class MemoryStorage implements StorageAdapter {
   private runs: Map<string, StoredRun> = new Map()
   private steps: Map<string, StepResult[]> = new Map()
+  private cacheIndex: Map<string, StepResult[]> = new Map()
 
   async initialize(): Promise<void> {}
 
@@ -105,7 +106,7 @@ export class MemoryStorage implements StorageAdapter {
     }))
   }
 
-  async saveStepResult(result: StepResult, leaseId?: string): Promise<boolean> {
+  async saveStepResult(result: StepResult, leaseId?: string, cacheKey?: string): Promise<boolean> {
     if (leaseId) {
       const run = this.runs.get(result.runId)
       if (!run || run.status !== 'running' || run.leaseId !== leaseId) {
@@ -124,7 +125,25 @@ export class MemoryStorage implements StorageAdapter {
     }
 
     this.steps.set(result.runId, existing)
+
+    if (cacheKey && result.attempts > 0 && result.status === 'completed') {
+      const indexKey = `${result.name}::${cacheKey}`
+      const entries = this.cacheIndex.get(indexKey) ?? []
+      entries.push({ ...result, output: clonePersistedValue(result.output, 'Step output') })
+      this.cacheIndex.set(indexKey, entries)
+    }
+
     return true
+  }
+
+  async getCachedStepResult(stepName: string, cacheKey: string, ttlMs?: number): Promise<StepResult | null> {
+    const indexKey = `${stepName}::${cacheKey}`
+    const entries = this.cacheIndex.get(indexKey) ?? []
+    const cutoff = ttlMs !== undefined ? Date.now() - ttlMs : 0
+    const valid = entries.filter((e) => e.updatedAt >= cutoff)
+    if (valid.length === 0) return null
+    const best = valid.reduce((a, b) => (a.updatedAt >= b.updatedAt ? a : b))
+    return { ...best, output: clonePersistedValue(best.output, 'Step output') }
   }
 
   async updateRunStatus(runId: string, status: RunStatus): Promise<boolean> {

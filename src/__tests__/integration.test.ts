@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
-import { createWorkflow, createEngine } from '../index'
+import { createWorkflow } from '../index'
+import { _createEngine as createEngine } from '../core/engine'
 import { MemoryStorage } from '../storage/memory'
 
 describe('integration: real-world scenarios', () => {

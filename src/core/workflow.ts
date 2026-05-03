@@ -26,6 +26,8 @@ export interface StepDefinition {
   handler: (ctx: StepContext<PersistedValue, PersistedValue, Record<string, PersistedValue>>) => Promise<PersistedValue | void>
   retry?: RetryConfig
   timeoutMs?: number
+  cache?: true | `${number}h` | `${number}d`
+  cacheKey?: (input: PersistedValue) => string
 }
 
 /** Configuration object form for `.step()` when you need retry or timeout options. */
@@ -38,6 +40,10 @@ export interface StepConfig<
   retry?: RetryConfig
   /** Timeout per attempt in milliseconds. Takes precedence over `retry.timeoutMs`. */
   timeoutMs?: number
+  /** Cache TTL. `true` = cache indefinitely. `"24h"` / `"7d"` set a time-to-live. Silently skipped if `cacheKey` is not also provided. */
+  cache?: true | `${number}h` | `${number}d`
+  /** Derive a stable cache identity string from the workflow input. Required for caching to be active. */
+  cacheKey?: (input: TInput) => string
   handler: (ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>
 }
 
@@ -172,12 +178,16 @@ function buildWorkflow<
       const handler = isConfig ? handlerOrConfig.handler : handlerOrConfig
       const retry = isConfig ? handlerOrConfig.retry : undefined
       const timeoutMs = isConfig ? handlerOrConfig.timeoutMs : undefined
+      const cache = isConfig ? handlerOrConfig.cache : undefined
+      const cacheKey = isConfig ? handlerOrConfig.cacheKey : undefined
 
       const newStep: StepDefinition = {
         name: stepName,
         handler: handler as unknown as StepDefinition['handler'],
         retry,
         timeoutMs,
+        cache,
+        cacheKey: cacheKey as StepDefinition['cacheKey'],
       }
       return buildWorkflow<
         TName,
