@@ -425,6 +425,13 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     let lastError: Error | null = null
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Bail out of further retry attempts once the run/group signal is aborted.
+      // A handler is not re-entered (runWithSignal short-circuits), but iterating
+      // the loop just to reject again wastes work and confuses metrics.
+      if (activeRun.runAbortController.signal.aborted) {
+        break
+      }
+
       const attemptSignal = createAttemptSignal(activeRun.runAbortController.signal, timeoutMs)
 
       try {
@@ -484,7 +491,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     branches: readonly StepDefinition[],
     prev: PersistedValue,
     stepsAccumulator: Record<string, PersistedValue>,
-    completedMap: Map<string, { status: string; output: PersistedValue; attempts: number }>,
+    completedMap: Map<string, { id: string; status: string; output: PersistedValue; attempts: number }>,
   ): Promise<ParallelGroupResult> {
     if (activeRun.runAbortController.signal.aborted) {
       const latestRun = await storage.getRun(run.id)
@@ -493,24 +500,31 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       }
     }
 
-    // Crash recovery: if ALL branches have completed results, skip the group
-    const allCompleted = branches.every((b) => completedMap.get(b.name)?.status === 'completed')
-    if (allCompleted) {
-      const merged: Record<string, PersistedValue> = {}
-      for (const branchDef of branches) {
-        const existing = completedMap.get(branchDef.name)
-        if (existing) {
-          merged[branchDef.name] = existing.output
-          stepsAccumulator[branchDef.name] = structuredClone(existing.output)
-        }
+    // Crash-recovery: any branch already persisted as 'completed' is reused.
+    // Failed records do not count — they get retried fresh, matching sequential semantics.
+    const merged: Record<string, PersistedValue> = {}
+    const pendingBranches: StepDefinition[] = []
+    for (const branchDef of branches) {
+      const existing = completedMap.get(branchDef.name)
+      if (existing?.status === 'completed') {
+        merged[branchDef.name] = existing.output
+        stepsAccumulator[branchDef.name] = structuredClone(existing.output)
+      } else {
+        pendingBranches.push(branchDef)
       }
+    }
+
+    if (pendingBranches.length === 0) {
       return { kind: 'completed', merged }
     }
 
-    // Not all completed — re-run the entire group
     const frozenSteps = snapshotSteps(stepsAccumulator)
 
     const groupAbort = new AbortController()
+    // Track which branch was the *original* failure that caused the group to abort.
+    // Siblings that fail because they observed the abort are downstream effects, not
+    // the underlying cause — distinguishing this keeps onRunFailed accurate.
+    let causeBranch: BranchFailedError | null = null
     const onRunAbort = () => {
       if (!groupAbort.signal.aborted) {
         groupAbort.abort(activeRun.runAbortController.signal.reason)
@@ -523,7 +537,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }
 
     try {
-      for (const branchDef of branches) {
+      for (const branchDef of pendingBranches) {
         try {
           hooks?.onStepStart?.({ runId: run.id, stepName: branchDef.name })
         } catch { /* hooks must not affect engine state */ }
@@ -534,8 +548,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         runAbortController: groupAbort,
       }
 
-      const results = await Promise.all(
-        branches.map(async (branchDef) => {
+      // Run all pending branches; collect both successes and failures so siblings
+      // get a chance to settle (allSettled, not all) before we tear down.
+      const settled = await Promise.allSettled(
+        pendingBranches.map(async (branchDef) => {
           const guardedHandler: StepDefinition['handler'] = (ctx) => {
             const guardedComplete = (): never => {
               throw new ParallelCompleteError(branchDef.name)
@@ -547,36 +563,95 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           const outcome = await executeStep(run, groupActiveRun, guardedDef, prev, frozenSteps)
 
           if (outcome.kind === 'failed') {
+            const failure = new BranchFailedError(branchDef.name, outcome.error, outcome.attempts)
             if (!groupAbort.signal.aborted) {
+              causeBranch = failure
               groupAbort.abort(outcome.error)
             }
-            throw new BranchFailedError(branchDef.name, outcome.error, outcome.attempts)
+            throw failure
           }
 
           if (outcome.kind === 'early-complete') {
             const err = new ParallelCompleteError(branchDef.name)
+            const failure = new BranchFailedError(branchDef.name, err, outcome.attempts)
             if (!groupAbort.signal.aborted) {
+              causeBranch = failure
               groupAbort.abort(err)
             }
-            throw new BranchFailedError(branchDef.name, err, outcome.attempts)
+            throw failure
           }
 
           return { name: branchDef.name, output: outcome.output, attempts: outcome.attempts }
         }),
       )
 
-      // All branches succeeded — persist results
-      const merged: Record<string, PersistedValue> = {}
-      for (const result of results) {
+      // If the run itself was cancelled while branches were running, surface that
+      // before reporting branch failures. Cancellation isn't a branch failure.
+      if (activeRun.runAbortController.signal.aborted) {
+        const currentRun = await storage.getRun(run.id)
+        if (!currentRun || currentRun.status === 'cancelled') {
+          return { kind: 'skipped-cancelled' }
+        }
+      }
+
+      // Prefer the branch that actually caused the abort; only fall back to scanning
+      // settled when no cause was recorded (e.g. group aborted from outside the loop).
+      let firstFailure: BranchFailedError | null = causeBranch
+      if (!firstFailure) {
+        for (const result of settled) {
+          if (result.status === 'rejected') {
+            const err = result.reason instanceof Error ? result.reason : new Error(String(result.reason))
+            if (err instanceof RunControlError) {
+              return { kind: 'skipped-cancelled' }
+            }
+            if (err instanceof BranchFailedError) {
+              firstFailure = err
+              break
+            }
+            // Defensive: wrap unknown error as branch failure on first pending branch.
+            firstFailure = new BranchFailedError(pendingBranches[0].name, err, 1)
+            break
+          }
+        }
+      }
+
+      if (firstFailure) {
+        // Persist the failed step result. Reuse the existing row id so a retry upserts
+        // in place rather than appending a duplicate. If the lease is lost mid-write,
+        // we still report the failure — the outer code will no-op the run-status
+        // update because the same lease check will fail there.
+        const failedBranch = firstFailure.branchName
+        const existingRow = completedMap.get(failedBranch)
+        const now = Date.now()
+        await storage.saveStepResult({
+          id: existingRow?.id ?? randomUUID(),
+          runId: run.id,
+          name: failedBranch,
+          status: 'failed',
+          output: null,
+          error: firstFailure.branchError.message,
+          attempts: firstFailure.attempts,
+          createdAt: now,
+          updatedAt: now,
+        }, run.leaseId)
+
+        return { kind: 'failed', branchName: failedBranch, error: firstFailure.branchError }
+      }
+
+      // All pending branches succeeded — persist their results and fire complete hooks.
+      for (const result of settled) {
+        if (result.status !== 'fulfilled') continue
+        const branchResult = result.value
+        const existingRow = completedMap.get(branchResult.name)
         const now = Date.now()
         const saved = await storage.saveStepResult({
-          id: randomUUID(),
+          id: existingRow?.id ?? randomUUID(),
           runId: run.id,
-          name: result.name,
+          name: branchResult.name,
           status: 'completed',
-          output: result.output,
+          output: branchResult.output,
           error: null,
-          attempts: result.attempts,
+          attempts: branchResult.attempts,
           createdAt: now,
           updatedAt: now,
         }, run.leaseId)
@@ -588,18 +663,21 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         try {
           hooks?.onStepComplete?.({
             runId: run.id,
-            stepName: result.name,
-            output: result.output,
-            attempts: result.attempts,
+            stepName: branchResult.name,
+            output: branchResult.output,
+            attempts: branchResult.attempts,
           })
         } catch { /* hooks must not affect engine state */ }
 
-        stepsAccumulator[result.name] = structuredClone(result.output)
-        merged[result.name] = result.output
+        stepsAccumulator[branchResult.name] = structuredClone(branchResult.output)
+        merged[branchResult.name] = branchResult.output
       }
 
       return { kind: 'completed', merged }
     } catch (error) {
+      // The Promise.allSettled branch above swallows per-branch failures, so this
+      // catch only fires for LeaseExpiredError thrown during success-path persistence
+      // or other unexpected throws.
       const err = error instanceof Error ? error : new Error(String(error))
 
       if (err instanceof EarlyCompleteError) {
@@ -617,33 +695,14 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         }
       }
 
-      const branchName = err instanceof BranchFailedError ? err.branchName : branches[0].name
-      const branchAttempts = err instanceof BranchFailedError ? err.attempts : 1
-      const branchError = err instanceof BranchFailedError ? err.branchError : err
-
-      // Persist the failed step result
-      const now = Date.now()
-      const saved = await storage.saveStepResult({
-        id: randomUUID(),
-        runId: run.id,
-        name: branchName,
-        status: 'failed',
-        output: null,
-        error: branchError.message,
-        attempts: branchAttempts,
-        createdAt: now,
-        updatedAt: now,
-      }, run.leaseId)
-
-      if (!saved) {
-        return { kind: 'failed', branchName, error: branchError }
-      }
-
-      return { kind: 'failed', branchName, error: branchError }
+      // LeaseExpiredError or similar — surface as failure on the first pending branch
+      // (we don't have specific branch context here).
+      return { kind: 'failed', branchName: pendingBranches[0].name, error: err }
     } finally {
       activeRun.runAbortController.signal.removeEventListener('abort', onRunAbort)
     }
   }
+
 
   async function cancel(runId: string): Promise<boolean> {
     const run = await storage.getRun(runId)

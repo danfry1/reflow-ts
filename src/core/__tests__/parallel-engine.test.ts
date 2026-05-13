@@ -204,6 +204,109 @@ describe('Parallel engine execution', () => {
       )
     })
 
+    it('reports the branch that caused the abort, not an aborted sibling', async () => {
+      // When branch B fails first and aborts branch A, A's failure is an induced
+      // side-effect — not the underlying cause. onRunFailed must surface B's name and
+      // B's actual error, otherwise debugging a production incident points at the wrong step.
+      const onRunFailed = vi.fn()
+
+      const wf = createWorkflow({ name: 'cause-reporting', input: z.object({}) })
+        .parallel({
+          first: async ({ signal }) => {
+            // Cooperative wait — will be aborted by 'second' failing.
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(resolve, 5000)
+              signal.addEventListener('abort', () => {
+                clearTimeout(timer)
+                reject(signal.reason)
+              }, { once: true })
+            })
+            return {}
+          },
+          second: async () => {
+            throw new Error('underlying cause')
+          },
+        })
+
+      const engine = createEngine({ storage, workflows: [wf], hooks: { onRunFailed } })
+      await engine.enqueue('cause-reporting', {})
+      await engine.tick()
+
+      expect(onRunFailed).toHaveBeenCalledOnce()
+      expect(onRunFailed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stepName: 'second',
+          error: expect.objectContaining({ message: 'underlying cause' }),
+        }),
+      )
+    })
+
+    it('persists only the causing branch as failed, not aborted siblings', async () => {
+      const wf = createWorkflow({ name: 'failed-row-cause', input: z.object({}) })
+        .parallel({
+          aborted: async ({ signal }) => {
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(resolve, 5000)
+              signal.addEventListener('abort', () => {
+                clearTimeout(timer)
+                reject(signal.reason)
+              }, { once: true })
+            })
+            return {}
+          },
+          cause: async () => {
+            throw new Error('real failure')
+          },
+        })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('failed-row-cause', {})
+      await engine.tick()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('failed')
+
+      const failedRows = info.steps.filter((s) => s.status === 'failed')
+      expect(failedRows).toHaveLength(1)
+      expect(failedRows[0].name).toBe('cause')
+      expect(failedRows[0].error).toBe('real failure')
+    })
+
+    it('does not surface unhandled rejections when multiple branches fail concurrently', async () => {
+      // Promise.all would consume the first rejection and leave siblings' rejections
+      // unhandled. Promise.allSettled collects all settlements so no listener-less
+      // rejection escapes.
+      const rejections: unknown[] = []
+      const onUnhandled = (reason: unknown) => rejections.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+
+      try {
+        const wf = createWorkflow({ name: 'multi-fail', input: z.object({}) })
+          .parallel({
+            a: async () => {
+              throw new Error('a failed')
+            },
+            b: async () => {
+              throw new Error('b failed')
+            },
+            c: async () => {
+              throw new Error('c failed')
+            },
+          })
+
+        const engine = createEngine({ storage, workflows: [wf] })
+        await engine.enqueue('multi-fail', {})
+        await engine.tick()
+
+        // Give the microtask queue a chance to drain potential unhandled rejections.
+        await new Promise((r) => setTimeout(r, 10))
+
+        expect(rejections).toHaveLength(0)
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
+    })
+
     it('calls onFailure handler with failing branch name', async () => {
       const failHandler = vi.fn(async () => {})
 
@@ -277,6 +380,44 @@ describe('Parallel engine execution', () => {
   })
 
   describe('per-branch retry', () => {
+    it('does not exhaust retry attempts on a sibling after the group is aborted', async () => {
+      // When branch A fails and aborts the group, branch B (with retries configured)
+      // should bail immediately rather than burning through retries that observe the
+      // already-aborted signal.
+      let bAttempts = 0
+
+      const wf = createWorkflow({ name: 'no-retry-after-abort', input: z.object({}) })
+        .parallel({
+          a: async () => {
+            // small delay so b registers attempts before the abort
+            await new Promise((r) => setTimeout(r, 5))
+            throw new Error('a failed')
+          },
+          b: {
+            retry: { maxAttempts: 5, backoff: 'linear', initialDelayMs: 0 },
+            handler: async ({ signal }) => {
+              bAttempts++
+              await new Promise<void>((resolve, reject) => {
+                const timer = setTimeout(resolve, 1000)
+                signal.addEventListener('abort', () => {
+                  clearTimeout(timer)
+                  reject(signal.reason)
+                }, { once: true })
+              })
+              return {}
+            },
+          },
+        })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      await engine.enqueue('no-retry-after-abort', {})
+      await engine.tick()
+
+      // Even though maxAttempts is 5, b should only have run once before the abort
+      // propagated and stopped further attempts.
+      expect(bAttempts).toBe(1)
+    })
+
     it('retries a failing branch independently', async () => {
       let attempts = 0
 
@@ -400,29 +541,32 @@ describe('Parallel engine execution', () => {
   })
 
   describe('crash recovery', () => {
-    it('re-runs entire parallel group when partially completed', async () => {
+    it('skips already-completed branches and only re-runs missing ones', async () => {
       let branchACalls = 0
+      let branchBCalls = 0
 
       const wf = createWorkflow({ name: 'partial-recovery', input: z.object({}) })
         .parallel({
           a: async () => {
             branchACalls++
-            return { fromA: 'recovered' }
+            return { fromA: 'fresh' }
           },
-          b: async () => ({ fromB: 'new' }),
+          b: async () => {
+            branchBCalls++
+            return { fromB: 'fresh' }
+          },
         })
 
       const engine = createEngine({ storage, workflows: [wf] })
       const run = await engine.enqueue('partial-recovery', {})
 
-      // Simulate partial completion: only branch 'a' was persisted from a previous run
       const now = Date.now()
       await storage.saveStepResult({
         id: randomUUID(),
         runId: run.id,
         name: 'a',
         status: 'completed',
-        output: { fromA: 'old' },
+        output: { fromA: 'cached' },
         error: null,
         attempts: 1,
         createdAt: now,
@@ -431,17 +575,135 @@ describe('Parallel engine execution', () => {
 
       await engine.tick()
 
-      // Branch A should have been re-run (since not ALL branches were complete)
+      expect(branchACalls).toBe(0)
+      expect(branchBCalls).toBe(1)
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('completed')
+
+      // No duplicate rows — exactly one record per branch
+      const rowsA = info.steps.filter((s) => s.name === 'a')
+      const rowsB = info.steps.filter((s) => s.name === 'b')
+      expect(rowsA).toHaveLength(1)
+      expect(rowsB).toHaveLength(1)
+      expect(rowsA[0].output).toEqual({ fromA: 'cached' })
+      expect(rowsB[0].output).toEqual({ fromB: 'fresh' })
+    })
+
+    it('merges cached and fresh branch outputs for the next step', async () => {
+      let capturedPrev: PersistedValue = undefined
+
+      const wf = createWorkflow({ name: 'partial-merge', input: z.object({}) })
+        .parallel({
+          a: async () => ({ fromA: 'fresh' }),
+          b: async () => ({ fromB: 'fresh' }),
+        })
+        .step('after', async ({ prev }) => {
+          capturedPrev = prev
+          return {}
+        })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('partial-merge', {})
+
+      const now = Date.now()
+      await storage.saveStepResult({
+        id: randomUUID(),
+        runId: run.id,
+        name: 'a',
+        status: 'completed',
+        output: { fromA: 'cached' },
+        error: null,
+        attempts: 1,
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      await engine.tick()
+
+      expect(capturedPrev).toEqual({ a: { fromA: 'cached' }, b: { fromB: 'fresh' } })
+    })
+
+    it('skips an already-failed branch from a prior run and lets fresh ones complete', async () => {
+      // When the prior run persisted a 'failed' record (e.g. mid-run lease loss), the
+      // engine should retry that branch fresh — failed records don't count as completed.
+      let branchACalls = 0
+
+      const wf = createWorkflow({ name: 'failed-retry', input: z.object({}) })
+        .parallel({
+          a: async () => {
+            branchACalls++
+            return { fromA: 'recovered' }
+          },
+          b: async () => ({ fromB: 'fresh' }),
+        })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('failed-retry', {})
+
+      const now = Date.now()
+      await storage.saveStepResult({
+        id: randomUUID(),
+        runId: run.id,
+        name: 'a',
+        status: 'failed',
+        output: null,
+        error: 'prior failure',
+        attempts: 1,
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      await engine.tick()
+
       expect(branchACalls).toBe(1)
 
       const info = expectPresent(await engine.getRunStatus(run.id))
       expect(info.run.status).toBe('completed')
 
-      // The step results should include the re-run results
-      const stepA = info.steps.find((s) => s.name === 'a' && s.output !== null)
-      const stepB = info.steps.find((s) => s.name === 'b')
-      expect(stepA).toBeDefined()
-      expect(stepB?.output).toEqual({ fromB: 'new' })
+      const completedA = info.steps.find((s) => s.name === 'a' && s.status === 'completed')
+      expect(completedA?.output).toEqual({ fromA: 'recovered' })
+    })
+
+    it('does not fire onStepStart or onStepComplete for already-completed branches on resume', async () => {
+      const onStepStart = vi.fn()
+      const onStepComplete = vi.fn()
+
+      const wf = createWorkflow({ name: 'resume-hooks', input: z.object({}) })
+        .parallel({
+          a: async () => ({ fromA: 'fresh' }),
+          b: async () => ({ fromB: 'fresh' }),
+        })
+
+      const engine = createEngine({
+        storage,
+        workflows: [wf],
+        hooks: { onStepStart, onStepComplete },
+      })
+      const run = await engine.enqueue('resume-hooks', {})
+
+      const now = Date.now()
+      await storage.saveStepResult({
+        id: randomUUID(),
+        runId: run.id,
+        name: 'a',
+        status: 'completed',
+        output: { fromA: 'cached' },
+        error: null,
+        attempts: 1,
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      await engine.tick()
+
+      // Only the un-completed branch should fire start/complete
+      expect(onStepStart).toHaveBeenCalledTimes(1)
+      expect(onStepStart).toHaveBeenCalledWith(expect.objectContaining({ stepName: 'b' }))
+      expect(onStepComplete).toHaveBeenCalledTimes(1)
+      expect(onStepComplete).toHaveBeenCalledWith(
+        expect.objectContaining({ stepName: 'b', output: { fromB: 'fresh' } }),
+      )
     })
 
     it('skips parallel group when all branches already completed', async () => {
