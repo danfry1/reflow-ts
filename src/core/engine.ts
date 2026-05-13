@@ -473,10 +473,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       }
     }
 
-    if (lastError instanceof RunControlError) {
-      throw lastError
-    }
-
+    // RunControlError is rethrown inside the loop; if we reach here, lastError is a
+    // regular failure (or null when the signal was aborted before any attempt ran).
     return { kind: 'failed', error: lastError ?? new Error('Unknown error'), attempts: maxAttempts }
   }
 
@@ -562,21 +560,14 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           const guardedDef: StepDefinition = { ...branchDef, handler: guardedHandler }
           const outcome = await executeStep(run, groupActiveRun, guardedDef, prev, frozenSteps)
 
+          // `outcome.kind === 'early-complete'` is unreachable: guardedComplete throws
+          // ParallelCompleteError (a regular error) before EarlyCompleteError can be
+          // raised, so executeStep returns 'completed' or 'failed' for parallel branches.
           if (outcome.kind === 'failed') {
             const failure = new BranchFailedError(branchDef.name, outcome.error, outcome.attempts)
             if (!groupAbort.signal.aborted) {
               causeBranch = failure
               groupAbort.abort(outcome.error)
-            }
-            throw failure
-          }
-
-          if (outcome.kind === 'early-complete') {
-            const err = new ParallelCompleteError(branchDef.name)
-            const failure = new BranchFailedError(branchDef.name, err, outcome.attempts)
-            if (!groupAbort.signal.aborted) {
-              causeBranch = failure
-              groupAbort.abort(err)
             }
             throw failure
           }
@@ -675,28 +666,14 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
       return { kind: 'completed', merged }
     } catch (error) {
-      // The Promise.allSettled branch above swallows per-branch failures, so this
-      // catch only fires for LeaseExpiredError thrown during success-path persistence
-      // or other unexpected throws.
+      // Promise.allSettled above swallows per-branch failures, so this catch only
+      // fires for LeaseExpiredError thrown during success-path persistence.
       const err = error instanceof Error ? error : new Error(String(error))
-
-      if (err instanceof EarlyCompleteError) {
-        throw new Error('EarlyCompleteError escaped executeStep in parallel group')
-      }
 
       if (err instanceof RunControlError) {
         return { kind: 'skipped-cancelled' }
       }
 
-      if (activeRun.runAbortController.signal.aborted) {
-        const currentRun = await storage.getRun(run.id)
-        if (!currentRun || currentRun.status === 'cancelled') {
-          return { kind: 'skipped-cancelled' }
-        }
-      }
-
-      // LeaseExpiredError or similar — surface as failure on the first pending branch
-      // (we don't have specific branch context here).
       return { kind: 'failed', branchName: pendingBranches[0].name, error: err }
     } finally {
       activeRun.runAbortController.signal.removeEventListener('abort', onRunAbort)

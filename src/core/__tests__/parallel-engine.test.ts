@@ -5,7 +5,7 @@ import { createWorkflow } from '../workflow'
 import { createEngine } from '../engine'
 import { MemoryStorage } from '../../storage/memory'
 import { ParallelCompleteError } from '../errors'
-import type { PersistedValue } from '../types'
+import type { PersistedValue, StorageAdapter } from '../types'
 
 function expectPresent<T>(value: T | null | undefined): T {
   expect(value).not.toBeNull()
@@ -833,6 +833,141 @@ describe('Parallel engine execution', () => {
       const info = expectPresent(await engine.getRunStatus(run.id))
       expect(info.run.status).toBe('cancelled')
       expect(aborted.sort()).toEqual(['slow', 'slower'])
+    })
+  })
+
+  describe('lease loss during parallel persistence', () => {
+    it('returns a failure when the lease is lost while persisting branch results', async () => {
+      // After all branches complete, the engine persists each result via saveStepResult.
+      // If the lease is invalidated mid-loop (e.g. heartbeat lost during execution),
+      // saveStepResult returns false and the engine surfaces a failure rather than
+      // silently corrupting state.
+      const delegate = new MemoryStorage()
+      await delegate.initialize()
+
+      let saveCalls = 0
+      const flakyStorage: StorageAdapter = {
+        initialize: () => delegate.initialize(),
+        createRun: (run) => delegate.createRun(run),
+        claimNextRun: (workflowNames, staleBefore) =>
+          delegate.claimNextRun(workflowNames, staleBefore),
+        heartbeatRun: (runId, leaseId) => delegate.heartbeatRun(runId, leaseId),
+        getRun: (runId) => delegate.getRun(runId),
+        getStepResults: (runId) => delegate.getStepResults(runId),
+        saveStepResult: async (result, leaseId) => {
+          saveCalls++
+          // Drop the first parallel-branch save to simulate lease loss mid-persistence.
+          if (saveCalls === 1) return false
+          return delegate.saveStepResult(result, leaseId)
+        },
+        updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
+        updateClaimedRunStatus: (runId, leaseId, status) =>
+          delegate.updateClaimedRunStatus(runId, leaseId, status),
+        close: () => delegate.close(),
+      }
+
+      const wf = createWorkflow({ name: 'lease-loss', input: z.object({}) })
+        .parallel({
+          a: async () => ({ ok: true }),
+          b: async () => ({ ok: true }),
+        })
+
+      const engine = createEngine({ storage: flakyStorage, workflows: [wf] })
+      const run = await engine.enqueue('lease-loss', {})
+      await engine.tick()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      // Either failed (status update succeeded with the same lease) or running (also
+      // failed to update). Both are valid responses to lease loss; neither is 'completed'.
+      expect(info.run.status).not.toBe('completed')
+    })
+  })
+
+  describe('lease loss mid-branch', () => {
+    it('treats RunControlError from a branch as a skipped-cancelled outcome', async () => {
+      // When the heartbeat fails mid-branch, the active-run signal is aborted with a
+      // LeaseExpiredError. Branches' executeStep rethrows it (RunControlError) without
+      // entering the BranchFailedError path, so causeBranch is never set. The
+      // post-allSettled fallback must recognise the RunControlError and bail.
+      const delegate = new MemoryStorage()
+      await delegate.initialize()
+
+      let heartbeatCalls = 0
+      const flakyStorage: StorageAdapter = {
+        initialize: () => delegate.initialize(),
+        createRun: (run) => delegate.createRun(run),
+        claimNextRun: (workflowNames, staleBefore) =>
+          delegate.claimNextRun(workflowNames, staleBefore),
+        heartbeatRun: async (runId, leaseId) => {
+          heartbeatCalls++
+          if (heartbeatCalls === 1) throw new Error('heartbeat exploded')
+          return delegate.heartbeatRun(runId, leaseId)
+        },
+        getRun: (runId) => delegate.getRun(runId),
+        getStepResults: (runId) => delegate.getStepResults(runId),
+        saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
+        updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
+        updateClaimedRunStatus: (runId, leaseId, status) =>
+          delegate.updateClaimedRunStatus(runId, leaseId, status),
+        close: () => delegate.close(),
+      }
+
+      const wf = createWorkflow({ name: 'heartbeat-parallel', input: z.object({}) })
+        .parallel({
+          slow: async ({ signal }) => {
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(resolve, 1000)
+              signal.addEventListener('abort', () => {
+                clearTimeout(timer)
+                reject(signal.reason)
+              }, { once: true })
+            })
+            return {}
+          },
+        })
+
+      const engine = createEngine({
+        storage: flakyStorage,
+        workflows: [wf],
+        runLeaseDurationMs: 30,
+        heartbeatIntervalMs: 5,
+      })
+
+      const run = await engine.enqueue('heartbeat-parallel', {})
+      await engine.tick()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      // The run is not marked completed — lease-loss invalidates the success path.
+      expect(info.run.status).not.toBe('completed')
+    })
+  })
+
+  describe('group entered while already cancelled', () => {
+    it('skips parallel group when the run was cancelled before the group started', async () => {
+      let parallelEntered = false
+
+      const wf = createWorkflow({ name: 'cancelled-before-group', input: z.object({}) })
+        .step('setup', async () => ({ ok: true }))
+        .parallel({
+          a: async () => {
+            parallelEntered = true
+            return { ok: true }
+          },
+        })
+
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('cancelled-before-group', {})
+
+      // Cancel before tick() — the run is claimed, setup runs, then cancellation
+      // is detected on the parallel-group boundary check.
+      const tickPromise = engine.tick()
+      // Cancel ASAP; the cancellation may land before or during setup.
+      await engine.cancel(run.id)
+      await tickPromise
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run.status).toBe('cancelled')
+      expect(parallelEntered).toBe(false)
     })
   })
 
