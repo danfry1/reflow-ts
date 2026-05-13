@@ -148,4 +148,30 @@ describe('testEngine', () => {
       expect(resultB.steps.go.output).toEqual({ result: 'beta-42' })
     })
   })
+
+  describe('parallel branches', () => {
+    it('returns typed results for parallel branches', async () => {
+      const wf = createWorkflow({
+        name: 'parallel-test',
+        input: z.object({ x: z.number() }),
+      })
+        .step('fetch', async ({ input }) => ({ data: input.x }))
+        .parallel({
+          doubled: async ({ prev }) => ({ result: prev.data * 2 }),
+          tripled: async ({ prev }) => ({ result: prev.data * 3 }),
+        })
+        .step('merge', async ({ prev }) => ({
+          sum: prev.doubled.result + prev.tripled.result,
+        }))
+
+      const te = testEngine({ workflows: [wf] })
+      const result = await te.run('parallel-test', { x: 5 })
+
+      expect(result.status).toBe('completed')
+      expect(result.steps.fetch.output).toEqual({ data: 5 })
+      expect(result.steps.doubled.output).toEqual({ result: 10 })
+      expect(result.steps.tripled.output).toEqual({ result: 15 })
+      expect(result.steps.merge.output).toEqual({ sum: 25 })
+    })
+  })
 })

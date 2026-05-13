@@ -34,7 +34,7 @@ describe('type safety', () => {
       expectTypeOf(input).toEqualTypeOf<OrderInput>()
       return { ok: true }
     })
-    expect(wf.steps).toHaveLength(1)
+    expect(wf.executionUnits).toHaveLength(1)
   })
 
   it('prev type flows from previous step output', () => {
@@ -152,5 +152,99 @@ describe('type safety', () => {
         expectTypeOf(steps.b).toEqualTypeOf<{ fromB: number }>()
         return {}
       })
+  })
+
+  describe('parallel type safety', () => {
+    it('prev after parallel is a merged record of branch outputs', () => {
+      createWorkflow({ name: 'par-prev', input: z.object({ x: z.number() }) })
+        .step('fetch', async ({ input }) => ({ data: input.x }))
+        .parallel({
+          a: async ({ prev }) => {
+            expectTypeOf(prev).toEqualTypeOf<{ data: number }>()
+            return { fromA: prev.data + 1 }
+          },
+          b: async ({ prev }) => {
+            expectTypeOf(prev).toEqualTypeOf<{ data: number }>()
+            return { fromB: prev.data + 2 }
+          },
+        })
+        .step('merge', async ({ prev }) => {
+          expectTypeOf(prev).toEqualTypeOf<{ a: { fromA: number }; b: { fromB: number } }>()
+          return { sum: prev.a.fromA + prev.b.fromB }
+        })
+    })
+
+    it('steps accumulates parallel branch outputs individually', () => {
+      createWorkflow({ name: 'par-steps', input: z.object({ x: z.number() }) })
+        .step('fetch', async () => ({ data: 1 }))
+        .parallel({
+          a: async () => ({ fromA: 1 }),
+          b: async () => ({ fromB: 2 }),
+        })
+        .step('after', async ({ steps }) => {
+          expectTypeOf(steps.fetch).toEqualTypeOf<{ data: number }>()
+          expectTypeOf(steps.a).toEqualTypeOf<{ fromA: number }>()
+          expectTypeOf(steps.b).toEqualTypeOf<{ fromB: number }>()
+          return {}
+        })
+    })
+
+    it('parallel branches receive input and steps from prior steps', () => {
+      createWorkflow({ name: 'par-ctx', input: z.object({ url: z.string() }) })
+        .step('fetch', async ({ input }) => ({ data: input.url }))
+        .parallel({
+          a: async ({ input, steps }) => {
+            expectTypeOf(input).toEqualTypeOf<{ url: string }>()
+            expectTypeOf(steps.fetch).toEqualTypeOf<{ data: string }>()
+            return { x: 1 }
+          },
+        })
+    })
+
+    it('first step prev is undefined in parallel when no prior step', () => {
+      createWorkflow({ name: 'par-first', input: z.object({}) })
+        .parallel({
+          a: async ({ prev }) => {
+            expectTypeOf(prev).toEqualTypeOf<undefined>()
+            return { x: 1 }
+          },
+        })
+    })
+
+    it('chained parallels — second parallel prev is first parallel merged result', () => {
+      createWorkflow({ name: 'par-chain', input: z.object({}) })
+        .parallel({
+          a: async () => ({ x: 1 }),
+          b: async () => ({ y: 2 }),
+        })
+        .parallel({
+          c: async ({ prev }) => {
+            expectTypeOf(prev).toEqualTypeOf<{ a: { x: number }; b: { y: number } }>()
+            return { z: prev.a.x + prev.b.y }
+          },
+        })
+    })
+
+    it('testEngine returns typed results for parallel branches', () => {
+      const wf = createWorkflow({ name: 'par-te', input: z.object({ x: z.number() }) })
+        .step('fetch', async ({ input }) => ({ data: input.x }))
+        .parallel({
+          a: async ({ prev }) => ({ doubled: prev.data * 2 }),
+          b: async ({ prev }) => ({ tripled: prev.data * 3 }),
+        })
+
+      const te = testEngine({ workflows: [wf] })
+
+      // Verify the run method returns correctly typed results
+      type Result = Awaited<ReturnType<typeof te.run<'par-te'>>>
+      expectTypeOf<Result['steps']['a']>().toEqualTypeOf<
+        | { status: 'completed'; output: { doubled: number }; error: null }
+        | { status: 'failed'; output: null; error: string }
+      >()
+      expectTypeOf<Result['steps']['b']>().toEqualTypeOf<
+        | { status: 'completed'; output: { tripled: number }; error: null }
+        | { status: 'failed'; output: null; error: string }
+      >()
+    })
   })
 })

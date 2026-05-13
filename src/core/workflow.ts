@@ -1,5 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import { DuplicateStepError, ValidationError } from './errors'
+import { ConfigError, DuplicateStepError, ValidationError } from './errors'
 import type { PersistedValue, RetryConfig } from './types'
 
 /** Context passed to every step handler. */
@@ -28,6 +28,11 @@ export interface StepDefinition {
   timeoutMs?: number
 }
 
+/** A single execution unit: either a sequential step or a parallel group. */
+export type ExecutionUnit =
+  | { readonly kind: 'step'; readonly definition: StepDefinition }
+  | { readonly kind: 'parallel'; readonly branches: readonly StepDefinition[] }
+
 /** Configuration object form for `.step()` when you need retry or timeout options. */
 export interface StepConfig<
   TInput extends PersistedValue,
@@ -40,6 +45,22 @@ export interface StepConfig<
   timeoutMs?: number
   handler: (ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>
 }
+
+/** A parallel branch: either a bare handler or a StepConfig with retry/timeout. */
+export type ParallelBranch<
+  TInput extends PersistedValue,
+  TPrev extends PersistedValue,
+  TOutput extends PersistedValue | void = PersistedValue | void,
+  TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
+> =
+  | ((ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>)
+  | StepConfig<TInput, TPrev, TOutput, TStepsSoFar>
+
+/** Extract the output type from a ParallelBranch. */
+export type InferBranchOutput<B> =
+  B extends (ctx: never) => Promise<infer O> ? O :
+  B extends { handler: (ctx: never) => Promise<infer O> } ? O :
+  never
 
 /** Context passed to the `onFailure` handler when a workflow run fails. */
 export interface FailureContext<TInput extends PersistedValue = PersistedValue> {
@@ -67,7 +88,7 @@ export interface Workflow<
 > {
   readonly name: TName
   readonly inputSchema: StandardSchemaV1<TInput>
-  readonly steps: readonly StepDefinition[]
+  readonly executionUnits: readonly ExecutionUnit[]
   readonly failureHandler?: (ctx: FailureContext<TInput>) => Promise<void>
 
   step<TStepName extends string, TOutput extends PersistedValue | void>(
@@ -79,6 +100,15 @@ export interface Workflow<
     name: TStepName,
     config: StepConfig<TInput, TPrev, TOutput, TSteps>,
   ): Workflow<TName, TInput, NormalizeOutput<TOutput>, TSteps & Record<TStepName, NormalizeOutput<TOutput>>>
+
+  parallel<TBranches extends Record<string, ParallelBranch<TInput, TPrev, PersistedValue | void, TSteps>>>(
+    branches: TBranches,
+  ): Workflow<
+    TName,
+    TInput,
+    Prettify<{ [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }>,
+    TSteps & { [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }
+  >
 
   onFailure(
     handler: (ctx: FailureContext<TInput>) => Promise<void>,
@@ -136,6 +166,20 @@ export function createWorkflow<TName extends string, TInput extends PersistedVal
   return buildWorkflow(config.name, config.input, [])
 }
 
+function getAllStepNames(units: readonly ExecutionUnit[]): Set<string> {
+  const names = new Set<string>()
+  for (const unit of units) {
+    if (unit.kind === 'step') {
+      names.add(unit.definition.name)
+    } else {
+      for (const branch of unit.branches) {
+        names.add(branch.name)
+      }
+    }
+  }
+  return names
+}
+
 function buildWorkflow<
   TName extends string,
   TInput extends PersistedValue,
@@ -144,13 +188,13 @@ function buildWorkflow<
 >(
   name: TName,
   inputSchema: StandardSchemaV1<TInput>,
-  steps: StepDefinition[],
+  executionUnits: ExecutionUnit[],
   failureHandler?: (ctx: FailureContext<TInput>) => Promise<void>,
 ): Workflow<TName, TInput, TPrev, TSteps> {
   return {
     name,
     inputSchema,
-    steps,
+    executionUnits,
     failureHandler,
 
     step<TStepName extends string, TOutput extends PersistedValue | void>(
@@ -164,7 +208,7 @@ function buildWorkflow<
       NormalizeOutput<TOutput>,
       TSteps & Record<TStepName, NormalizeOutput<TOutput>>
     > {
-      if (steps.some((step) => step.name === stepName)) {
+      if (getAllStepNames(executionUnits).has(stepName)) {
         throw new DuplicateStepError(name, stepName)
       }
 
@@ -187,7 +231,57 @@ function buildWorkflow<
       >(
         name,
         inputSchema,
-        [...steps, newStep],
+        [...executionUnits, { kind: 'step', definition: newStep }],
+        failureHandler,
+      )
+    },
+
+    parallel<TBranches extends Record<string, ParallelBranch<TInput, TPrev, PersistedValue | void, TSteps>>>(
+      branches: TBranches,
+    ): Workflow<
+      TName,
+      TInput,
+      Prettify<{ [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }>,
+      TSteps & { [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }
+    > {
+      const branchEntries = Object.entries(branches)
+      if (branchEntries.length === 0) {
+        throw new ConfigError('parallel() requires at least one branch')
+      }
+
+      const existingNames = getAllStepNames(executionUnits)
+      for (const [branchName] of branchEntries) {
+        if (existingNames.has(branchName)) {
+          throw new DuplicateStepError(name, branchName)
+        }
+      }
+
+      const branchDefs: StepDefinition[] = branchEntries.map(([branchName, handlerOrConfig]) => {
+        if (typeof handlerOrConfig === 'object' && handlerOrConfig !== null && 'handler' in handlerOrConfig) {
+          return {
+            name: branchName,
+            handler: handlerOrConfig.handler as unknown as StepDefinition['handler'],
+            retry: handlerOrConfig.retry,
+            timeoutMs: handlerOrConfig.timeoutMs,
+          }
+        }
+        return {
+          name: branchName,
+          handler: handlerOrConfig as unknown as StepDefinition['handler'],
+          retry: undefined,
+          timeoutMs: undefined,
+        }
+      })
+
+      return buildWorkflow<
+        TName,
+        TInput,
+        Prettify<{ [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }>,
+        TSteps & { [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }
+      >(
+        name,
+        inputSchema,
+        [...executionUnits, { kind: 'parallel', branches: branchDefs }],
         failureHandler,
       )
     },
@@ -195,7 +289,7 @@ function buildWorkflow<
     onFailure(
       handler: (ctx: FailureContext<TInput>) => Promise<void>,
     ): Workflow<TName, TInput, TPrev, TSteps> {
-      return buildWorkflow(name, inputSchema, steps, handler)
+      return buildWorkflow(name, inputSchema, executionUnits, handler)
     },
 
     parseInput(input: unknown): TInput {

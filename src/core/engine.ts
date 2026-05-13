@@ -6,6 +6,7 @@ import {
   EarlyCompleteError,
   IdempotencyConflictError,
   LeaseExpiredError,
+  ParallelCompleteError,
   RunCancelledError,
   RunControlError,
   StepTimeoutError,
@@ -15,7 +16,6 @@ import type {
   ClaimedRun,
   PersistedValue,
   RunInfo,
-  StepResult,
   StorageAdapter,
   WorkflowRun,
 } from './types'
@@ -202,102 +202,28 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       let prev: PersistedValue = undefined
       const stepsAccumulator: Record<string, PersistedValue> = {}
 
-      for (const stepDef of wf.steps) {
-        if (activeRun.runAbortController.signal.aborted) {
-          const latestRun = await storage.getRun(run.id)
-          if (!latestRun || latestRun.status === 'cancelled') {
-            return
-          }
-        }
-
-        const existing = completedMap.get(stepDef.name)
-        if (existing?.status === 'completed-early') {
-          // This step called complete() in a previous execution — finish the run
-          try {
-            hooks?.onStepComplete?.({
-              runId: run.id,
-              stepName: stepDef.name,
-              output: existing.output,
-              attempts: existing.attempts,
-            })
-          } catch { /* hooks must not affect engine state */ }
-
-          const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
-          if (!completed) {
-            throw new LeaseExpiredError(run.id)
-          }
-
-          try {
-            hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow })
-          } catch { /* hooks must not affect engine state */ }
-
-          return
-        }
-        if (existing?.status === 'completed') {
-          prev = existing.output
-          stepsAccumulator[stepDef.name] = structuredClone(existing.output)
-          continue
-        }
-
-        const frozenSteps = snapshotSteps(stepsAccumulator)
-
-        try {
-          try {
-            hooks?.onStepStart?.({ runId: run.id, stepName: stepDef.name })
-          } catch { /* hooks must not affect engine state */ }
-
-          const outcome = await executeStep(run, activeRun, stepDef, prev, frozenSteps)
-
-          if (outcome.kind === 'failed') {
-            // Persist the failed step result
-            const now = Date.now()
-            const saved = await storage.saveStepResult({
-              id: randomUUID(),
-              runId: run.id,
-              name: stepDef.name,
-              status: 'failed',
-              output: null,
-              error: outcome.error.message,
-              attempts: outcome.attempts,
-              createdAt: now,
-              updatedAt: now,
-            }, run.leaseId)
-
-            if (!saved) {
-              throw new LeaseExpiredError(run.id)
+      for (const unit of wf.executionUnits) {
+        if (unit.kind === 'step') {
+          const stepDef = unit.definition
+          if (activeRun.runAbortController.signal.aborted) {
+            const latestRun = await storage.getRun(run.id)
+            if (!latestRun || latestRun.status === 'cancelled') {
+              return
             }
-
-            throw outcome.error
           }
 
-          // Unified success path for both normal and early completion
-          const now = Date.now()
-          const saved = await storage.saveStepResult({
-            id: randomUUID(),
-            runId: run.id,
-            name: stepDef.name,
-            status: outcome.kind === 'early-complete' ? 'completed-early' : 'completed',
-            output: outcome.output,
-            error: null,
-            attempts: outcome.attempts,
-            createdAt: now,
-            updatedAt: now,
-          }, run.leaseId)
+          const existing = completedMap.get(stepDef.name)
+          if (existing?.status === 'completed-early') {
+            // This step called complete() in a previous execution — finish the run
+            try {
+              hooks?.onStepComplete?.({
+                runId: run.id,
+                stepName: stepDef.name,
+                output: existing.output,
+                attempts: existing.attempts,
+              })
+            } catch { /* hooks must not affect engine state */ }
 
-          if (!saved) {
-            throw new LeaseExpiredError(run.id)
-          }
-
-          try {
-            hooks?.onStepComplete?.({
-              runId: run.id,
-              stepName: stepDef.name,
-              output: outcome.output,
-              attempts: outcome.attempts,
-            })
-          } catch { /* hooks must not affect engine state */ }
-
-          if (outcome.kind === 'early-complete') {
             const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
             if (!completed) {
               throw new LeaseExpiredError(run.id)
@@ -309,47 +235,152 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
             return
           }
-
-          prev = outcome.output
-          stepsAccumulator[stepDef.name] = structuredClone(prev)
-        } catch (error) {
-          const err = error instanceof Error ? error : new Error(String(error))
-
-          if (err instanceof EarlyCompleteError) {
-            throw new Error(`EarlyCompleteError escaped executeStep for step "${stepDef.name}"`)
+          if (existing?.status === 'completed') {
+            prev = existing.output
+            stepsAccumulator[stepDef.name] = structuredClone(existing.output)
+            continue
           }
 
-          if (err instanceof RunControlError) {
-            return
-          }
-
-          if (activeRun.runAbortController.signal.aborted) {
-            const currentRun = await storage.getRun(run.id)
-            if (!currentRun || currentRun.status === 'cancelled') {
-              return
-            }
-          }
-
-          const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
-          if (!failed) {
-            return
-          }
+          const frozenSteps = snapshotSteps(stepsAccumulator)
 
           try {
-            hooks?.onRunFailed?.({ runId: run.id, workflow: run.workflow, stepName: stepDef.name, error: err })
-          } catch { /* hooks must not affect engine state */ }
-
-          if (wf.failureHandler) {
             try {
-              await wf.failureHandler({
-                error: err,
-                stepName: stepDef.name,
-                input: run.input,
-              })
-            } catch { /* onFailure must not affect engine state */ }
-          }
+              hooks?.onStepStart?.({ runId: run.id, stepName: stepDef.name })
+            } catch { /* hooks must not affect engine state */ }
 
-          return
+            const outcome = await executeStep(run, activeRun, stepDef, prev, frozenSteps)
+
+            if (outcome.kind === 'failed') {
+              // Persist the failed step result
+              const now = Date.now()
+              const saved = await storage.saveStepResult({
+                id: randomUUID(),
+                runId: run.id,
+                name: stepDef.name,
+                status: 'failed',
+                output: null,
+                error: outcome.error.message,
+                attempts: outcome.attempts,
+                createdAt: now,
+                updatedAt: now,
+              }, run.leaseId)
+
+              if (!saved) {
+                throw new LeaseExpiredError(run.id)
+              }
+
+              throw outcome.error
+            }
+
+            // Unified success path for both normal and early completion
+            const now = Date.now()
+            const saved = await storage.saveStepResult({
+              id: randomUUID(),
+              runId: run.id,
+              name: stepDef.name,
+              status: outcome.kind === 'early-complete' ? 'completed-early' : 'completed',
+              output: outcome.output,
+              error: null,
+              attempts: outcome.attempts,
+              createdAt: now,
+              updatedAt: now,
+            }, run.leaseId)
+
+            if (!saved) {
+              throw new LeaseExpiredError(run.id)
+            }
+
+            try {
+              hooks?.onStepComplete?.({
+                runId: run.id,
+                stepName: stepDef.name,
+                output: outcome.output,
+                attempts: outcome.attempts,
+              })
+            } catch { /* hooks must not affect engine state */ }
+
+            if (outcome.kind === 'early-complete') {
+              const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
+              if (!completed) {
+                throw new LeaseExpiredError(run.id)
+              }
+
+              try {
+                hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow })
+              } catch { /* hooks must not affect engine state */ }
+
+              return
+            }
+
+            prev = outcome.output
+            stepsAccumulator[stepDef.name] = structuredClone(prev)
+          } catch (error) {
+            const err = error instanceof Error ? error : new Error(String(error))
+
+            if (err instanceof EarlyCompleteError) {
+              throw new Error(`EarlyCompleteError escaped executeStep for step "${stepDef.name}"`)
+            }
+
+            if (err instanceof RunControlError) {
+              return
+            }
+
+            if (activeRun.runAbortController.signal.aborted) {
+              const currentRun = await storage.getRun(run.id)
+              if (!currentRun || currentRun.status === 'cancelled') {
+                return
+              }
+            }
+
+            const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
+            if (!failed) {
+              return
+            }
+
+            try {
+              hooks?.onRunFailed?.({ runId: run.id, workflow: run.workflow, stepName: stepDef.name, error: err })
+            } catch { /* hooks must not affect engine state */ }
+
+            if (wf.failureHandler) {
+              try {
+                await wf.failureHandler({
+                  error: err,
+                  stepName: stepDef.name,
+                  input: run.input,
+                })
+              } catch { /* onFailure must not affect engine state */ }
+            }
+
+            return
+          }
+        } else {
+          const result = await executeParallelGroup(run, activeRun, unit.branches, prev, stepsAccumulator, completedMap)
+          if (result.kind === 'skipped-cancelled') {
+            return
+          }
+          if (result.kind === 'failed') {
+            const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
+            if (!failed) {
+              return
+            }
+
+            try {
+              hooks?.onRunFailed?.({ runId: run.id, workflow: run.workflow, stepName: result.branchName, error: result.error })
+            } catch { /* hooks must not affect engine state */ }
+
+            if (wf.failureHandler) {
+              try {
+                await wf.failureHandler({
+                  error: result.error,
+                  stepName: result.branchName,
+                  input: run.input,
+                })
+              } catch { /* onFailure must not affect engine state */ }
+            }
+
+            return
+          }
+          prev = result.merged
         }
       }
 
@@ -394,6 +425,13 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     let lastError: Error | null = null
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Bail out of further retry attempts once the run/group signal is aborted.
+      // A handler is not re-entered (runWithSignal short-circuits), but iterating
+      // the loop just to reject again wastes work and confuses metrics.
+      if (activeRun.runAbortController.signal.aborted) {
+        break
+      }
+
       const attemptSignal = createAttemptSignal(activeRun.runAbortController.signal, timeoutMs)
 
       try {
@@ -435,12 +473,213 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       }
     }
 
-    if (lastError instanceof RunControlError) {
-      throw lastError
-    }
-
+    // RunControlError is rethrown inside the loop; if we reach here, lastError is a
+    // regular failure (or null when the signal was aborted before any attempt ran).
     return { kind: 'failed', error: lastError ?? new Error('Unknown error'), attempts: maxAttempts }
   }
+
+  type ParallelGroupResult =
+    | { kind: 'completed'; merged: Record<string, PersistedValue> }
+    | { kind: 'skipped-cancelled' }
+    | { kind: 'failed'; branchName: string; error: Error }
+
+  async function executeParallelGroup(
+    run: ClaimedRun,
+    activeRun: ActiveRunState,
+    branches: readonly StepDefinition[],
+    prev: PersistedValue,
+    stepsAccumulator: Record<string, PersistedValue>,
+    completedMap: Map<string, { id: string; status: string; output: PersistedValue; attempts: number }>,
+  ): Promise<ParallelGroupResult> {
+    if (activeRun.runAbortController.signal.aborted) {
+      const latestRun = await storage.getRun(run.id)
+      if (!latestRun || latestRun.status === 'cancelled') {
+        return { kind: 'skipped-cancelled' }
+      }
+    }
+
+    // Crash-recovery: any branch already persisted as 'completed' is reused.
+    // Failed records do not count — they get retried fresh, matching sequential semantics.
+    const merged: Record<string, PersistedValue> = {}
+    const pendingBranches: StepDefinition[] = []
+    for (const branchDef of branches) {
+      const existing = completedMap.get(branchDef.name)
+      if (existing?.status === 'completed') {
+        merged[branchDef.name] = existing.output
+        stepsAccumulator[branchDef.name] = structuredClone(existing.output)
+      } else {
+        pendingBranches.push(branchDef)
+      }
+    }
+
+    if (pendingBranches.length === 0) {
+      return { kind: 'completed', merged }
+    }
+
+    const frozenSteps = snapshotSteps(stepsAccumulator)
+
+    const groupAbort = new AbortController()
+    // Track which branch was the *original* failure that caused the group to abort.
+    // Siblings that fail because they observed the abort are downstream effects, not
+    // the underlying cause — distinguishing this keeps onRunFailed accurate.
+    let causeBranch: BranchFailedError | null = null
+    const onRunAbort = () => {
+      if (!groupAbort.signal.aborted) {
+        groupAbort.abort(activeRun.runAbortController.signal.reason)
+      }
+    }
+    if (activeRun.runAbortController.signal.aborted) {
+      groupAbort.abort(activeRun.runAbortController.signal.reason)
+    } else {
+      activeRun.runAbortController.signal.addEventListener('abort', onRunAbort, { once: true })
+    }
+
+    try {
+      for (const branchDef of pendingBranches) {
+        try {
+          hooks?.onStepStart?.({ runId: run.id, stepName: branchDef.name })
+        } catch { /* hooks must not affect engine state */ }
+      }
+
+      const groupActiveRun: ActiveRunState = {
+        ...activeRun,
+        runAbortController: groupAbort,
+      }
+
+      // Run all pending branches; collect both successes and failures so siblings
+      // get a chance to settle (allSettled, not all) before we tear down.
+      const settled = await Promise.allSettled(
+        pendingBranches.map(async (branchDef) => {
+          const guardedHandler: StepDefinition['handler'] = (ctx) => {
+            const guardedComplete = (): never => {
+              throw new ParallelCompleteError(branchDef.name)
+            }
+            return branchDef.handler({ ...ctx, complete: guardedComplete })
+          }
+
+          const guardedDef: StepDefinition = { ...branchDef, handler: guardedHandler }
+          const outcome = await executeStep(run, groupActiveRun, guardedDef, prev, frozenSteps)
+
+          // `outcome.kind === 'early-complete'` is unreachable: guardedComplete throws
+          // ParallelCompleteError (a regular error) before EarlyCompleteError can be
+          // raised, so executeStep returns 'completed' or 'failed' for parallel branches.
+          if (outcome.kind === 'failed') {
+            const failure = new BranchFailedError(branchDef.name, outcome.error, outcome.attempts)
+            if (!groupAbort.signal.aborted) {
+              causeBranch = failure
+              groupAbort.abort(outcome.error)
+            }
+            throw failure
+          }
+
+          return { name: branchDef.name, output: outcome.output, attempts: outcome.attempts }
+        }),
+      )
+
+      // If the run itself was cancelled while branches were running, surface that
+      // before reporting branch failures. Cancellation isn't a branch failure.
+      if (activeRun.runAbortController.signal.aborted) {
+        const currentRun = await storage.getRun(run.id)
+        if (!currentRun || currentRun.status === 'cancelled') {
+          return { kind: 'skipped-cancelled' }
+        }
+      }
+
+      // Prefer the branch that actually caused the abort; only fall back to scanning
+      // settled when no cause was recorded (e.g. group aborted from outside the loop).
+      let firstFailure: BranchFailedError | null = causeBranch
+      if (!firstFailure) {
+        for (const result of settled) {
+          if (result.status === 'rejected') {
+            const err = result.reason instanceof Error ? result.reason : new Error(String(result.reason))
+            if (err instanceof RunControlError) {
+              return { kind: 'skipped-cancelled' }
+            }
+            if (err instanceof BranchFailedError) {
+              firstFailure = err
+              break
+            }
+            // Defensive: wrap unknown error as branch failure on first pending branch.
+            firstFailure = new BranchFailedError(pendingBranches[0].name, err, 1)
+            break
+          }
+        }
+      }
+
+      if (firstFailure) {
+        // Persist the failed step result. Reuse the existing row id so a retry upserts
+        // in place rather than appending a duplicate. If the lease is lost mid-write,
+        // we still report the failure — the outer code will no-op the run-status
+        // update because the same lease check will fail there.
+        const failedBranch = firstFailure.branchName
+        const existingRow = completedMap.get(failedBranch)
+        const now = Date.now()
+        await storage.saveStepResult({
+          id: existingRow?.id ?? randomUUID(),
+          runId: run.id,
+          name: failedBranch,
+          status: 'failed',
+          output: null,
+          error: firstFailure.branchError.message,
+          attempts: firstFailure.attempts,
+          createdAt: now,
+          updatedAt: now,
+        }, run.leaseId)
+
+        return { kind: 'failed', branchName: failedBranch, error: firstFailure.branchError }
+      }
+
+      // All pending branches succeeded — persist their results and fire complete hooks.
+      for (const result of settled) {
+        if (result.status !== 'fulfilled') continue
+        const branchResult = result.value
+        const existingRow = completedMap.get(branchResult.name)
+        const now = Date.now()
+        const saved = await storage.saveStepResult({
+          id: existingRow?.id ?? randomUUID(),
+          runId: run.id,
+          name: branchResult.name,
+          status: 'completed',
+          output: branchResult.output,
+          error: null,
+          attempts: branchResult.attempts,
+          createdAt: now,
+          updatedAt: now,
+        }, run.leaseId)
+
+        if (!saved) {
+          throw new LeaseExpiredError(run.id)
+        }
+
+        try {
+          hooks?.onStepComplete?.({
+            runId: run.id,
+            stepName: branchResult.name,
+            output: branchResult.output,
+            attempts: branchResult.attempts,
+          })
+        } catch { /* hooks must not affect engine state */ }
+
+        stepsAccumulator[branchResult.name] = structuredClone(branchResult.output)
+        merged[branchResult.name] = branchResult.output
+      }
+
+      return { kind: 'completed', merged }
+    } catch (error) {
+      // Promise.allSettled above swallows per-branch failures, so this catch only
+      // fires for LeaseExpiredError thrown during success-path persistence.
+      const err = error instanceof Error ? error : new Error(String(error))
+
+      if (err instanceof RunControlError) {
+        return { kind: 'skipped-cancelled' }
+      }
+
+      return { kind: 'failed', branchName: pendingBranches[0].name, error: err }
+    } finally {
+      activeRun.runAbortController.signal.removeEventListener('abort', onRunAbort)
+    }
+  }
+
 
   async function cancel(runId: string): Promise<boolean> {
     const run = await storage.getRun(runId)
@@ -781,4 +1020,19 @@ function deepFreeze<T extends Record<string, unknown>>(obj: T): T {
     }
   }
   return obj
+}
+
+/**
+ * Carries branch metadata (name, original error, attempts) through Promise.all rejections.
+ * @internal Not exported from the public API.
+ */
+class BranchFailedError extends Error {
+  constructor(
+    public readonly branchName: string,
+    public readonly branchError: Error,
+    public readonly attempts: number,
+  ) {
+    super(branchError.message)
+    this.name = 'BranchFailedError'
+  }
 }

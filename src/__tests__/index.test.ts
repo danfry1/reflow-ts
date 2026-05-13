@@ -13,6 +13,7 @@ import {
   StepTimeoutError,
   RunCancelledError,
   LeaseExpiredError,
+  ParallelCompleteError,
 } from '../index'
 
 describe('public API', () => {
@@ -36,6 +37,7 @@ describe('public API', () => {
       StepTimeoutError,
       RunCancelledError,
       LeaseExpiredError,
+      ParallelCompleteError,
     ]
 
     for (const ErrorClass of errors) {
@@ -72,5 +74,10 @@ describe('public API', () => {
     const dupStepErr = new DuplicateStepError('my-wf', 'step-1')
     expect(dupStepErr.workflowName).toBe('my-wf')
     expect(dupStepErr.stepName).toBe('step-1')
+
+    const parallelErr = new ParallelCompleteError('analyze')
+    expect(parallelErr.stepName).toBe('analyze')
+    expect(parallelErr).toBeInstanceOf(ReflowError)
+    expect(parallelErr.message).toBe('complete() cannot be called inside parallel step "analyze"')
   })
 })
