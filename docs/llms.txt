@@ -228,6 +228,43 @@ Clean up with onFailure - compensation after the workflow has failed (saga patte
 
 Most workflows combine all three: try/catch for expected errors, retry for transient failures, onFailure for rollback.
 
+### Parallel Steps
+
+Run multiple independent steps concurrently with .parallel(). Each branch is a named handler that runs at the same time as its siblings; the next step receives a merged record of all branch outputs as prev:
+
+```typescript
+const pipeline = createWorkflow({ name: 'pipeline', input: z.object({ url: z.string() }) })
+  .step('fetch', async ({ input }) => ({ body: await fetchPage(input.url) }))
+  .parallel({
+    summary:  async ({ prev }) => ({ text: await summarize(prev.body) }),
+    keywords: async ({ prev }) => ({ tags: await extractKeywords(prev.body) }),
+    images:   async ({ prev }) => ({ urls: await extractImages(prev.body) }),
+  })
+  .step('save', async ({ prev }) => {
+    // prev: { summary: { text }, keywords: { tags }, images: { urls } }
+    await save(prev.summary.text, prev.keywords.tags, prev.images.urls)
+  })
+```
+
+Branches accept the same { retry, timeoutMs, handler } config as .step():
+
+```typescript
+.parallel({
+  flaky: {
+    retry: { maxAttempts: 3, backoff: 'exponential', initialDelayMs: 100 },
+    handler: async () => await callFlakyApi(),
+  },
+  stable: async () => await callStableApi(),
+})
+```
+
+Semantics:
+- Fail-fast: when a branch fails (after exhausting its own retries), siblings receive signal.abort() and the run is marked failed. onRunFailed and onFailure report the branch that actually caused the failure, not a sibling aborted by the propagation.
+- Crash recovery is per-branch: if some branches persisted their results before a crash, only the missing ones re-run. Side effects in completed branches do not fire twice.
+- No complete() inside a branch: throws ParallelCompleteError.
+- Each branch must be idempotent.
+- steps is a frozen snapshot taken before the group started; siblings cannot observe each other's outputs mid-flight.
+
 ### Crash Recovery
 
 Reflow automatically resumes workflows from the last completed step. If the process crashes after step 2 of 5, a later engine instance reclaims the stale run after runLeaseDurationMs and continues at step 3. Completed steps are never re-executed.
@@ -357,7 +394,7 @@ Reflow tracks types through the entire workflow chain:
 | config.name | string            | Unique workflow name (becomes a literal type)        |
 | config.input| StandardSchemaV1  | Any Standard Schema-compatible schema                |
 
-Returns a Workflow with .step(), .onFailure(), and .parseInput() methods.
+Returns a Workflow with .step(), .parallel(), .onFailure(), and .parseInput() methods.
 
 ### workflow.step(name, handler | config)
 
@@ -377,6 +414,23 @@ RetryConfig:
 | backoff       | 'linear' | 'exponential'  | Backoff strategy                     |
 | initialDelayMs| number                    | Base delay ms (default: 1000)        |
 | timeoutMs     | number                    | Timeout per attempt                  |
+
+### workflow.parallel(branches)
+
+Adds a group of concurrent steps. branches is a record of { branchName: handler | config }. All branches run at the same time; the next step's prev is { [branchName]: branchOutput } merged across all branches.
+
+```typescript
+.parallel({
+  a: async ({ prev }) => ({ x: prev.value * 2 }),
+  b: {
+    retry: { maxAttempts: 3, backoff: 'linear' },
+    timeoutMs: 5000,
+    handler: async () => await someCall(),
+  },
+})
+```
+
+Branch names share the same namespace as .step() names — duplicates throw DuplicateStepError. Calling complete() inside a branch throws ParallelCompleteError.
 
 ### workflow.onFailure(handler)
 

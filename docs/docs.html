@@ -51,6 +51,7 @@
             <a href="#retry">Retry</a>
             <a href="#failure-handling">Failure Handling</a>
             <a href="#error-handling">Error Handling</a>
+            <a href="#parallel-steps">Parallel Steps</a>
             <a href="#crash-recovery">Crash Recovery</a>
             <a href="#concurrency">Concurrency</a>
             <a href="#cancellation">Cancellation</a>
@@ -68,6 +69,7 @@
             <h4>API Reference</h4>
             <a href="#api-createworkflow">createWorkflow</a>
             <a href="#api-step">workflow.step</a>
+            <a href="#api-parallel">workflow.parallel</a>
             <a href="#api-onfailure">workflow.onFailure</a>
             <a href="#api-createengine">createEngine</a>
             <a href="#api-engine-start">engine.start</a>
@@ -404,6 +406,42 @@ engine.enqueue('nonexistent', {})                                 // Type error<
 
           <p>The optional value passed to <code>complete()</code> is persisted as the step result and visible via <code>getRunStatus()</code>. Early completion is crash-safe — if the engine crashes after saving the step but before marking the run completed, recovery detects the marker and finishes the run without re-executing later steps.</p>
 
+          <!-- Parallel Steps -->
+          <h2 id="parallel-steps">Parallel Steps</h2>
+
+          <p>Run multiple independent steps concurrently with <code>.parallel()</code>. Each branch is a named handler that runs at the same time as its siblings; the next step receives a merged record of all branch outputs as <code>prev</code>:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>const pipeline = createWorkflow({ name: 'pipeline', input: z.object({ url: z.string() }) })
+  .step('fetch', async ({ input }) => ({ body: await fetchPage(input.url) }))
+  .parallel({
+    summary:  async ({ prev }) => ({ text: await summarize(prev.body) }),
+    keywords: async ({ prev }) => ({ tags: await extractKeywords(prev.body) }),
+    images:   async ({ prev }) => ({ urls: await extractImages(prev.body) }),
+  })
+  .step('save', async ({ prev }) => {
+    // prev is fully typed: { summary: { text }, keywords: { tags }, images: { urls } }
+    await save(prev.summary.text, prev.keywords.tags, prev.images.urls)
+  })</code></pre>
+
+          <p>Branches accept the same <code>{ retry, timeoutMs, handler }</code> config as <code>.step()</code>, so each branch can have its own retry and timeout policy:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>.parallel({
+  flaky: {
+    retry: { maxAttempts: 3, backoff: 'exponential', initialDelayMs: 100 },
+    handler: async () => await callFlakyApi(),
+  },
+  stable: async () => await callStableApi(),
+})</code></pre>
+
+          <h3>Semantics</h3>
+          <ul>
+            <li><strong>Fail-fast.</strong> When a branch fails (after exhausting its own retries), siblings receive <code>signal.abort()</code> and the run is marked <code>failed</code>. <code>onRunFailed</code> and <code>onFailure</code> report the branch that actually caused the failure, not a sibling aborted by the propagation.</li>
+            <li><strong>Crash recovery is per-branch.</strong> If the engine crashes after some branches have persisted their results, recovery skips those branches and only re-runs the missing ones. Side effects in already-completed branches do not fire twice.</li>
+            <li><strong>No <code>complete()</code> inside a branch.</strong> Calling <code>complete()</code> from a parallel branch throws <code>ParallelCompleteError</code> — early completion is only meaningful in a sequential context.</li>
+            <li><strong>Each branch must be idempotent.</strong> Like sequential steps, a branch may run more than once across crash recoveries before its result is persisted.</li>
+            <li><strong><code>steps</code> is a frozen snapshot.</strong> All sibling branches see the same <code>steps</code> view taken before the group started; they cannot observe each other's outputs mid-flight.</li>
+          </ul>
+
           <!-- Crash Recovery -->
           <h2 id="crash-recovery">Crash Recovery</h2>
 
@@ -678,7 +716,7 @@ workflow.step('x', async ({ prev }) => {
                   <span class="api-param-desc">Any Standard Schema-compatible schema (Zod, Valibot, ArkType, etc.)</span>
                 </div>
               </div>
-              <div class="api-returns">Returns <code>Workflow</code> with <code>.step()</code>, <code>.onFailure()</code>, and <code>.parseInput()</code> methods.</div>
+              <div class="api-returns">Returns <code>Workflow</code> with <code>.step()</code>, <code>.parallel()</code>, <code>.onFailure()</code>, and <code>.parseInput()</code> methods.</div>
             </div>
 
             <div class="api-card" id="api-step">
@@ -770,6 +808,47 @@ workflow.step('x', async ({ prev }) => {
                 </div>
               </div>
               <div class="api-returns">Returns a new <code>Workflow</code> with the step appended. The builder is immutable.</div>
+            </div>
+
+            <div class="api-card" id="api-parallel">
+              <div class="api-header">
+                <span class="api-badge">method</span>
+                <h3>workflow.parallel(branches)</h3>
+              </div>
+              <p>Adds a group of concurrent steps. <code>branches</code> is a record of <code>{ branchName: handler | config }</code>. All branches run at the same time; the next step's <code>prev</code> is <code>{ [branchName]: output }</code> merged across all branches.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>.parallel({
+  a: async ({ prev }) =&gt; ({ x: prev.value * 2 }),
+  b: {
+    retry: { maxAttempts: 3, backoff: 'linear' },
+    timeoutMs: 5000,
+    handler: async () =&gt; await someCall(),
+  },
+})</code></pre>
+              <div class="api-params">
+                <p class="api-params-label">Branch context</p>
+                <div class="api-param">
+                  <span class="api-param-name">input</span>
+                  <span class="api-param-type">TInput</span>
+                  <span class="api-param-desc">The validated workflow input (same for every branch)</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">prev</span>
+                  <span class="api-param-type">TPrev</span>
+                  <span class="api-param-desc">Output of the step before the group (same for every sibling)</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">steps</span>
+                  <span class="api-param-type">TStepsSoFar</span>
+                  <span class="api-param-desc">Frozen snapshot of all step results before the group started</span>
+                </div>
+                <div class="api-param">
+                  <span class="api-param-name">signal</span>
+                  <span class="api-param-type">AbortSignal</span>
+                  <span class="api-param-desc">Aborted on cancellation, lease loss, branch timeout, or a sibling failure</span>
+                </div>
+              </div>
+              <p>Branch names share the same namespace as <code>.step()</code> names — duplicate names across <code>.step()</code> and <code>.parallel()</code> throw <code>DuplicateStepError</code>. Calling <code>complete()</code> inside a branch throws <code>ParallelCompleteError</code>.</p>
+              <div class="api-returns">Returns a new <code>Workflow</code> whose next step receives <code>prev: { [branchName]: branchOutput }</code>.</div>
             </div>
 
             <div class="api-card" id="api-onfailure">
