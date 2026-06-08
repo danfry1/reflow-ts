@@ -271,6 +271,47 @@ describe('engine.stream()', () => {
     expect(streamSawComplete).toBe(true)
   })
 
+  it('leaves a run reclaimable (not failed) when stopped while paused on backpressure', async () => {
+    const wf = createWorkflow({ name: 'stop-bp', input: z.object({}) })
+      .step('a', async () => ({ x: 1 }))
+      .step('b', async () => ({ y: 2 }))
+
+    const engine = createEngine({ storage, workflows: [wf] })
+    // A 1-event buffer with no consumer pauses the engine mid-run on backpressure.
+    const stream = engine.stream({ bufferSize: 1 })
+    void stream
+
+    const run = await engine.enqueue('stop-bp', {})
+    await engine.start(10_000)
+    await delay(50)
+    await engine.stop()
+
+    // A graceful stop must not mark the paused run failed — it stays 'running'
+    // so a future engine can reclaim it via stale-lease recovery.
+    const info = await engine.getRunStatus(run.id)
+    expect(info?.run.status).toBe('running')
+  })
+
+  it('cancels (not fails) a run paused on backpressure', async () => {
+    const wf = createWorkflow({ name: 'cancel-bp', input: z.object({}) })
+      .step('a', async () => ({ x: 1 }))
+      .step('b', async () => ({ y: 2 }))
+
+    const engine = createEngine({ storage, workflows: [wf] })
+    const stream = engine.stream({ bufferSize: 1 })
+    void stream
+
+    const run = await engine.enqueue('cancel-bp', {})
+    await engine.start(10_000)
+    await delay(50)
+
+    expect(await engine.cancel(run.id)).toBe(true)
+    await engine.stop() // closes the stream, unblocking the paused producer
+
+    const info = await engine.getRunStatus(run.id)
+    expect(info?.run.status).toBe('cancelled')
+  })
+
   it('ends open streams when the engine stops', async () => {
     const wf = createWorkflow({ name: 'stop-stream', input: z.object({}) })
       .step('a', async () => ({ x: 1 }))
@@ -294,6 +335,20 @@ describe('engine.stream()', () => {
         throw new Error('stream did not close on engine stop')
       }),
     ])
+  })
+
+  it('resolves a pending next() as done when the stream is disposed', async () => {
+    const wf = createWorkflow({ name: 'pending-next', input: z.object({}) })
+      .step('a', async () => ({ x: 1 }))
+
+    const engine = createEngine({ storage, workflows: [wf] })
+    const stream = engine.stream()
+
+    // next() on an empty buffer parks a consumer waiter; disposing must release it.
+    const pending = stream.next()
+    await stream.return?.()
+
+    await expect(pending).resolves.toEqual({ value: undefined, done: true })
   })
 
   it('supports await using for disposal', async () => {

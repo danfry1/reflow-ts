@@ -354,6 +354,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     const dispose = (): void => {
       subscribers.delete(subscriber)
       closed = true
+      // Resolve a pending consumer (a manual next() awaiting an empty buffer) as
+      // done, and unblock any paused producer, so nothing is left hanging.
+      for (const waiter of pullWaiters.splice(0)) {
+        waiter({ value: undefined, done: true })
+      }
       for (const resume of pushWaiters.splice(0)) {
         resume()
       }
@@ -453,6 +458,21 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
             const outcome = await executeStep(run, activeRun, stepDef, prev, frozenSteps)
 
             if (outcome.kind === 'failed') {
+              // A control-flow abort (cancel / engine stop / lease loss) can land
+              // on an await point between steps — including a backpressured stream
+              // emit. When it does, executeStep reports a synthetic failure for a
+              // step that never really ran. That is a side effect of the abort, not
+              // a real failure: leave the run untouched (status stays as-is, so a
+              // stopped or lease-lost run remains reclaimable) instead of marking
+              // it failed. A non-control abort reason (e.g. a heartbeat storage
+              // error) is a genuine failure and still falls through below.
+              if (
+                activeRun.runAbortController.signal.aborted &&
+                activeRun.runAbortController.signal.reason instanceof RunControlError
+              ) {
+                return
+              }
+
               // Persist the failed step result
               const now = Date.now()
               const saved = await storage.saveStepResult({
@@ -768,13 +788,17 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         }),
       )
 
-      // If the run itself was cancelled while branches were running, surface that
-      // before reporting branch failures. Cancellation isn't a branch failure.
-      if (activeRun.runAbortController.signal.aborted) {
-        const currentRun = await storage.getRun(run.id)
-        if (!currentRun || currentRun.status === 'cancelled') {
-          return { kind: 'skipped-cancelled' }
-        }
+      // If the run itself was aborted by a control-flow signal while branches were
+      // running (cancel, engine stop, or lease loss), surface that before reporting
+      // branch failures. A branch that failed because it observed the run-level
+      // abort is a downstream effect, not the cause — reporting it would mark a
+      // stopped/reclaimable run as failed. A non-control abort (e.g. a heartbeat
+      // storage error) is a genuine failure and still falls through below.
+      if (
+        activeRun.runAbortController.signal.aborted &&
+        activeRun.runAbortController.signal.reason instanceof RunControlError
+      ) {
+        return { kind: 'skipped-cancelled' }
       }
 
       // Prefer the branch that actually caused the abort; only fall back to scanning
