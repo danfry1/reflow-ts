@@ -313,18 +313,42 @@ Step-level timeoutMs takes precedence over retry.timeoutMs.
 
 ### Hooks
 
+Lifecycle hooks may be synchronous or async (an async hook is awaited before the engine proceeds). A throwing/rejecting hook never affects engine state. Every event carries `type` and `workflow`.
+
 ```typescript
 const engine = createEngine({
   storage,
   workflows: [orderWorkflow],
   hooks: {
-    onStepComplete: ({ runId, stepName, output, attempts }) => { },
-    onRunComplete: ({ runId, workflow }) => { },
+    onRunStart: ({ runId, workflow }) => { },
+    onStepStart: ({ runId, workflow, stepName }) => { },
+    onStepComplete: ({ runId, workflow, stepName, output, attempts }) => { },
+    onRunComplete: ({ runId, workflow, output }) => { }, // output = final result
     onRunFailed: ({ runId, workflow, stepName, error }) => { },
     onError: (error) => { }, // background failures (scheduled enqueues, poll cycles)
   },
 })
 ```
+
+### Streaming Results
+
+`engine.stream(options?)` returns a pull-based AsyncIterableIterator<EngineEvent> (also AsyncDisposable). Use it to consume results with backpressure instead of push-based hooks. EngineEvent is a discriminated union on `type`: runStart, stepStart, stepComplete ({ output, attempts }), runComplete ({ output }), runFailed ({ stepName, error }) — all with runId and workflow.
+
+```typescript
+for await (const event of engine.stream()) {
+  if (event.type === 'runComplete') await pipeline.push(event.output)
+}
+```
+
+By default the buffer is unbounded (never slows the engine). Pass `bufferSize` to apply backpressure — the engine pauses once the buffer fills and resumes as the consumer pulls:
+
+```typescript
+for await (const event of engine.stream({ bufferSize: 1 })) {
+  await slowlyHandle(event) // engine waits for each item
+}
+```
+
+Breaking out of the loop, `await using stream = engine.stream()`, or `engine.stop()` unsubscribes the stream automatically.
 
 ### Storage
 
@@ -458,6 +482,11 @@ Stops polling loop, clears all schedules, and waits for any in-flight tick to fi
 ### engine.tick()
 
 Claims up to concurrency pending/stale runs and executes them in parallel. For CLI tools or tests.
+
+### engine.stream(options?)
+
+Returns a pull-based ResultStream — an AsyncIterableIterator<EngineEvent> and AsyncDisposable. Each call returns an independent stream. EngineEvent is a discriminated union on `type`: runStart, stepStart, stepComplete, runComplete, runFailed (all with runId, workflow).
+Option: bufferSize (number, default Infinity) - max events buffered before the engine pauses (backpressure). Breaking the loop / await using / engine.stop() unsubscribes.
 
 ### engine.enqueue(name, input, options?)
 

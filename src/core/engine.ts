@@ -21,15 +21,69 @@ import type {
 } from './types'
 import type { AnyWorkflow, StepDefinition, WorkflowInputMap } from './workflow'
 
-/** Lifecycle hooks fired during workflow execution. */
+/**
+ * A lifecycle event emitted during workflow execution.
+ *
+ * Consumed both by the {@link EngineHooks} callbacks and by {@link Engine.stream}.
+ * Every event carries the owning `workflow` name so a single stream can fan out
+ * across multiple workflows.
+ */
+export type EngineEvent =
+  | { readonly type: 'runStart'; readonly runId: string; readonly workflow: string }
+  | { readonly type: 'stepStart'; readonly runId: string; readonly workflow: string; readonly stepName: string }
+  | {
+      readonly type: 'stepComplete'
+      readonly runId: string
+      readonly workflow: string
+      readonly stepName: string
+      readonly output: PersistedValue
+      readonly attempts: number
+    }
+  | { readonly type: 'runComplete'; readonly runId: string; readonly workflow: string; readonly output: PersistedValue }
+  | { readonly type: 'runFailed'; readonly runId: string; readonly workflow: string; readonly stepName: string; readonly error: Error }
+
+/** Narrow {@link EngineEvent} to a single `type` (or union of types). */
+export type EngineEventOf<T extends EngineEvent['type']> = Extract<EngineEvent, { type: T }>
+
+/**
+ * Lifecycle hooks fired during workflow execution.
+ *
+ * Hooks may be synchronous or `async` — an async hook is awaited before the
+ * engine proceeds, so it can apply backpressure or guarantee ordering. A hook
+ * that throws (or rejects) never affects engine state; the error is swallowed.
+ */
 export interface EngineHooks {
-  onRunStart?: (event: { runId: string; workflow: string }) => void
-  onStepStart?: (event: { runId: string; stepName: string }) => void
-  onStepComplete?: (event: { runId: string; stepName: string; output: PersistedValue; attempts: number }) => void
-  onRunComplete?: (event: { runId: string; workflow: string }) => void
-  onRunFailed?: (event: { runId: string; workflow: string; stepName: string; error: Error }) => void
+  onRunStart?: (event: EngineEventOf<'runStart'>) => void
+  onStepStart?: (event: EngineEventOf<'stepStart'>) => void
+  onStepComplete?: (event: EngineEventOf<'stepComplete'>) => void
+  onRunComplete?: (event: EngineEventOf<'runComplete'>) => void
+  onRunFailed?: (event: EngineEventOf<'runFailed'>) => void
   /** Called when a background operation fails (scheduled enqueue, poll cycle). Without this hook, these errors are silently swallowed. */
   onError?: (error: Error) => void
+}
+
+/** Options for {@link Engine.stream}. */
+export interface StreamOptions {
+  /**
+   * Maximum number of events buffered before the engine pauses (backpressure).
+   * Defaults to `Infinity` — events buffer without bound and the engine never
+   * waits on the consumer. Set a finite value (e.g. `1`) to pace the engine
+   * against a slow consumer; the engine will not start the next unit of work
+   * until the consumer drains the buffer below this size.
+   */
+  bufferSize?: number
+}
+
+/**
+ * A pull-based, backpressure-aware stream of {@link EngineEvent}s.
+ *
+ * Implements `AsyncIterableIterator`, so it works directly with `for await`,
+ * and `AsyncDisposable`, so it works with `await using`. Breaking out of a
+ * `for await` loop (or disposing) unsubscribes from the engine automatically.
+ */
+export interface ResultStream<E extends EngineEvent = EngineEvent>
+  extends AsyncIterableIterator<E> {
+  [Symbol.asyncDispose](): Promise<void>
 }
 
 /** Configuration for {@link createEngine}. */
@@ -74,6 +128,21 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
   ): string
   /** Cancel a recurring schedule by ID. */
   unschedule(scheduleId: string): boolean
+  /**
+   * Subscribe to a live, pull-based stream of execution events
+   * ({@link EngineEvent}). Use it to consume step/run results as they happen,
+   * with optional backpressure:
+   *
+   * ```ts
+   * for await (const event of engine.stream()) {
+   *   if (event.type === 'runComplete') process(event.output)
+   * }
+   * ```
+   *
+   * Each call returns an independent stream. Breaking out of the loop, or
+   * disposing the stream, unsubscribes automatically.
+   */
+  stream(options?: StreamOptions): ResultStream
   /** Process one batch of pending runs. Useful for tests and CLI tools. */
   tick(): Promise<void>
   /** Initialize storage and start the polling loop. Call once at startup. */
@@ -87,6 +156,14 @@ interface ActiveRunState {
   runAbortController: AbortController
   heartbeatTimer: ReturnType<typeof setInterval> | null
   heartbeatInFlight: boolean
+}
+
+/** A single {@link Engine.stream} consumer. */
+interface StreamSubscriber {
+  /** Deliver an event. Resolves once buffered; when the buffer is full, resolves only after the consumer drains it (backpressure). */
+  push(event: EngineEvent): Promise<void>
+  /** End the stream, unblocking any pending consumer and producer waiters. */
+  close(): void
 }
 
 /**
@@ -132,6 +209,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   const registry = new Map<string, AnyWorkflow>()
   const schedules = new Map<string, ReturnType<typeof setInterval>>()
   const activeRuns = new Map<string, ActiveRunState>()
+  const subscribers = new Set<StreamSubscriber>()
   let running = false
   let timer: ReturnType<typeof setInterval> | null = null
   let tickInFlight = false
@@ -186,6 +264,136 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     return { run, steps }
   }
 
+  /**
+   * Dispatch a lifecycle event to the user hook and every active stream, then
+   * wait for them all to settle. Awaiting here is what lets an `async` hook or a
+   * backpressured stream pace the engine. Neither a throwing hook nor a stream
+   * may affect engine state, so all errors are contained.
+   */
+  async function emit(event: EngineEvent): Promise<void> {
+    try {
+      switch (event.type) {
+        case 'runStart':
+          await hooks?.onRunStart?.(event)
+          break
+        case 'stepStart':
+          await hooks?.onStepStart?.(event)
+          break
+        case 'stepComplete':
+          await hooks?.onStepComplete?.(event)
+          break
+        case 'runComplete':
+          await hooks?.onRunComplete?.(event)
+          break
+        case 'runFailed':
+          await hooks?.onRunFailed?.(event)
+          break
+      }
+    } catch { /* hooks must not affect engine state */ }
+
+    if (subscribers.size > 0) {
+      const deliveries: Array<Promise<void>> = []
+      for (const subscriber of subscribers) {
+        deliveries.push(subscriber.push(event))
+      }
+      try {
+        await Promise.all(deliveries)
+      } catch { /* stream delivery must not affect engine state */ }
+    }
+  }
+
+  /** Report a background error to `onError`, swallowing any error it raises. */
+  function reportError(error: unknown): void {
+    const err = error instanceof Error ? error : new Error(String(error))
+    void (async () => {
+      try {
+        await hooks?.onError?.(err)
+      } catch { /* onError must not throw */ }
+    })()
+  }
+
+  function createStream(options?: StreamOptions): ResultStream {
+    const capacity = options?.bufferSize ?? Number.POSITIVE_INFINITY
+    const buffer: EngineEvent[] = []
+    const pullWaiters: Array<(result: IteratorResult<EngineEvent>) => void> = []
+    const pushWaiters: Array<() => void> = []
+    let closed = false
+
+    const subscriber: StreamSubscriber = {
+      push(event) {
+        if (closed) return Promise.resolve()
+
+        const waiter = pullWaiters.shift()
+        if (waiter) {
+          waiter({ value: event, done: false })
+          return Promise.resolve()
+        }
+
+        buffer.push(event)
+        if (buffer.length <= capacity) {
+          return Promise.resolve()
+        }
+
+        // Buffer is over capacity — pause the producer until the consumer drains it.
+        return new Promise<void>((resolve) => pushWaiters.push(resolve))
+      },
+      close() {
+        if (closed) return
+        closed = true
+        for (const waiter of pullWaiters.splice(0)) {
+          waiter({ value: undefined, done: true })
+        }
+        for (const resume of pushWaiters.splice(0)) {
+          resume()
+        }
+      },
+    }
+
+    subscribers.add(subscriber)
+
+    const dispose = (): void => {
+      subscribers.delete(subscriber)
+      closed = true
+      for (const resume of pushWaiters.splice(0)) {
+        resume()
+      }
+    }
+
+    const stream: ResultStream = {
+      next(): Promise<IteratorResult<EngineEvent>> {
+        const event = buffer.shift()
+        if (event !== undefined) {
+          const resume = pushWaiters.shift()
+          if (resume) resume()
+          return Promise.resolve({ value: event, done: false })
+        }
+
+        if (closed) {
+          return Promise.resolve({ value: undefined, done: true })
+        }
+
+        return new Promise<IteratorResult<EngineEvent>>((resolve) => pullWaiters.push(resolve))
+      },
+      return(): Promise<IteratorResult<EngineEvent>> {
+        dispose()
+        return Promise.resolve({ value: undefined, done: true })
+      },
+      throw(error?: unknown): Promise<IteratorResult<EngineEvent>> {
+        dispose()
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)))
+      },
+      [Symbol.asyncIterator]() {
+        return stream
+      },
+      [Symbol.asyncDispose](): Promise<void> {
+        dispose()
+        return Promise.resolve()
+      },
+    }
+
+    return stream
+  }
+
   async function executeRun(run: ClaimedRun): Promise<void> {
     const wf = registry.get(run.workflow)
     if (!wf) return
@@ -193,9 +401,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     const activeRun = registerActiveRun(run)
 
     try {
-      try {
-        hooks?.onRunStart?.({ runId: run.id, workflow: run.workflow })
-      } catch { /* hooks must not affect engine state */ }
+      await emit({ type: 'runStart', runId: run.id, workflow: run.workflow })
 
       const existingSteps = await storage.getStepResults(run.id)
       const completedMap = new Map(existingSteps.map((step) => [step.name, step]))
@@ -215,23 +421,21 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           const existing = completedMap.get(stepDef.name)
           if (existing?.status === 'completed-early') {
             // This step called complete() in a previous execution — finish the run
-            try {
-              hooks?.onStepComplete?.({
-                runId: run.id,
-                stepName: stepDef.name,
-                output: existing.output,
-                attempts: existing.attempts,
-              })
-            } catch { /* hooks must not affect engine state */ }
+            await emit({
+              type: 'stepComplete',
+              runId: run.id,
+              workflow: run.workflow,
+              stepName: stepDef.name,
+              output: existing.output,
+              attempts: existing.attempts,
+            })
 
             const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
             if (!completed) {
               throw new LeaseExpiredError(run.id)
             }
 
-            try {
-              hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow })
-            } catch { /* hooks must not affect engine state */ }
+            await emit({ type: 'runComplete', runId: run.id, workflow: run.workflow, output: existing.output })
 
             return
           }
@@ -244,9 +448,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           const frozenSteps = snapshotSteps(stepsAccumulator)
 
           try {
-            try {
-              hooks?.onStepStart?.({ runId: run.id, stepName: stepDef.name })
-            } catch { /* hooks must not affect engine state */ }
+            await emit({ type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: stepDef.name })
 
             const outcome = await executeStep(run, activeRun, stepDef, prev, frozenSteps)
 
@@ -290,14 +492,14 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
               throw new LeaseExpiredError(run.id)
             }
 
-            try {
-              hooks?.onStepComplete?.({
-                runId: run.id,
-                stepName: stepDef.name,
-                output: outcome.output,
-                attempts: outcome.attempts,
-              })
-            } catch { /* hooks must not affect engine state */ }
+            await emit({
+              type: 'stepComplete',
+              runId: run.id,
+              workflow: run.workflow,
+              stepName: stepDef.name,
+              output: outcome.output,
+              attempts: outcome.attempts,
+            })
 
             if (outcome.kind === 'early-complete') {
               const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
@@ -305,9 +507,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
                 throw new LeaseExpiredError(run.id)
               }
 
-              try {
-                hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow })
-              } catch { /* hooks must not affect engine state */ }
+              await emit({ type: 'runComplete', runId: run.id, workflow: run.workflow, output: outcome.output })
 
               return
             }
@@ -337,9 +537,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
               return
             }
 
-            try {
-              hooks?.onRunFailed?.({ runId: run.id, workflow: run.workflow, stepName: stepDef.name, error: err })
-            } catch { /* hooks must not affect engine state */ }
+            await emit({ type: 'runFailed', runId: run.id, workflow: run.workflow, stepName: stepDef.name, error: err })
 
             if (wf.failureHandler) {
               try {
@@ -364,9 +562,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
               return
             }
 
-            try {
-              hooks?.onRunFailed?.({ runId: run.id, workflow: run.workflow, stepName: result.branchName, error: result.error })
-            } catch { /* hooks must not affect engine state */ }
+            await emit({ type: 'runFailed', runId: run.id, workflow: run.workflow, stepName: result.branchName, error: result.error })
 
             if (wf.failureHandler) {
               try {
@@ -394,9 +590,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         return
       }
 
-      try {
-        hooks?.onRunComplete?.({ runId: run.id, workflow: run.workflow })
-      } catch { /* hooks must not affect engine state */ }
+      await emit({ type: 'runComplete', runId: run.id, workflow: run.workflow, output: prev })
     } finally {
       cleanupActiveRun(run.id)
     }
@@ -536,9 +730,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
     try {
       for (const branchDef of pendingBranches) {
-        try {
-          hooks?.onStepStart?.({ runId: run.id, stepName: branchDef.name })
-        } catch { /* hooks must not affect engine state */ }
+        await emit({ type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: branchDef.name })
       }
 
       const groupActiveRun: ActiveRunState = {
@@ -651,14 +843,14 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           throw new LeaseExpiredError(run.id)
         }
 
-        try {
-          hooks?.onStepComplete?.({
-            runId: run.id,
-            stepName: branchResult.name,
-            output: branchResult.output,
-            attempts: branchResult.attempts,
-          })
-        } catch { /* hooks must not affect engine state */ }
+        await emit({
+          type: 'stepComplete',
+          runId: run.id,
+          workflow: run.workflow,
+          stepName: branchResult.name,
+          output: branchResult.output,
+          attempts: branchResult.attempts,
+        })
 
         stepsAccumulator[branchResult.name] = structuredClone(branchResult.output)
         merged[branchResult.name] = branchResult.output
@@ -710,9 +902,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     const parsedInput = wf.parseInput(input)
     const scheduleId = randomUUID()
     const interval = setInterval(() => {
-      void enqueue(workflowName, parsedInput).catch((error) => {
-        try { hooks?.onError?.(error instanceof Error ? error : new Error(String(error))) } catch { /* hooks must not throw */ }
-      })
+      void enqueue(workflowName, parsedInput).catch(reportError)
     }, intervalMs)
 
     schedules.set(scheduleId, interval)
@@ -771,9 +961,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     running = true
 
     const triggerPoll = () => {
-      void runPollCycle().catch((error) => {
-        try { hooks?.onError?.(error instanceof Error ? error : new Error(String(error))) } catch { /* hooks must not throw */ }
-      })
+      void runPollCycle().catch(reportError)
     }
 
     triggerPoll()
@@ -805,6 +993,13 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       abortActiveRun(runId, new RunControlError('Engine stopped'))
       cleanupActiveRun(runId)
     }
+
+    // End all streams and unblock any producer paused on backpressure, so a
+    // pending tick can settle instead of deadlocking on a consumer that is gone.
+    for (const subscriber of subscribers) {
+      subscriber.close()
+    }
+    subscribers.clear()
 
     if (tickPromise) {
       await tickPromise.catch(noop)
@@ -882,6 +1077,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     cancel,
     schedule,
     unschedule,
+    stream: createStream,
     tick,
     start,
     stop,

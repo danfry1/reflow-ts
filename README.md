@@ -338,10 +338,13 @@ const engine = createEngine({
   storage,
   workflows: [orderWorkflow],
   hooks: {
-    onStepComplete: ({ runId, stepName, output, attempts }) => {
+    onRunStart: ({ runId, workflow }) => { /* ... */ },
+    onStepStart: ({ runId, workflow, stepName }) => { /* ... */ },
+    onStepComplete: ({ runId, workflow, stepName, output, attempts }) => {
       console.log(`Step ${stepName} completed in ${attempts} attempt(s)`)
     },
-    onRunComplete: ({ runId, workflow }) => {
+    onRunComplete: ({ runId, workflow, output }) => {
+      // `output` is the workflow's final result
       metrics.increment('workflow.completed', { workflow })
     },
     onRunFailed: ({ runId, workflow, stepName, error }) => {
@@ -354,6 +357,48 @@ const engine = createEngine({
   },
 })
 ```
+
+Hooks may be **synchronous or `async`**. An async hook is awaited before the engine
+moves on, so you can use it to flush a metric, persist an audit row, or apply
+backpressure. A hook that throws (or rejects) never affects engine state — the error
+is swallowed so a broken observer can't fail a workflow.
+
+### Streaming Results
+
+Hooks are push-based callbacks. When you'd rather **pull** results — to apply
+backpressure, rate-limit, or pipe completions into a producer/consumer loop — use
+`engine.stream()`. It returns an async iterable of [`EngineEvent`](#api-reference)s:
+
+```typescript
+const engine = createEngine({ storage, workflows: [importWorkflow] })
+await engine.start()
+
+for await (const event of engine.stream()) {
+  if (event.type === 'runComplete') {
+    await pipeline.push(event.output) // process each result as it lands
+  }
+}
+```
+
+Each call to `engine.stream()` returns an independent stream. The event is a
+discriminated union (`runStart`, `stepStart`, `stepComplete`, `runComplete`,
+`runFailed`), so TypeScript narrows `event.output`, `event.error`, etc. once you
+check `event.type`.
+
+**Backpressure.** By default the stream buffers without bound and never slows the
+engine. Pass `bufferSize` to pace the engine against a slow consumer — the engine
+pauses once the buffer is full and resumes as you pull:
+
+```typescript
+// The engine won't start the next unit of work until you consume the last one.
+for await (const event of engine.stream({ bufferSize: 1 })) {
+  await slowlyHandle(event)
+}
+```
+
+**Cleanup is automatic.** Breaking out of the loop (or `await using stream = engine.stream()`)
+unsubscribes from the engine, and `engine.stop()` ends every open stream so consumer
+loops terminate cleanly.
 
 ### Step Timeouts
 
@@ -680,7 +725,7 @@ Creates an engine that executes workflows.
 |---|---|---|---|
 | `config.storage` | `StorageAdapter` | required | Storage backend |
 | `config.workflows` | `Workflow[]` | required | Workflows to register |
-| `config.hooks` | `EngineHooks` | `undefined` | Lifecycle hooks (`onStepComplete`, `onRunComplete`, `onRunFailed`, `onError`) |
+| `config.hooks` | `EngineHooks` | `undefined` | Lifecycle hooks (`onRunStart`, `onStepStart`, `onStepComplete`, `onRunComplete`, `onRunFailed`, `onError`). May be sync or `async` (awaited) |
 | `config.concurrency` | `number` | `1` | Number of runs to process in parallel per tick |
 | `config.runLeaseDurationMs` | `number` | `30000` | How long a claimed run stays `running` before another engine may reclaim it |
 | `config.heartbeatIntervalMs` | `number` | `leaseDuration / 3` | How often the active worker renews its lease |
@@ -698,6 +743,16 @@ Stops the polling loop, clears all schedules, and waits for any in-flight tick t
 ### `engine.tick()`
 
 Claims up to `concurrency` pending or stale runs and executes them in parallel. Useful for CLI tools or tests where you want explicit control instead of polling. If you use `tick()` without `start()`, call `storage.initialize()` first.
+
+### `engine.stream(options?)`
+
+Returns a pull-based `ResultStream` — an `AsyncIterableIterator<EngineEvent>` (and `AsyncDisposable`) of execution events. Each call returns an independent stream; iterate it with `for await`. `EngineEvent` is a discriminated union on `type`: `runStart`, `stepStart`, `stepComplete` (`{ output, attempts }`), `runComplete` (`{ output }`), and `runFailed` (`{ stepName, error }`) — all carrying `runId` and `workflow`.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `bufferSize` | `number` | `Infinity` | Max events buffered before the engine pauses (backpressure). Set to a finite value (e.g. `1`) to pace the engine against a slow consumer |
+
+Breaking out of the loop, disposing via `await using`, or calling `engine.stop()` unsubscribes the stream automatically.
 
 ### `engine.enqueue(name, input, options?)`
 
