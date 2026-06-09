@@ -19,10 +19,10 @@
   <!-- Thin accent line at top -->
   <rect y="0" width="1200" height="4" fill="#e46d2f" opacity="0.6"/>
 
-  <!-- Subtle watermark badge top-right -->
-  <g transform="translate(840, 100)">
-    <rect width="280" height="280" rx="64" fill="#183128" opacity="0.06"/>
-    <text x="140" y="210" fill="#183128" opacity="0.08" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="200" font-weight="800" text-anchor="middle">R</text>
+  <!-- Brand icon — the rounded R mark, matching the favicon -->
+  <g transform="translate(840, 100) scale(4.375)">
+    <rect width="64" height="64" rx="18" fill="#183128"/>
+    <path d="M22 47 V18 H35 A8.5 7.5 0 0 1 35 33 H22 L40 47" fill="none" stroke="#F6EEDC" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 
   <!-- Brand -->
