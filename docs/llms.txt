@@ -12,6 +12,8 @@ bun add reflow-ts
 npm install reflow-ts better-sqlite3
 ```
 
+Node.js 18.18 or newer is required.
+
 Pick a storage adapter based on your runtime:
 
 ```typescript
@@ -486,7 +488,7 @@ Claims up to concurrency pending/stale runs and executes them in parallel. For C
 ### engine.stream(options?)
 
 Returns a pull-based ResultStream — an AsyncIterableIterator<EngineEvent> and AsyncDisposable. Each call returns an independent stream. EngineEvent is a discriminated union on `type`: runStart, stepStart, stepComplete, runComplete, runFailed (all with runId, workflow).
-Option: bufferSize (number, default Infinity) - max events buffered before the engine pauses (backpressure). Breaking the loop / await using / engine.stop() unsubscribes.
+Option: bufferSize (non-negative integer, default Infinity) - max events buffered before the engine pauses (backpressure). Set to 0 for strict rendezvous delivery. Breaking the loop / await using / engine.stop() unsubscribes.
 
 ### engine.enqueue(name, input, options?)
 

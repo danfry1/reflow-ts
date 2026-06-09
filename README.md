@@ -83,6 +83,8 @@ bun add reflow-ts
 npm install reflow-ts better-sqlite3
 ```
 
+Node.js 18.18 or newer is required.
+
 Then pick a storage adapter based on your runtime:
 
 ```typescript
@@ -750,7 +752,7 @@ Returns a pull-based `ResultStream` — an `AsyncIterableIterator<EngineEvent>` 
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `bufferSize` | `number` | `Infinity` | Max events buffered before the engine pauses (backpressure). Set to a finite value (e.g. `1`) to pace the engine against a slow consumer |
+| `bufferSize` | `number` | `Infinity` | Max events buffered before the engine pauses (backpressure). Set to `0` for strict rendezvous delivery, or another non-negative integer to allow that many buffered events |
 
 Breaking out of the loop, disposing via `await using`, or calling `engine.stop()` unsubscribes the stream automatically.
 

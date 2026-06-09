@@ -3,7 +3,16 @@ import { z } from 'zod'
 import { createWorkflow, createEngine } from '../../index'
 import { testEngine } from '../../test/index'
 import { MemoryStorage } from '../../storage/memory'
-import type { Workflow, FailureContext, StepContext } from '../../index'
+import type {
+  EngineEvent,
+  EngineEventOf,
+  EngineHooks,
+  FailureContext,
+  PersistedValue,
+  ResultStream,
+  StepContext,
+  Workflow,
+} from '../../index'
 
 describe('type safety', () => {
   const orderWorkflow = createWorkflow({
@@ -71,6 +80,50 @@ describe('type safety', () => {
 
     // Only registered workflow names are accepted as first argument
     expectTypeOf(engine.enqueue).parameter(0).toEqualTypeOf<'order' | 'math'>()
+  })
+
+  it('engine.stream returns a discriminated async event stream', () => {
+    const storage = new MemoryStorage()
+    const engine = createEngine({ storage, workflows: [orderWorkflow] })
+    const stream = engine.stream({ bufferSize: 1 })
+
+    expectTypeOf(stream).toEqualTypeOf<ResultStream>()
+    expectTypeOf<EngineEventOf<'runComplete'>>().toEqualTypeOf<{
+      readonly type: 'runComplete'
+      readonly runId: string
+      readonly workflow: string
+      readonly output: PersistedValue
+    }>()
+
+    const narrow = (event: EngineEvent) => {
+      if (event.type === 'stepComplete') {
+        expectTypeOf(event.output).toEqualTypeOf<PersistedValue>()
+        expectTypeOf(event.attempts).toEqualTypeOf<number>()
+        expectTypeOf(event.stepName).toEqualTypeOf<string>()
+      } else if (event.type === 'runFailed') {
+        expectTypeOf(event.error).toEqualTypeOf<Error>()
+        expectTypeOf(event.stepName).toEqualTypeOf<string>()
+      } else if (event.type === 'runComplete') {
+        expectTypeOf(event.output).toEqualTypeOf<PersistedValue>()
+      }
+    }
+    void narrow
+  })
+
+  it('lifecycle hooks accept async callbacks with narrowed event types', () => {
+    const hooks: EngineHooks = {
+      onRunStart: async (event) => {
+        expectTypeOf(event).toEqualTypeOf<EngineEventOf<'runStart'>>()
+      },
+      onStepComplete: async (event) => {
+        expectTypeOf(event).toEqualTypeOf<EngineEventOf<'stepComplete'>>()
+      },
+      onRunFailed: async (event) => {
+        expectTypeOf(event).toEqualTypeOf<EngineEventOf<'runFailed'>>()
+      },
+    }
+
+    expect(hooks).toBeDefined()
   })
 
   it('onFailure handler receives typed input', () => {

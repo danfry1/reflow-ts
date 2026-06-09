@@ -10,6 +10,7 @@
 ### Changed
 
 - Hook event objects are now aligned with `EngineEvent`: every event carries a `type` discriminator and the owning `workflow` name, `onStepStart` / `onStepComplete` now include `workflow`, and `onRunComplete` now includes the workflow's final `output`. These are additive — existing hook callbacks continue to type-check and run unchanged.
+- The minimum supported Node.js version is now 18.18, the first Node 18 release with `Symbol.asyncDispose` support.
 
 ## 0.4.0
 

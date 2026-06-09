@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { persistedValuesEqual } from '../storage/codec'
+import { clonePersistedValue, persistedValuesEqual } from '../storage/codec'
+import {
+  createBoundedAsyncIterator,
+  type AbortableSubscriber,
+} from './async-iterator'
 import {
   ConfigError,
   DuplicateWorkflowError,
@@ -69,7 +73,8 @@ export interface StreamOptions {
    * Defaults to `Infinity` — events buffer without bound and the engine never
    * waits on the consumer. Set a finite value (e.g. `1`) to pace the engine
    * against a slow consumer; the engine will not start the next unit of work
-   * until the consumer drains the buffer below this size.
+   * until the consumer drains the buffer below this size. Set `0` for strict
+   * rendezvous delivery, where every event waits for a pending pull.
    */
   bufferSize?: number
 }
@@ -154,16 +159,9 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
 interface ActiveRunState {
   leaseId: string
   runAbortController: AbortController
+  observerAbortController: AbortController
   heartbeatTimer: ReturnType<typeof setInterval> | null
   heartbeatInFlight: boolean
-}
-
-/** A single {@link Engine.stream} consumer. */
-interface StreamSubscriber {
-  /** Deliver an event. Resolves once buffered; when the buffer is full, resolves only after the consumer drains it (backpressure). */
-  push(event: EngineEvent): Promise<void>
-  /** End the stream, unblocking any pending consumer and producer waiters. */
-  close(): void
 }
 
 /**
@@ -209,11 +207,12 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   const registry = new Map<string, AnyWorkflow>()
   const schedules = new Map<string, ReturnType<typeof setInterval>>()
   const activeRuns = new Map<string, ActiveRunState>()
-  const subscribers = new Set<StreamSubscriber>()
+  const subscribers = new Set<AbortableSubscriber<EngineEvent>>()
   let running = false
   let timer: ReturnType<typeof setInterval> | null = null
   let tickInFlight = false
   let tickPromise: Promise<void> | null = null
+  let stopGeneration = 0
 
   for (const wf of workflows) {
     if (registry.has(wf.name)) {
@@ -270,35 +269,62 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
    * backpressured stream pace the engine. Neither a throwing hook nor a stream
    * may affect engine state, so all errors are contained.
    */
-  async function emit(event: EngineEvent): Promise<void> {
+  async function emit(event: EngineEvent, signal: AbortSignal): Promise<void> {
     try {
-      switch (event.type) {
-        case 'runStart':
-          await hooks?.onRunStart?.(event)
-          break
-        case 'stepStart':
-          await hooks?.onStepStart?.(event)
-          break
-        case 'stepComplete':
-          await hooks?.onStepComplete?.(event)
-          break
-        case 'runComplete':
-          await hooks?.onRunComplete?.(event)
-          break
-        case 'runFailed':
-          await hooks?.onRunFailed?.(event)
-          break
+      await runWithSignal(
+        () => Promise.resolve(dispatchHook(event)).then(noop),
+        signal,
+      )
+    } catch {
+      if (signal.aborted) {
+        throw toError(signal.reason)
       }
-    } catch { /* hooks must not affect engine state */ }
+      // Hooks are observers and must not affect engine state.
+    }
 
-    if (subscribers.size > 0) {
-      const deliveries: Array<Promise<void>> = []
-      for (const subscriber of subscribers) {
-        deliveries.push(subscriber.push(event))
+    if (subscribers.size === 0) {
+      return
+    }
+
+    const deliveries = Array.from(
+      subscribers,
+      (subscriber) => subscriber.push(cloneEngineEvent(event), signal),
+    )
+
+    try {
+      await runWithSignal(
+        () => Promise.allSettled(deliveries).then(noop),
+        signal,
+      )
+    } catch {
+      if (signal.aborted) {
+        throw toError(signal.reason)
       }
-      try {
-        await Promise.all(deliveries)
-      } catch { /* stream delivery must not affect engine state */ }
+      // Stream delivery is observational and must not affect engine state.
+    }
+  }
+
+  function dispatchHook(event: EngineEvent): unknown {
+    switch (event.type) {
+      case 'runStart':
+        return hooks?.onRunStart?.({ ...event })
+      case 'stepStart':
+        return hooks?.onStepStart?.({ ...event })
+      case 'stepComplete':
+        return hooks?.onStepComplete?.({
+          ...event,
+          output: clonePersistedValue(event.output, 'Step hook output'),
+        })
+      case 'runComplete':
+        return hooks?.onRunComplete?.({
+          ...event,
+          output: clonePersistedValue(event.output, 'Run hook output'),
+        })
+      case 'runFailed':
+        return hooks?.onRunFailed?.({
+          ...event,
+          error: cloneError(event.error),
+        })
     }
   }
 
@@ -314,89 +340,21 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
   function createStream(options?: StreamOptions): ResultStream {
     const capacity = options?.bufferSize ?? Number.POSITIVE_INFINITY
-    const buffer: EngineEvent[] = []
-    const pullWaiters: Array<(result: IteratorResult<EngineEvent>) => void> = []
-    const pushWaiters: Array<() => void> = []
-    let closed = false
-
-    const subscriber: StreamSubscriber = {
-      push(event) {
-        if (closed) return Promise.resolve()
-
-        const waiter = pullWaiters.shift()
-        if (waiter) {
-          waiter({ value: event, done: false })
-          return Promise.resolve()
-        }
-
-        buffer.push(event)
-        if (buffer.length <= capacity) {
-          return Promise.resolve()
-        }
-
-        // Buffer is over capacity — pause the producer until the consumer drains it.
-        return new Promise<void>((resolve) => pushWaiters.push(resolve))
-      },
-      close() {
-        if (closed) return
-        closed = true
-        for (const waiter of pullWaiters.splice(0)) {
-          waiter({ value: undefined, done: true })
-        }
-        for (const resume of pushWaiters.splice(0)) {
-          resume()
-        }
-      },
+    if (
+      capacity !== Number.POSITIVE_INFINITY &&
+      (!Number.isInteger(capacity) || capacity < 0)
+    ) {
+      throw new ConfigError('Stream bufferSize must be a non-negative integer or Infinity')
     }
 
+    let subscriber!: AbortableSubscriber<EngineEvent>
+    const channel = createBoundedAsyncIterator<EngineEvent>(
+      capacity,
+      () => subscribers.delete(subscriber),
+    )
+    subscriber = channel.subscriber
     subscribers.add(subscriber)
-
-    const dispose = (): void => {
-      subscribers.delete(subscriber)
-      closed = true
-      // Resolve a pending consumer (a manual next() awaiting an empty buffer) as
-      // done, and unblock any paused producer, so nothing is left hanging.
-      for (const waiter of pullWaiters.splice(0)) {
-        waiter({ value: undefined, done: true })
-      }
-      for (const resume of pushWaiters.splice(0)) {
-        resume()
-      }
-    }
-
-    const stream: ResultStream = {
-      next(): Promise<IteratorResult<EngineEvent>> {
-        const event = buffer.shift()
-        if (event !== undefined) {
-          const resume = pushWaiters.shift()
-          if (resume) resume()
-          return Promise.resolve({ value: event, done: false })
-        }
-
-        if (closed) {
-          return Promise.resolve({ value: undefined, done: true })
-        }
-
-        return new Promise<IteratorResult<EngineEvent>>((resolve) => pullWaiters.push(resolve))
-      },
-      return(): Promise<IteratorResult<EngineEvent>> {
-        dispose()
-        return Promise.resolve({ value: undefined, done: true })
-      },
-      throw(error?: unknown): Promise<IteratorResult<EngineEvent>> {
-        dispose()
-        return Promise.reject(error instanceof Error ? error : new Error(String(error)))
-      },
-      [Symbol.asyncIterator]() {
-        return stream
-      },
-      [Symbol.asyncDispose](): Promise<void> {
-        dispose()
-        return Promise.resolve()
-      },
-    }
-
-    return stream
+    return channel.iterator
   }
 
   async function executeRun(run: ClaimedRun): Promise<void> {
@@ -404,9 +362,15 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     if (!wf) return
 
     const activeRun = registerActiveRun(run)
+    const observerSignal = activeRun.observerAbortController.signal
 
     try {
-      await emit({ type: 'runStart', runId: run.id, workflow: run.workflow })
+      const currentRun = await storage.getRun(run.id)
+      if (!currentRun || currentRun.status !== 'running') {
+        return
+      }
+
+      await emit({ type: 'runStart', runId: run.id, workflow: run.workflow }, observerSignal)
 
       const existingSteps = await storage.getStepResults(run.id)
       const completedMap = new Map(existingSteps.map((step) => [step.name, step]))
@@ -433,14 +397,17 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
               stepName: stepDef.name,
               output: existing.output,
               attempts: existing.attempts,
-            })
+            }, observerSignal)
 
             const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
             if (!completed) {
               throw new LeaseExpiredError(run.id)
             }
 
-            await emit({ type: 'runComplete', runId: run.id, workflow: run.workflow, output: existing.output })
+            await emit(
+              { type: 'runComplete', runId: run.id, workflow: run.workflow, output: existing.output },
+              observerSignal,
+            )
 
             return
           }
@@ -453,7 +420,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           const frozenSteps = snapshotSteps(stepsAccumulator)
 
           try {
-            await emit({ type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: stepDef.name })
+            await emit(
+              { type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: stepDef.name },
+              observerSignal,
+            )
 
             const outcome = await executeStep(run, activeRun, stepDef, prev, frozenSteps)
 
@@ -519,7 +489,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
               stepName: stepDef.name,
               output: outcome.output,
               attempts: outcome.attempts,
-            })
+            }, observerSignal)
 
             if (outcome.kind === 'early-complete') {
               const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
@@ -527,7 +497,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
                 throw new LeaseExpiredError(run.id)
               }
 
-              await emit({ type: 'runComplete', runId: run.id, workflow: run.workflow, output: outcome.output })
+              await emit(
+                { type: 'runComplete', runId: run.id, workflow: run.workflow, output: outcome.output },
+                observerSignal,
+              )
 
               return
             }
@@ -557,7 +530,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
               return
             }
 
-            await emit({ type: 'runFailed', runId: run.id, workflow: run.workflow, stepName: stepDef.name, error: err })
+            await emit(
+              { type: 'runFailed', runId: run.id, workflow: run.workflow, stepName: stepDef.name, error: err },
+              observerSignal,
+            )
 
             if (wf.failureHandler) {
               try {
@@ -582,7 +558,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
               return
             }
 
-            await emit({ type: 'runFailed', runId: run.id, workflow: run.workflow, stepName: result.branchName, error: result.error })
+            await emit(
+              { type: 'runFailed', runId: run.id, workflow: run.workflow, stepName: result.branchName, error: result.error },
+              observerSignal,
+            )
 
             if (wf.failureHandler) {
               try {
@@ -610,7 +589,14 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         return
       }
 
-      await emit({ type: 'runComplete', runId: run.id, workflow: run.workflow, output: prev })
+      await emit(
+        { type: 'runComplete', runId: run.id, workflow: run.workflow, output: prev },
+        observerSignal,
+      )
+    } catch (error) {
+      if (!(error instanceof RunControlError)) {
+        throw error
+      }
     } finally {
       cleanupActiveRun(run.id)
     }
@@ -750,7 +736,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
     try {
       for (const branchDef of pendingBranches) {
-        await emit({ type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: branchDef.name })
+        await emit(
+          { type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: branchDef.name },
+          activeRun.observerAbortController.signal,
+        )
       }
 
       const groupActiveRun: ActiveRunState = {
@@ -874,7 +863,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           stepName: branchResult.name,
           output: branchResult.output,
           attempts: branchResult.attempts,
-        })
+        }, activeRun.observerAbortController.signal)
 
         stepsAccumulator[branchResult.name] = structuredClone(branchResult.output)
         merged[branchResult.name] = branchResult.output
@@ -947,6 +936,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       return
     }
 
+    const generation = stopGeneration
     tickInFlight = true
     const promise = (async () => {
       try {
@@ -960,6 +950,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           }
 
           runs.push(run)
+        }
+
+        if (generation !== stopGeneration) {
+          return
         }
 
         await Promise.all(runs.map((run) => executeRun(run)))
@@ -1001,6 +995,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   }
 
   async function stop(): Promise<void> {
+    stopGeneration++
     running = false
 
     if (timer) {
@@ -1039,6 +1034,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     const activeRun: ActiveRunState = {
       leaseId: run.leaseId,
       runAbortController: new AbortController(),
+      observerAbortController: new AbortController(),
       heartbeatTimer: null,
       heartbeatInFlight: false,
     }
@@ -1088,11 +1084,20 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
   function abortActiveRun(runId: string, reason: Error): void {
     const activeRun = activeRuns.get(runId)
-    if (!activeRun || activeRun.runAbortController.signal.aborted) {
+    if (!activeRun) {
       return
     }
 
-    activeRun.runAbortController.abort(reason)
+    if (!activeRun.runAbortController.signal.aborted) {
+      activeRun.runAbortController.abort(reason)
+    }
+
+    if (
+      reason instanceof RunControlError &&
+      !activeRun.observerAbortController.signal.aborted
+    ) {
+      activeRun.observerAbortController.abort(reason)
+    }
   }
 
   return {
@@ -1106,6 +1111,35 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     start,
     stop,
   } as Engine<WorkflowInputMap<TWorkflows>>
+}
+
+function cloneEngineEvent(event: EngineEvent): EngineEvent {
+  switch (event.type) {
+    case 'stepComplete':
+      return {
+        ...event,
+        output: clonePersistedValue(event.output, 'Step event output'),
+      }
+    case 'runComplete':
+      return {
+        ...event,
+        output: clonePersistedValue(event.output, 'Run event output'),
+      }
+    case 'runFailed':
+      return {
+        ...event,
+        error: cloneError(event.error),
+      }
+    default:
+      return { ...event }
+  }
+}
+
+function cloneError(error: Error): Error {
+  return Object.create(
+    Object.getPrototypeOf(error),
+    Object.getOwnPropertyDescriptors(error),
+  ) as Error
 }
 
 function runWithSignal<T>(

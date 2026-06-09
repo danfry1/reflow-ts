@@ -134,6 +134,8 @@ bun add reflow-ts
 # Node.js (requires better-sqlite3)
 npm install reflow-ts better-sqlite3</code></pre>
 
+          <p>Node.js 18.18 or newer is required.</p>
+
           <p>Then pick a storage adapter based on your runtime:</p>
 
           <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>// Bun - zero native deps
@@ -1004,7 +1006,7 @@ workflow.step('x', async ({ prev }) => {
                 <div class="api-param">
                   <span class="api-param-name">bufferSize</span>
                   <span class="api-param-type">number</span>
-                  <span class="api-param-desc">Max events buffered before the engine pauses (backpressure). Default: <code>Infinity</code>. Set to a finite value (e.g. <code>1</code>) to pace the engine against a slow consumer</span>
+                  <span class="api-param-desc">Max events buffered before the engine pauses (backpressure). Default: <code>Infinity</code>. Set to <code>0</code> for strict rendezvous delivery, or another non-negative integer to allow that many buffered events</span>
                 </div>
               </div>
               <div class="api-returns">Returns <code>ResultStream</code>. Breaking out of the loop, <code>await using</code>, or <code>engine.stop()</code> unsubscribes automatically.</div>
