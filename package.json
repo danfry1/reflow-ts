@@ -30,6 +30,10 @@
       "types": "./dist/storage/sqlite-bun.d.mts",
       "import": "./dist/storage/sqlite-bun.mjs"
     },
+    "./sqlite-node-builtin": {
+      "types": "./dist/storage/sqlite-node-builtin.d.mts",
+      "import": "./dist/storage/sqlite-node-builtin.mjs"
+    },
     "./test": {
       "types": "./dist/test/index.d.mts",
       "import": "./dist/test/index.mjs"

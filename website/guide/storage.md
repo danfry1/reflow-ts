@@ -22,6 +22,22 @@ import { SQLiteStorage } from 'reflow-ts/sqlite-node'
 const storage = new SQLiteStorage('./workflows.db')
 ```
 
+## SQLiteStorage (Node.js built-in)
+
+For modern Node.js with **zero native dependencies** — uses the built-in [`node:sqlite`](https://nodejs.org/api/sqlite.html) module instead of `better-sqlite3`, the Node equivalent of the Bun adapter.
+
+```typescript
+import { SQLiteStorage } from 'reflow-ts/sqlite-node-builtin'
+
+const storage = new SQLiteStorage('./workflows.db')
+```
+
+Requires **Node.js ≥ 22.5** (when `node:sqlite` landed). On Node 22.x and 23.x before 23.4 it's gated behind the `--experimental-sqlite` flag; from Node 23.4 it's on by default (still experimental, so Node prints an `ExperimentalWarning`). For Node below 22.5, use the `better-sqlite3` adapter above.
+
+::: tip Which Node adapter?
+Use `sqlite-node-builtin` if you're on Node ≥ 22.5 and want to drop the `better-sqlite3` native dependency. Use `sqlite-node` for broad compatibility (Node ≥ 18.18) or to avoid the experimental module.
+:::
+
 ## MemoryStorage
 
 An in-memory adapter, used internally by the [test helper](/guide/testing). For custom use, import it from `reflow-ts/test`. State is lost when the process exits — it offers no durability, so it's for tests and ephemeral work only.
