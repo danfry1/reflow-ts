@@ -30,6 +30,8 @@ features:
     details: Per-step retry with linear or exponential backoff, per-attempt timeouts, early completion, parallel groups, and onFailure compensation — all first-class.
 ---
 
+<CrashTest />
+
 ## Durable in five lines
 
 ```typescript
