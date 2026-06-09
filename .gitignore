@@ -7,3 +7,5 @@ coverage/
 *.db-shm
 .DS_Store
 .worktrees/
+website/.vitepress/cache/
+website/.vitepress/dist/

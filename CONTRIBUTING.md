@@ -21,8 +21,11 @@ bun run typecheck
 # Build the library
 bun run build
 
+# Run the docs site locally (VitePress)
+bun run dev:website
+
 # Build the docs site
-bun run site:build
+bun run build:website
 ```
 
 ## Project Structure
@@ -40,8 +43,11 @@ src/
     codec.ts        # JSON serialization for PersistedValue
   test/
     index.ts        # Test helper (testEngine)
-docs/
-  site/src/         # Documentation website (plain HTML/CSS/JS)
+website/
+  .vitepress/       # VitePress config and theme
+  guide/            # Guide pages (Markdown)
+  api/              # API reference pages (Markdown)
+  public/           # Static assets (llms.txt, og-card, favicon)
 ```
 
 ## Running Tests
