@@ -22,7 +22,7 @@
   <!-- Brand icon — the rounded R mark, matching the favicon -->
   <g transform="translate(840, 100) scale(4.375)">
     <rect width="64" height="64" rx="18" fill="#183128"/>
-    <path d="M22 47 V18 H35 A8.5 7.5 0 0 1 35 33 H22 L40 47" fill="none" stroke="#F6EEDC" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M21 48 V16 H34 A10 9 0 0 1 34 34 H26 L45 48" fill="none" stroke="#F6EEDC" stroke-width="8.5" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 
   <!-- Brand -->
