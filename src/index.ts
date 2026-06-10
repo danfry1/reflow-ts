@@ -30,7 +30,16 @@ export type {
   WorkflowInputMap,
   WorkflowStepsMap,
 } from './core/workflow'
-export type { Engine, EngineConfig, EngineHooks, EnqueueOptions } from './core/engine'
+export type {
+  Engine,
+  EngineConfig,
+  EngineHooks,
+  EngineEvent,
+  EngineEventOf,
+  EnqueueOptions,
+  StreamOptions,
+  ResultStream,
+} from './core/engine'
 export type {
   ClaimedRun,
   CreateRunResult,

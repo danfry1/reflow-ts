@@ -58,6 +58,7 @@
             <a href="#scheduled-workflows">Scheduled Workflows</a>
             <a href="#step-timeouts">Step Timeouts</a>
             <a href="#hooks">Hooks</a>
+            <a href="#streaming">Streaming Results</a>
             <a href="#storage">Storage</a>
             <a href="#deployment">Deployment</a>
 
@@ -75,6 +76,7 @@
             <a href="#api-engine-start">engine.start</a>
             <a href="#api-engine-stop">engine.stop</a>
             <a href="#api-engine-tick">engine.tick</a>
+            <a href="#api-engine-stream">engine.stream</a>
             <a href="#api-engine-enqueue">engine.enqueue</a>
             <a href="#api-engine-cancel">engine.cancel</a>
             <a href="#api-engine-schedule">engine.schedule</a>
@@ -131,6 +133,8 @@ bun add reflow-ts
 
 # Node.js (requires better-sqlite3)
 npm install reflow-ts better-sqlite3</code></pre>
+
+          <p>Node.js 18.18 or newer is required.</p>
 
           <p>Then pick a storage adapter based on your runtime:</p>
 
@@ -549,10 +553,13 @@ engine.unschedule(scheduleId)
   storage,
   workflows: [orderWorkflow],
   hooks: {
-    onStepComplete: ({ runId, stepName, output, attempts }) => {
+    onRunStart: ({ runId, workflow }) => {},
+    onStepStart: ({ runId, workflow, stepName }) => {},
+    onStepComplete: ({ runId, workflow, stepName, output, attempts }) => {
       console.log(stepName + ' completed in ' + attempts + ' attempt(s)')
     },
-    onRunComplete: ({ runId, workflow }) => {
+    onRunComplete: ({ runId, workflow, output }) => {
+      // output is the workflow's final result
       metrics.increment('workflow.completed', { workflow })
     },
     onRunFailed: ({ runId, workflow, stepName, error }) => {
@@ -564,6 +571,30 @@ engine.unschedule(scheduleId)
     },
   },
 })</code></pre>
+
+          <p>Hooks may be synchronous or <code>async</code>. An async hook is awaited before the engine moves on, so it can flush a metric, persist an audit row, or apply backpressure. A hook that throws or rejects never affects engine state &mdash; the error is swallowed.</p>
+
+          <!-- Streaming Results -->
+          <h2 id="streaming">Streaming Results</h2>
+
+          <p>Hooks are push-based callbacks. When you'd rather <strong>pull</strong> results &mdash; to apply backpressure, rate-limit, or feed a producer/consumer loop &mdash; use <code>engine.stream()</code>. It returns an async iterable of <code>EngineEvent</code>s:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>for await (const event of engine.stream()) {
+  if (event.type === 'runComplete') {
+    await pipeline.push(event.output) // process each result as it lands
+  }
+}</code></pre>
+
+          <p>Each call returns an independent stream. <code>EngineEvent</code> is a discriminated union (<code>runStart</code>, <code>stepStart</code>, <code>stepComplete</code>, <code>runComplete</code>, <code>runFailed</code>), so TypeScript narrows <code>event.output</code>, <code>event.error</code>, etc. once you check <code>event.type</code>.</p>
+
+          <p><strong>Backpressure.</strong> By default the stream buffers without bound and never slows the engine. Pass <code>bufferSize</code> to pace the engine against a slow consumer &mdash; it pauses once the buffer is full and resumes as you pull:</p>
+
+          <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false"><code>// The engine won't start the next unit of work until you consume the last one.
+for await (const event of engine.stream({ bufferSize: 1 })) {
+  await slowlyHandle(event)
+}</code></pre>
+
+          <p><strong>Cleanup is automatic.</strong> Breaking out of the loop (or <code>await using stream = engine.stream()</code>) unsubscribes from the engine, and <code>engine.stop()</code> ends every open stream so consumer loops terminate cleanly.</p>
 
           <!-- Storage -->
           <h2 id="storage">Storage</h2>
@@ -907,7 +938,7 @@ workflow.step('x', async ({ prev }) => {
                 <div class="api-param">
                   <span class="api-param-name">hooks</span>
                   <span class="api-param-type">EngineHooks</span>
-                  <span class="api-param-desc">Lifecycle hooks: <code>onStepComplete</code>, <code>onRunComplete</code>, <code>onRunFailed</code>, <code>onError</code></span>
+                  <span class="api-param-desc">Lifecycle hooks: <code>onRunStart</code>, <code>onStepStart</code>, <code>onStepComplete</code>, <code>onRunComplete</code>, <code>onRunFailed</code>, <code>onError</code>. May be sync or <code>async</code> (awaited)</span>
                 </div>
                 <div class="api-param">
                   <span class="api-param-name">concurrency</span>
@@ -960,6 +991,25 @@ workflow.step('x', async ({ prev }) => {
               </div>
               <p>Claims up to <code>concurrency</code> pending or stale runs and executes them in parallel. Useful for CLI tools or tests where you want explicit control instead of polling.</p>
               <div class="api-returns">Returns <code>Promise&lt;void&gt;</code></div>
+            </div>
+
+            <div class="api-card" id="api-engine-stream">
+              <div class="api-header">
+                <h3>engine.stream(options?)</h3>
+              </div>
+              <p>Returns a pull-based <code>ResultStream</code> &mdash; an <code>AsyncIterableIterator&lt;EngineEvent&gt;</code> (and <code>AsyncDisposable</code>) of execution events. Each call returns an independent stream; iterate it with <code>for await</code>. <code>EngineEvent</code> is a discriminated union on <code>type</code>: <code>runStart</code>, <code>stepStart</code>, <code>stepComplete</code> (<code>{ output, attempts }</code>), <code>runComplete</code> (<code>{ output }</code>), <code>runFailed</code> (<code>{ stepName, error }</code>) &mdash; all carrying <code>runId</code> and <code>workflow</code>.</p>
+              <pre class="code-block docs-code" data-language="typescript" data-line-numbers="false" data-compact="true"><code>for await (const event of engine.stream()) {
+  if (event.type === 'runComplete') await pipeline.push(event.output)
+}</code></pre>
+              <div class="api-params">
+                <p class="api-params-label">Options</p>
+                <div class="api-param">
+                  <span class="api-param-name">bufferSize</span>
+                  <span class="api-param-type">number</span>
+                  <span class="api-param-desc">Max events buffered before the engine pauses (backpressure). Default: <code>Infinity</code>. Set to <code>0</code> for strict rendezvous delivery, or another non-negative integer to allow that many buffered events</span>
+                </div>
+              </div>
+              <div class="api-returns">Returns <code>ResultStream</code>. Breaking out of the loop, <code>await using</code>, or <code>engine.stop()</code> unsubscribes automatically.</div>
             </div>
 
             <div class="api-card" id="api-engine-enqueue">

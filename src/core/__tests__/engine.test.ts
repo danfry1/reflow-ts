@@ -1118,8 +1118,10 @@ describe('Engine', () => {
 
       expect(onRunComplete).toHaveBeenCalledOnce()
       expect(onRunComplete).toHaveBeenCalledWith({
+        type: 'runComplete',
         runId: run.id,
         workflow: 'complete-hook',
+        output: { done: true },
       })
     })
 
@@ -1139,6 +1141,7 @@ describe('Engine', () => {
 
       expect(onRunFailed).toHaveBeenCalledOnce()
       expect(onRunFailed).toHaveBeenCalledWith({
+        type: 'runFailed',
         runId: run.id,
         workflow: 'fail-hook',
         stepName: 'broken',
@@ -1289,6 +1292,7 @@ describe('Engine', () => {
 
       expect(onRunStart).toHaveBeenCalledOnce()
       expect(onRunStart).toHaveBeenCalledWith({
+        type: 'runStart',
         runId: run.id,
         workflow: 'run-start-hook',
       })
@@ -1333,8 +1337,8 @@ describe('Engine', () => {
       await engine.tick()
 
       expect(onStepStart).toHaveBeenCalledTimes(2)
-      expect(onStepStart).toHaveBeenCalledWith({ runId: run.id, stepName: 'a' })
-      expect(onStepStart).toHaveBeenCalledWith({ runId: run.id, stepName: 'b' })
+      expect(onStepStart).toHaveBeenCalledWith({ type: 'stepStart', runId: run.id, workflow: 'step-start-hook', stepName: 'a' })
+      expect(onStepStart).toHaveBeenCalledWith({ type: 'stepStart', runId: run.id, workflow: 'step-start-hook', stepName: 'b' })
     })
 
     it('does not call onStepStart for already-completed steps on resume', async () => {
@@ -2074,7 +2078,7 @@ describe('Engine', () => {
       const run = await engine.enqueue('early-hook', {})
       await engine.tick()
 
-      expect(hookCalled).toHaveBeenCalledWith({ runId: run.id, workflow: 'early-hook' })
+      expect(hookCalled).toHaveBeenCalledWith({ type: 'runComplete', runId: run.id, workflow: 'early-hook', output: undefined })
     })
 
     it('complete() fires onStepComplete hook', async () => {
@@ -2091,7 +2095,9 @@ describe('Engine', () => {
       await engine.tick()
 
       expect(stepHook).toHaveBeenCalledWith({
+        type: 'stepComplete',
         runId: run.id,
+        workflow: 'early-step-hook',
         stepName: 'check',
         output: { done: true },
         attempts: 1,
@@ -2199,12 +2205,14 @@ describe('Engine', () => {
       expect(info.run.status).toBe('completed')
       expect(neverRuns).not.toHaveBeenCalled()
       expect(stepHook).toHaveBeenCalledWith({
+        type: 'stepComplete',
         runId: run.id,
+        workflow: 'early-recover',
         stepName: 'check',
         output: { done: true },
         attempts: 1,
       })
-      expect(runHook).toHaveBeenCalledWith({ runId: run.id, workflow: 'early-recover' })
+      expect(runHook).toHaveBeenCalledWith({ type: 'runComplete', runId: run.id, workflow: 'early-recover', output: { done: true } })
     })
   })
 })
