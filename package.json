@@ -48,6 +48,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
+    "dev:website": "vitepress dev website",
+    "build:website": "vitepress build website",
+    "preview:website": "vitepress preview website",
     "prepublishOnly": "bun run typecheck && bun run test && bun run build"
   },
   "keywords": [
@@ -73,6 +76,7 @@
     "better-sqlite3": "^12.6.2",
     "tsdown": "^0.21.0",
     "typescript": "^5.9.3",
+    "vitepress": "^1.6.4",
     "vitest": "^4.0.18",
     "zod": "^4.3.6"
   },
