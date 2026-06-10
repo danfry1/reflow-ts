@@ -52,10 +52,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
+    "lint:deps": "syncpack lint",
+    "fix:deps": "syncpack fix",
     "dev:website": "vitepress dev website",
     "build:website": "vitepress build website",
     "preview:website": "vitepress preview website",
-    "prepublishOnly": "bun run typecheck && bun run test && bun run build"
+    "prepublishOnly": "bun run lint:deps && bun run typecheck && bun run test && bun run build"
   },
   "keywords": [
     "workflow",
@@ -75,14 +77,15 @@
     }
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
-    "@vitest/coverage-v8": "^4.0.18",
-    "better-sqlite3": "^12.6.2",
-    "tsdown": "^0.21.0",
-    "typescript": "^5.9.3",
-    "vitepress": "^1.6.4",
-    "vitest": "^4.0.18",
-    "zod": "^4.3.6"
+    "@types/better-sqlite3": "7.6.13",
+    "@vitest/coverage-v8": "4.0.18",
+    "better-sqlite3": "12.6.2",
+    "syncpack": "15.3.1",
+    "tsdown": "0.21.2",
+    "typescript": "5.9.3",
+    "vitepress": "1.6.4",
+    "vitest": "4.0.18",
+    "zod": "4.3.6"
   },
   "dependencies": {
     "@standard-schema/spec": "^1.1.0"

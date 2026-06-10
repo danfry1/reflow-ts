@@ -1,11 +1,19 @@
 version: 2
 updates:
-  - package-ecosystem: npm
+  - package-ecosystem: bun
     directory: /
     schedule:
       interval: weekly
       day: monday
     open-pull-requests-limit: 10
+    # Supply-chain hardening: hold update PRs until a version has been public for
+    # at least seven days, long enough for most malicious releases to be yanked.
+    # Mirrors the install-time minimumReleaseAge gate in bunfig.toml.
+    cooldown:
+      default-days: 7
+      semver-major-days: 7
+      semver-minor-days: 7
+      semver-patch-days: 7
     groups:
       dev-dependencies:
         dependency-type: development
@@ -20,3 +28,5 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
