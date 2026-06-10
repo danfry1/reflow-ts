@@ -6,6 +6,7 @@
 
 - **`engine.stream()`** — a pull-based, backpressure-aware stream of execution events. Returns an `AsyncIterableIterator<EngineEvent>` (also an `AsyncDisposable`) so you can `for await` over `runStart` / `stepStart` / `stepComplete` / `runComplete` / `runFailed` events instead of wiring up callback-to-queue plumbing. Optional `bufferSize` paces the engine against a slow consumer; breaking out of the loop, `await using`, or `engine.stop()` unsubscribes automatically. New exported types: `EngineEvent`, `EngineEventOf`, `StreamOptions`, `ResultStream`. ([#24](https://github.com/danfry1/reflow-ts/issues/24) — suggested by [@brianjenkins94](https://github.com/brianjenkins94))
 - **Async hooks** — lifecycle hooks may now be `async` and are awaited before the engine proceeds, so a hook can flush a metric, persist an audit row, or apply backpressure with ordering guarantees. A throwing or rejecting hook is still fully contained and never affects engine state. ([#23](https://github.com/danfry1/reflow-ts/issues/23) — suggested by [@brianjenkins94](https://github.com/brianjenkins94))
+- **`reflow-ts/sqlite-node-builtin`** — a new SQLite storage adapter for Node.js backed by the built-in `node:sqlite` module, with **zero native dependencies** (the Node equivalent of the Bun adapter). Requires Node ≥ 22.5; the existing `better-sqlite3`-based `reflow-ts/sqlite-node` adapter remains for Node ≥ 18.18.
 
 ### Changed
 

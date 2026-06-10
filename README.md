@@ -511,6 +511,14 @@ import { SQLiteStorage } from 'reflow-ts/sqlite-node'
 const storage = new SQLiteStorage('./workflows.db')
 ```
 
+**SQLiteStorage** — for Node.js with **no native dependencies**, using the built-in `node:sqlite` module (Node ≥ 22.5). The Node equivalent of the Bun adapter.
+
+```typescript
+import { SQLiteStorage } from 'reflow-ts/sqlite-node-builtin'
+
+const storage = new SQLiteStorage('./workflows.db')
+```
+
 **MemoryStorage** — used internally by the test helper. For custom use, import from `reflow-ts/test`.
 
 ```typescript
@@ -787,6 +795,10 @@ SQLite storage adapter for Bun runtime. Uses the built-in `bun:sqlite` module �
 ### `SQLiteStorage(path)` — Node.js
 
 SQLite storage adapter for Node.js. Uses `better-sqlite3`. WAL mode and transactional claiming.
+
+### `SQLiteStorage(path)` — Node.js built-in
+
+SQLite storage adapter for Node.js using the built-in `node:sqlite` module — no native dependencies. Requires Node ≥ 22.5 (`--experimental-sqlite` before Node 23.4). WAL mode and transactional claiming. Import from `reflow-ts/sqlite-node-builtin`.
 
 ## License
 

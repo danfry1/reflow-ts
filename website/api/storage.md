@@ -18,7 +18,16 @@ const storage = new SQLiteStorage('./workflows.db')
 
 SQLite adapter for Node.js. Uses [`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3) (an optional peer dependency). WAL mode with transactional claiming.
 
-Both constructors take a database file path. Pass `:memory:` for an ephemeral database.
+## `SQLiteStorage` — Node.js built-in
+
+```typescript
+import { SQLiteStorage } from 'reflow-ts/sqlite-node-builtin'
+const storage = new SQLiteStorage('./workflows.db')
+```
+
+SQLite adapter for Node.js using the built-in [`node:sqlite`](https://nodejs.org/api/sqlite.html) module — no native dependencies. Requires **Node.js ≥ 22.5** (`--experimental-sqlite` before Node 23.4). WAL mode with transactional claiming. See [Storage › Node built-in](/guide/storage#sqlitestorage-node-js-built-in).
+
+All three SQLite constructors take a database file path. Pass `:memory:` for an ephemeral database.
 
 ## `MemoryStorage`
 
