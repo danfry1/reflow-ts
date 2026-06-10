@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/danfry1/reflow-ts.git"
+    "url": "git+https://github.com/danfry1/reflow-ts.git"
   },
   "homepage": "https://danfry1.github.io/reflow-ts/",
   "bugs": "https://github.com/danfry1/reflow-ts/issues",
