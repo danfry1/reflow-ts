@@ -1,0 +1,21 @@
+{
+  "versionGroups": [
+    {
+      "label": "better-sqlite3 is intentionally a wide peer range + a pinned dev version",
+      "dependencies": ["better-sqlite3"],
+      "isIgnored": true
+    }
+  ],
+  "semverGroups": [
+    {
+      "label": "devDependencies are pinned to exact versions (supply-chain hardening)",
+      "dependencyTypes": ["dev"],
+      "range": ""
+    },
+    {
+      "label": "runtime + peer deps keep author-defined ranges so consumers can dedupe",
+      "dependencyTypes": ["prod", "peer"],
+      "isIgnored": true
+    }
+  ]
+}
