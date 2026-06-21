@@ -556,6 +556,7 @@ describe('Engine', () => {
 
           return delegate.heartbeatRun(runId, leaseId)
         },
+        sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
         getRun: (runId) => delegate.getRun(runId),
         getStepResults: (runId) => delegate.getStepResults(runId),
         saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),

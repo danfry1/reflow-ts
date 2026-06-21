@@ -57,6 +57,7 @@ function delaySecondClaim(
       return delegate.claimNextRun(workflowNames, staleBefore)
     },
     heartbeatRun: (runId, leaseId) => delegate.heartbeatRun(runId, leaseId),
+    sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
     getRun: (runId) => delegate.getRun(runId),
     getStepResults: (runId) => delegate.getStepResults(runId),
     saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
@@ -256,6 +257,7 @@ describe('async hooks', () => {
         if (heartbeatCalls === 1) throw new Error('heartbeat failed')
         return delegate.heartbeatRun(runId, leaseId)
       },
+      sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
       getRun: (runId) => delegate.getRun(runId),
       getStepResults: (runId) => delegate.getStepResults(runId),
       saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
@@ -628,6 +630,7 @@ describe('engine.stream()', () => {
       claimNextRun: (workflowNames, staleBefore) =>
         delegate.claimNextRun(workflowNames, staleBefore),
       heartbeatRun: async () => false,
+      sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
       getRun: (runId) => delegate.getRun(runId),
       getStepResults: (runId) => delegate.getStepResults(runId),
       saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),

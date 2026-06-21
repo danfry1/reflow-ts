@@ -201,4 +201,26 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
     const run = expectPresent(await storage.getRun('run_1'))
     expect(run.status).toBe('completed')
   })
+
+  it('sleepRun suspends a run and rejects a non-matching lease', async () => {
+    await storage.createRun(makeRun({ id: 'run_1' }))
+    const claimed = expectPresent(await storage.claimNextRun(['test']))
+
+    expect(await storage.sleepRun('run_1', 'wrong', Date.now() + 60_000)).toBe(false)
+    expect(await storage.sleepRun('run_1', claimed.leaseId, Date.now() + 60_000)).toBe(true)
+    expect(expectPresent(await storage.getRun('run_1')).status).toBe('sleeping')
+
+    expect(await storage.claimNextRun(['test'])).toBeNull()
+  })
+
+  it('claimNextRun reclaims a sleeping run after its wake time', async () => {
+    await storage.createRun(makeRun({ id: 'run_1' }))
+    const claimed = expectPresent(await storage.claimNextRun(['test']))
+    expect(await storage.sleepRun('run_1', claimed.leaseId, Date.now() - 1)).toBe(true)
+
+    const woken = expectPresent(await storage.claimNextRun(['test']))
+    expect(woken.id).toBe('run_1')
+    expect(woken.status).toBe('running')
+    expect(woken.leaseId).not.toBe(claimed.leaseId)
+  })
 })

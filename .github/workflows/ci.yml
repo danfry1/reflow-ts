@@ -48,6 +48,7 @@ jobs:
             createRun: async () => { throw new Error('not used') },
             claimNextRun: async () => null,
             heartbeatRun: async () => true,
+            sleepRun: async () => true,
             getRun: async () => null,
             getStepResults: async () => [],
             saveStepResult: async () => true,

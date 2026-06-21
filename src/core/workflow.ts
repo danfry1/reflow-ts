@@ -1,4 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
+import { parseDuration } from './duration'
 import { ConfigError, DuplicateStepError, ValidationError } from './errors'
 import type { PersistedValue, RetryConfig } from './types'
 
@@ -28,10 +29,11 @@ export interface StepDefinition {
   timeoutMs?: number
 }
 
-/** A single execution unit: either a sequential step or a parallel group. */
+/** A single execution unit: a sequential step, a parallel group, or a durable sleep. */
 export type ExecutionUnit =
   | { readonly kind: 'step'; readonly definition: StepDefinition }
   | { readonly kind: 'parallel'; readonly branches: readonly StepDefinition[] }
+  | { readonly kind: 'sleep'; readonly name: string; readonly durationMs: number }
 
 /** Configuration object form for `.step()` when you need retry or timeout options. */
 export interface StepConfig<
@@ -110,6 +112,17 @@ export interface Workflow<
     TSteps & { [K in keyof TBranches & string]: NormalizeOutput<InferBranchOutput<TBranches[K]>> }
   >
 
+  /**
+   * Durably pause the workflow for `duration` before continuing. The run is
+   * persisted as `sleeping` and its lease released, so the process can exit (or
+   * crash) during the wait — another engine reclaims and resumes it once the
+   * time elapses. `prev` passes through unchanged to the next step.
+   *
+   * `duration` is a number of milliseconds or a string with a unit suffix
+   * (`'500ms'`, `'30s'`, `'24h'`, `'7d'`). `name` must be unique within the workflow.
+   */
+  sleep(name: string, duration: number | string): Workflow<TName, TInput, TPrev, TSteps>
+
   onFailure(
     handler: (ctx: FailureContext<TInput>) => Promise<void>,
   ): Workflow<TName, TInput, TPrev, TSteps>
@@ -171,6 +184,8 @@ function getAllStepNames(units: readonly ExecutionUnit[]): Set<string> {
   for (const unit of units) {
     if (unit.kind === 'step') {
       names.add(unit.definition.name)
+    } else if (unit.kind === 'sleep') {
+      names.add(unit.name)
     } else {
       for (const branch of unit.branches) {
         names.add(branch.name)
@@ -282,6 +297,21 @@ function buildWorkflow<
         name,
         inputSchema,
         [...executionUnits, { kind: 'parallel', branches: branchDefs }],
+        failureHandler,
+      )
+    },
+
+    sleep(sleepName: string, duration: number | string): Workflow<TName, TInput, TPrev, TSteps> {
+      if (getAllStepNames(executionUnits).has(sleepName)) {
+        throw new DuplicateStepError(name, sleepName)
+      }
+
+      const durationMs = parseDuration(duration)
+
+      return buildWorkflow<TName, TInput, TPrev, TSteps>(
+        name,
+        inputSchema,
+        [...executionUnits, { kind: 'sleep', name: sleepName, durationMs }],
         failureHandler,
       )
     },

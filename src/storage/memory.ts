@@ -11,6 +11,7 @@ import { clonePersistedValue } from './codec'
 
 interface StoredRun extends WorkflowRun {
   leaseId: string | null
+  wakeAt: number | null
 }
 
 export class MemoryStorage implements StorageAdapter {
@@ -38,6 +39,7 @@ export class MemoryStorage implements StorageAdapter {
       ...run,
       input: clonePersistedValue(run.input, 'Workflow input'),
       leaseId: null,
+      wakeAt: null,
     }
 
     this.runs.set(run.id, storedRun)
@@ -52,6 +54,7 @@ export class MemoryStorage implements StorageAdapter {
       return null
     }
 
+    const now = Date.now()
     const candidates = Array.from(this.runs.values())
       .filter((run) => {
         if (!workflowNames.includes(run.workflow)) {
@@ -59,6 +62,10 @@ export class MemoryStorage implements StorageAdapter {
         }
 
         if (run.status === 'pending') {
+          return true
+        }
+
+        if (run.status === 'sleeping' && run.wakeAt !== null && run.wakeAt <= now) {
           return true
         }
 
@@ -79,6 +86,7 @@ export class MemoryStorage implements StorageAdapter {
     run.status = 'running'
     run.updatedAt = Date.now()
     run.leaseId = randomUUID()
+    run.wakeAt = null
 
     return cloneClaimedRun(run)
   }
@@ -89,6 +97,19 @@ export class MemoryStorage implements StorageAdapter {
       return false
     }
 
+    run.updatedAt = Date.now()
+    return true
+  }
+
+  async sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean> {
+    const run = this.runs.get(runId)
+    if (!run || run.status !== 'running' || run.leaseId !== leaseId) {
+      return false
+    }
+
+    run.status = 'sleeping'
+    run.leaseId = null
+    run.wakeAt = wakeAt
     run.updatedAt = Date.now()
     return true
   }
@@ -136,6 +157,7 @@ export class MemoryStorage implements StorageAdapter {
     run.status = status
     run.updatedAt = Date.now()
     run.leaseId = null
+    run.wakeAt = null
 
     return true
   }
@@ -151,6 +173,7 @@ export class MemoryStorage implements StorageAdapter {
 
     if (status !== 'running') {
       run.leaseId = null
+      run.wakeAt = null
     }
 
     return true

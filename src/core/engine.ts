@@ -547,6 +547,71 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
             return
           }
+        } else if (unit.kind === 'sleep') {
+          const existing = completedMap.get(unit.name)
+          if (existing?.status === 'completed') {
+            // Already slept on a previous execution — `prev` passes through.
+            continue
+          }
+
+          const resuming = existing?.status === 'sleeping'
+          const wakeAt = resuming ? Number(existing.output) : Date.now() + unit.durationMs
+          const stepId = existing?.id ?? randomUUID()
+          const createdAt = existing?.createdAt ?? Date.now()
+
+          if (!resuming) {
+            await emit(
+              { type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: unit.name },
+              observerSignal,
+            )
+          }
+
+          if (Date.now() >= wakeAt) {
+            // The sleep has elapsed (or was zero-length) — record it and continue.
+            const now = Date.now()
+            const saved = await storage.saveStepResult({
+              id: stepId,
+              runId: run.id,
+              name: unit.name,
+              status: 'completed',
+              output: null,
+              error: null,
+              attempts: 0,
+              createdAt,
+              updatedAt: now,
+            }, run.leaseId)
+            if (!saved) {
+              throw new LeaseExpiredError(run.id)
+            }
+            await emit(
+              { type: 'stepComplete', runId: run.id, workflow: run.workflow, stepName: unit.name, output: null, attempts: 0 },
+              observerSignal,
+            )
+            continue
+          }
+
+          // Not yet time: persist the wake target and durably suspend the run.
+          const now = Date.now()
+          const saved = await storage.saveStepResult({
+            id: stepId,
+            runId: run.id,
+            name: unit.name,
+            status: 'sleeping',
+            output: wakeAt,
+            error: null,
+            attempts: 0,
+            createdAt,
+            updatedAt: now,
+          }, run.leaseId)
+          if (!saved) {
+            throw new LeaseExpiredError(run.id)
+          }
+
+          const slept = await storage.sleepRun(run.id, run.leaseId, wakeAt)
+          if (!slept) {
+            throw new LeaseExpiredError(run.id)
+          }
+          return
         } else {
           const result = await executeParallelGroup(run, activeRun, unit.branches, prev, stepsAccumulator, completedMap)
           if (result.kind === 'skipped-cancelled') {
