@@ -20,12 +20,38 @@ export interface StepContext<
   steps: TStepsSoFar
 }
 
+/**
+ * Context passed to a step's `when` predicate. A subset of {@link StepContext}:
+ * the inputs available to decide whether the step should run, with no `signal`
+ * or `complete` (the predicate makes a routing decision, it does not execute).
+ */
+export interface StepConditionContext<
+  TInput extends PersistedValue,
+  TPrev extends PersistedValue,
+  TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
+> {
+  /** The validated workflow input. */
+  input: TInput
+  /** The output of the previous step. */
+  prev: TPrev
+  /** Results of all previously completed steps, keyed by step name. */
+  steps: TStepsSoFar
+}
+
+/** A predicate deciding whether a step runs. Evaluated once; the decision is persisted and not re-evaluated on replay. */
+export type StepCondition<
+  TInput extends PersistedValue,
+  TPrev extends PersistedValue,
+  TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
+> = (ctx: StepConditionContext<TInput, TPrev, TStepsSoFar>) => boolean | Promise<boolean>
+
 /** Internal representation of a step used by the engine. */
 export interface StepDefinition {
   name: string
   handler: (ctx: StepContext<PersistedValue, PersistedValue, Record<string, PersistedValue>>) => Promise<PersistedValue | void>
   retry?: RetryConfig
   timeoutMs?: number
+  when?: (ctx: StepConditionContext<PersistedValue, PersistedValue, Record<string, PersistedValue>>) => boolean | Promise<boolean>
 }
 
 /** A single execution unit: either a sequential step or a parallel group. */
@@ -43,6 +69,13 @@ export interface StepConfig<
   retry?: RetryConfig
   /** Timeout per attempt in milliseconds. Takes precedence over `retry.timeoutMs`. */
   timeoutMs?: number
+  /**
+   * Optional predicate deciding whether this step runs. Evaluated once with the
+   * current `input`, `prev`, and `steps`; when it returns `false` the step is
+   * skipped, `prev` passes through unchanged to the next step, and the skip is
+   * persisted so it is not re-evaluated on replay.
+   */
+  when?: StepCondition<TInput, TPrev, TStepsSoFar>
   handler: (ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>
 }
 
@@ -216,12 +249,14 @@ function buildWorkflow<
       const handler = isConfig ? handlerOrConfig.handler : handlerOrConfig
       const retry = isConfig ? handlerOrConfig.retry : undefined
       const timeoutMs = isConfig ? handlerOrConfig.timeoutMs : undefined
+      const when = isConfig ? handlerOrConfig.when : undefined
 
       const newStep: StepDefinition = {
         name: stepName,
         handler: handler as unknown as StepDefinition['handler'],
         retry,
         timeoutMs,
+        when: when as unknown as StepDefinition['when'],
       }
       return buildWorkflow<
         TName,

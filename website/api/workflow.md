@@ -31,6 +31,20 @@ Adds a sequential step. Accepts either a bare handler or a config object.
 | `handler` | `(ctx) => Promise<T>` | Step handler. Receives the step context above. |
 | `retry` | `RetryConfig` | Optional retry configuration. |
 | `timeoutMs` | `number` | Optional timeout per attempt (ms). Takes precedence over `retry.timeoutMs`. |
+| `when` | `(ctx) => boolean \| Promise<boolean>` | Optional predicate. Receives `{ input, prev, steps }`. When it returns `false` the step is skipped (see below). |
+
+**Conditional steps (`when`):**
+
+When `when` returns `false`, the step does not run: `prev` passes through unchanged to the next step, the step is recorded with status `skipped`, and a [`stepSkipped`](/api/events) event fires. The decision is evaluated once and persisted, so it is never recomputed on replay. A skipped step is `undefined` in the next step's `steps` map. If `when` throws, the run fails at that step (reaching `onFailure` / `onRunFailed`).
+
+```typescript
+.step('charge', async () => ({ tier: 'base' }))
+.step('upgrade', {
+  when: ({ input }) => input.premium,   // only run for premium orders
+  handler: async () => ({ tier: 'premium' }),
+})
+.step('finalize', async ({ prev }) => prev.tier) // 'base' when upgrade was skipped
+```
 
 **`RetryConfig`:**
 

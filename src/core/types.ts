@@ -2,7 +2,7 @@
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 /** Lifecycle state of a single step within a run. */
-export type StepStatus = 'pending' | 'running' | 'completed' | 'completed-early' | 'failed'
+export type StepStatus = 'pending' | 'running' | 'completed' | 'completed-early' | 'skipped' | 'failed'
 
 /** Primitive values that can be persisted to storage. */
 export type PersistedPrimitive = string | number | boolean | null | undefined | Date

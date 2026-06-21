@@ -22,6 +22,8 @@ export type {
   StepContext,
   StepDefinition,
   StepConfig,
+  StepCondition,
+  StepConditionContext,
   ParallelBranch,
   InferBranchOutput,
   FailureContext,

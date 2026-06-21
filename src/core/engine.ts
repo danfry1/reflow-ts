@@ -35,6 +35,7 @@ import type { AnyWorkflow, StepDefinition, WorkflowInputMap } from './workflow'
 export type EngineEvent =
   | { readonly type: 'runStart'; readonly runId: string; readonly workflow: string }
   | { readonly type: 'stepStart'; readonly runId: string; readonly workflow: string; readonly stepName: string }
+  | { readonly type: 'stepSkipped'; readonly runId: string; readonly workflow: string; readonly stepName: string }
   | {
       readonly type: 'stepComplete'
       readonly runId: string
@@ -59,6 +60,8 @@ export type EngineEventOf<T extends EngineEvent['type']> = Extract<EngineEvent, 
 export interface EngineHooks {
   onRunStart?: (event: EngineEventOf<'runStart'>) => void
   onStepStart?: (event: EngineEventOf<'stepStart'>) => void
+  /** Called when a step's `when` predicate returns false and the step is skipped. */
+  onStepSkipped?: (event: EngineEventOf<'stepSkipped'>) => void
   onStepComplete?: (event: EngineEventOf<'stepComplete'>) => void
   onRunComplete?: (event: EngineEventOf<'runComplete'>) => void
   onRunFailed?: (event: EngineEventOf<'runFailed'>) => void
@@ -310,6 +313,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         return hooks?.onRunStart?.({ ...event })
       case 'stepStart':
         return hooks?.onStepStart?.({ ...event })
+      case 'stepSkipped':
+        return hooks?.onStepSkipped?.({ ...event })
       case 'stepComplete':
         return hooks?.onStepComplete?.({
           ...event,
@@ -416,10 +421,46 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
             stepsAccumulator[stepDef.name] = structuredClone(existing.output)
             continue
           }
+          if (existing?.status === 'skipped') {
+            // Skipped on a previous execution — leave `prev` untouched (the
+            // last real output passes through) and move to the next unit.
+            continue
+          }
 
           const frozenSteps = snapshotSteps(stepsAccumulator)
 
           try {
+            if (
+              stepDef.when &&
+              !(await stepDef.when({ input: run.input, prev, steps: frozenSteps }))
+            ) {
+              // Condition is false — persist a skip so it is not re-evaluated on
+              // replay, leave `prev` unchanged, and continue to the next unit.
+              const now = Date.now()
+              const saved = await storage.saveStepResult({
+                id: randomUUID(),
+                runId: run.id,
+                name: stepDef.name,
+                status: 'skipped',
+                output: null,
+                error: null,
+                attempts: 0,
+                createdAt: now,
+                updatedAt: now,
+              }, run.leaseId)
+
+              if (!saved) {
+                throw new LeaseExpiredError(run.id)
+              }
+
+              await emit(
+                { type: 'stepSkipped', runId: run.id, workflow: run.workflow, stepName: stepDef.name },
+                observerSignal,
+              )
+
+              continue
+            }
+
             await emit(
               { type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: stepDef.name },
               observerSignal,
