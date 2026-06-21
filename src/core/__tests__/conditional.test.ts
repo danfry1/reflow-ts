@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
-import { createWorkflow, createEngine } from '../../index'
+import { createWorkflow, createEngine, ConfigError } from '../../index'
 import { MemoryStorage } from '../../storage/memory'
 
 describe('conditional steps (when)', () => {
@@ -171,5 +171,39 @@ describe('conditional steps (when)', () => {
 
     expect((await engine.getRunStatus(run.id))?.run.status).toBe('failed')
     expect(onFailure).toHaveBeenCalledWith({ message: 'flag service down', stepName: 'b' })
+  })
+
+  it('rejects `when` on a parallel branch', () => {
+    expect(() =>
+      createWorkflow({ name: 'cond-parallel', input: z.object({}) }).parallel({
+        a: { when: () => false, handler: async () => ({ ok: true }) },
+        b: async () => ({ ok: true }),
+      }),
+    ).toThrow(ConfigError)
+  })
+
+  it('does not emit stepStart for a skipped step', async () => {
+    const wf = createWorkflow({ name: 'no-start', input: z.object({}) })
+      .step('a', async () => ({ ok: true }))
+      .step('b', { when: () => false, handler: async () => ({ ok: true }) })
+
+    const storage = new MemoryStorage()
+    const engine = createEngine({ storage, workflows: [wf] })
+
+    const starts: string[] = []
+    const stream = engine.stream()
+    const collector = (async () => {
+      for await (const event of stream) {
+        if (event.type === 'stepStart') starts.push(event.stepName)
+        if (event.type === 'runComplete') break
+      }
+    })()
+
+    await engine.enqueue('no-start', {})
+    await engine.tick()
+    await collector
+
+    // 'b' was skipped — only 'a' started.
+    expect(starts).toEqual(['a'])
   })
 })

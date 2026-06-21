@@ -35,7 +35,7 @@ Adds a sequential step. Accepts either a bare handler or a config object.
 
 **Conditional steps (`when`):**
 
-When `when` returns `false`, the step does not run: `prev` passes through unchanged to the next step, the step is recorded with status `skipped`, and a [`stepSkipped`](/api/events) event fires. The decision is evaluated once and persisted, so it is never recomputed on replay. A skipped step is `undefined` in the next step's `steps` map. If `when` throws, the run fails at that step (reaching `onFailure` / `onRunFailed`).
+When `when` returns `false`, the step does not run: `prev` passes through unchanged to the next step, the step is recorded with status `skipped`, and a [`stepSkipped`](/api/events) event fires. The decision is evaluated once and persisted, so it is never recomputed on replay. A skipped step is `undefined` in the next step's `steps` map (read it via `prev` instead). If `when` throws, the run fails at that step (reaching `onFailure` / `onRunFailed`). `when` is supported on sequential `.step()` only — passing it to a `.parallel()` branch throws [`ConfigError`](/api/errors).
 
 ```typescript
 .step('charge', async () => ({ tier: 'base' }))

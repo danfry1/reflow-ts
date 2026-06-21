@@ -74,6 +74,15 @@ export interface StepConfig<
    * current `input`, `prev`, and `steps`; when it returns `false` the step is
    * skipped, `prev` passes through unchanged to the next step, and the skip is
    * persisted so it is not re-evaluated on replay.
+   *
+   * Caveats:
+   * - A skipped step is **absent** from later steps' `steps` map (it reads as
+   *   `undefined` at runtime even though the type lists it). Read it through the
+   *   passed-through `prev` instead, or guard for `undefined`.
+   * - `when` is not passed the abort `signal`; a slow async predicate is not
+   *   interrupted by cancellation (the abort is observed once it resolves).
+   * - Supported on sequential `.step()` only — passing `when` to a `.parallel()`
+   *   branch throws `ConfigError`.
    */
   when?: StepCondition<TInput, TPrev, TStepsSoFar>
   handler: (ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>
@@ -293,6 +302,14 @@ function buildWorkflow<
 
       const branchDefs: StepDefinition[] = branchEntries.map(([branchName, handlerOrConfig]) => {
         if (typeof handlerOrConfig === 'object' && handlerOrConfig !== null && 'handler' in handlerOrConfig) {
+          if ('when' in handlerOrConfig && handlerOrConfig.when !== undefined) {
+            // `when` skips a step by passing `prev` through to the next one;
+            // there is no well-defined passthrough for one branch of a
+            // concurrent group, so reject it rather than silently ignoring it.
+            throw new ConfigError(
+              `Conditional "when" is not supported on parallel branch "${branchName}" in workflow "${name}"`,
+            )
+          }
           return {
             name: branchName,
             handler: handlerOrConfig.handler as unknown as StepDefinition['handler'],

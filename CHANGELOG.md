@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Conditional steps** — `.step(name, { when, handler })` accepts an optional `when` predicate receiving `{ input, prev, steps }`. When it returns `false` the step is skipped: `prev` passes through unchanged to the next step, the step is recorded with the new `skipped` status, and a `stepSkipped` event fires (with a matching `onStepSkipped` hook). The decision is evaluated once and persisted, so it is never recomputed on crash-recovery replay; a throwing predicate fails the run at that step. `when` may be synchronous or `async`. New exported types: `StepCondition`, `StepConditionContext`. ([#21](https://github.com/danfry1/reflow-ts/issues/21))
+- **Conditional steps** — `.step(name, { when, handler })` accepts an optional `when` predicate receiving `{ input, prev, steps }`. When it returns `false` the step is skipped: `prev` passes through unchanged to the next step, the step is recorded with the new `skipped` status, and a `stepSkipped` event fires (with a matching `onStepSkipped` hook). The decision is evaluated once and persisted, so it is never recomputed on crash-recovery replay; a throwing predicate fails the run at that step. `when` may be synchronous or `async`, and is supported on sequential `.step()` only — passing it to a `.parallel()` branch throws `ConfigError`. New exported types: `StepCondition`, `StepConditionContext`. ([#21](https://github.com/danfry1/reflow-ts/issues/21))
 
 ### Changed
 
