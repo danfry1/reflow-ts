@@ -29,11 +29,17 @@ interface BunDatabase {
   prepare<T = Record<string, unknown>>(sql: string): BunStatement<T>
   transaction<T>(fn: () => T): () => T
   close(): void
-  readonly changes: number
+}
+
+interface BunRunResult {
+  changes: number
+  lastInsertRowid: number | bigint
 }
 
 interface BunStatement<T = Record<string, unknown>> {
-  run(...params: unknown[]): void
+  // bun:sqlite reports affected-row counts on the run() result, not on the
+  // Database instance (db.changes is undefined), so callers must read it here.
+  run(...params: unknown[]): BunRunResult
   get(...params: unknown[]): T | null
   all(...params: unknown[]): T[]
 }
@@ -211,7 +217,7 @@ export class SQLiteStorage implements StorageAdapter {
         ? [leaseId, now, row.id]
         : [leaseId, now, row.id, staleBefore]
 
-      this.db
+      const updated = this.db
         .prepare(
           `UPDATE workflow_runs
            SET status = 'running', lease_id = ?, updated_at = ?
@@ -219,7 +225,7 @@ export class SQLiteStorage implements StorageAdapter {
         )
         .run(...updateArgs)
 
-      if (this.db.changes === 0) {
+      if (updated.changes === 0) {
         return null
       }
 
@@ -235,7 +241,7 @@ export class SQLiteStorage implements StorageAdapter {
   }
 
   async heartbeatRun(runId: string, leaseId: string): Promise<boolean> {
-    this.db
+    const result = this.db
       .prepare(
         `UPDATE workflow_runs
          SET updated_at = ?
@@ -243,7 +249,7 @@ export class SQLiteStorage implements StorageAdapter {
       )
       .run(Date.now(), runId, leaseId)
 
-    return this.db.changes > 0
+    return result.changes > 0
   }
 
   async getRun(runId: string): Promise<WorkflowRun | null> {
@@ -311,7 +317,7 @@ export class SQLiteStorage implements StorageAdapter {
   }
 
   async updateRunStatus(runId: string, status: RunStatus): Promise<boolean> {
-    this.db
+    const result = this.db
       .prepare(
         `UPDATE workflow_runs
          SET status = ?, lease_id = ?, updated_at = ?
@@ -319,11 +325,11 @@ export class SQLiteStorage implements StorageAdapter {
       )
       .run(status, null, Date.now(), runId)
 
-    return this.db.changes > 0
+    return result.changes > 0
   }
 
   async updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean> {
-    this.db
+    const result = this.db
       .prepare(
         `UPDATE workflow_runs
          SET status = ?, lease_id = ?, updated_at = ?
@@ -331,7 +337,7 @@ export class SQLiteStorage implements StorageAdapter {
       )
       .run(status, status === 'running' ? leaseId : null, Date.now(), runId, leaseId)
 
-    return this.db.changes > 0
+    return result.changes > 0
   }
 
   close(): void {
