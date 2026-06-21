@@ -381,7 +381,7 @@ export class SQLiteStorage implements StorageAdapter {
   }
 
   async listRuns(filter: ListRunsFilter = {}): Promise<WorkflowRun[]> {
-    const { status, workflow, limit = 100, before } = filter
+    const { status, workflow, limit = 100, before, beforeId } = filter
     const conditions: string[] = []
     const args: (string | number)[] = []
 
@@ -394,8 +394,14 @@ export class SQLiteStorage implements StorageAdapter {
       args.push(workflow)
     }
     if (before !== undefined) {
-      conditions.push('created_at < ?')
-      args.push(before)
+      // Keyset cursor over the (created_at DESC, id DESC) order.
+      if (beforeId !== undefined) {
+        conditions.push('(created_at < ? OR (created_at = ? AND id < ?))')
+        args.push(before, before, beforeId)
+      } else {
+        conditions.push('created_at < ?')
+        args.push(before)
+      }
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
@@ -404,7 +410,7 @@ export class SQLiteStorage implements StorageAdapter {
     const rows = this.db
       .prepare<WorkflowRunRow>(
         `SELECT * FROM workflow_runs ${where}
-         ORDER BY created_at DESC, rowid DESC
+         ORDER BY created_at DESC, id DESC
          LIMIT ?`,
       )
       .all(...args)
@@ -414,7 +420,7 @@ export class SQLiteStorage implements StorageAdapter {
 
   async requeueRun(runId: string): Promise<boolean> {
     const requeue = this.db.transaction(() => {
-      this.db
+      const updated = this.db
         .prepare(
           `UPDATE workflow_runs
            SET status = 'pending', lease_id = NULL, updated_at = ?
@@ -422,7 +428,7 @@ export class SQLiteStorage implements StorageAdapter {
         )
         .run(Date.now(), runId)
 
-      if (this.db.changes === 0) {
+      if (updated.changes === 0) {
         return false
       }
 

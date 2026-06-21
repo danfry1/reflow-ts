@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
-import { createWorkflow, createEngine } from '../index'
+import { createWorkflow, createEngine, WorkflowNotFoundError } from '../index'
 import { MemoryStorage } from '../storage/memory'
 
 describe('integration: real-world scenarios', () => {
@@ -402,6 +402,33 @@ describe('integration: real-world scenarios', () => {
 
       expect((await engine.getRunStatus(run.id))?.run.status).toBe('completed')
       expect(await engine.resume(run.id)).toBe(false)
+    })
+
+    it('resume returns false for a missing run', async () => {
+      const wf = createWorkflow({ name: 'noop2', input: z.object({}) }).step('a', async () => ({ ok: true }))
+      const engine = createEngine({ storage: new MemoryStorage(), workflows: [wf] })
+      expect(await engine.resume('does-not-exist')).toBe(false)
+    })
+
+    it('resume throws WorkflowNotFoundError rather than creating a zombie when the workflow is unregistered', async () => {
+      const wf = createWorkflow({ name: 'gone', input: z.object({}) }).step('boom', async () => {
+        throw new Error('fail')
+      })
+      const storage = new MemoryStorage()
+
+      // Run and fail it with an engine that knows the workflow...
+      const engine1 = createEngine({ storage, workflows: [wf] })
+      const run = await engine1.enqueue('gone', {})
+      await engine1.tick()
+      expect((await engine1.getRunStatus(run.id))?.run.status).toBe('failed')
+
+      // ...then try to resume from an engine that does NOT know it.
+      const otherWf = createWorkflow({ name: 'other', input: z.object({}) }).step('a', async () => ({}))
+      const engine2 = createEngine({ storage, workflows: [otherWf] })
+      await expect(engine2.resume(run.id)).rejects.toThrow(WorkflowNotFoundError)
+
+      // The run was left failed, not silently reset to a pending zombie.
+      expect((await engine2.getRunStatus(run.id))?.run.status).toBe('failed')
     })
 
     it('listRuns surfaces failed runs for dead-letter inspection', async () => {

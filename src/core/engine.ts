@@ -314,6 +314,16 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   }
 
   async function resume(runId: string): Promise<boolean> {
+    const run = await storage.getRun(runId)
+    if (!run) {
+      return false
+    }
+    // Re-queuing a run whose workflow this engine doesn't know would leave it
+    // pending but unclaimable (a zombie), since claimNextRun only asks for
+    // registered workflows. Fail loudly instead.
+    if (!registry.has(run.workflow)) {
+      throw new WorkflowNotFoundError(run.workflow)
+    }
     return storage.requeueRun(runId)
   }
 

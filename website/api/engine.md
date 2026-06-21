@@ -74,22 +74,26 @@ info?.steps      // StepResult[]
 
 ## `engine.listRuns(filter?)`
 
-Lists runs in reverse-chronological order (most recent first) for inspection or dead-letter visibility. All filter fields are optional:
+Lists runs ordered by `createdAt` descending, then `id` descending (a total, stable order even when runs share a `createdAt`). For inspection or dead-letter visibility. All filter fields are optional:
 
 ```typescript
 await engine.listRuns({
   status: 'failed',   // only this RunStatus
   workflow: 'order',  // only this workflow
   limit: 50,          // max rows (default 100; must be a positive integer)
-  before: cursor,     // only runs created strictly before this `createdAt`
+  before: cursor,     // keyset cursor (createdAt), paired with beforeId
+  beforeId: cursorId, // keyset cursor tie-break (id)
 })
 ```
 
-Paginate by passing the `createdAt` of the last row as `before` on the next call:
+Paginate with a keyset cursor — pass the last row's `createdAt` **and** `id`. Using both is exact even when timestamps collide; `before` alone is a coarse "created before T" filter that can drop runs tied on that millisecond:
 
 ```typescript
 const page1 = await engine.listRuns({ limit: 50 })
-const page2 = await engine.listRuns({ limit: 50, before: page1.at(-1)?.createdAt })
+const last = page1.at(-1)
+const page2 = last
+  ? await engine.listRuns({ limit: 50, before: last.createdAt, beforeId: last.id })
+  : []
 ```
 
 ## `engine.resume(runId)`

@@ -392,6 +392,19 @@ describe('MemoryStorage', () => {
       expect(page2.map((r) => r.id)).toEqual(['a'])
     })
 
+    it('paginates without losing rows when createdAt is tied, via the (before, beforeId) cursor', async () => {
+      await storage.createRun(makeRun({ id: 'a', createdAt: 1000 }))
+      await storage.createRun(makeRun({ id: 'b', createdAt: 1000 }))
+      await storage.createRun(makeRun({ id: 'c', createdAt: 1000 }))
+
+      const page1 = await storage.listRuns({ limit: 2 })
+      const last = page1[page1.length - 1]
+      const page2 = await storage.listRuns({ limit: 2, before: last.createdAt, beforeId: last.id })
+
+      expect(page1.length + page2.length).toBe(3)
+      expect([...page1, ...page2].map((r) => r.id).sort()).toEqual(['a', 'b', 'c'])
+    })
+
     it('returns an empty array when nothing matches', async () => {
       expect(await storage.listRuns({ status: 'completed' })).toEqual([])
     })
@@ -438,6 +451,15 @@ describe('MemoryStorage', () => {
 
       expect(await storage.requeueRun('p')).toBe(false)
       expect(await storage.requeueRun('c')).toBe(false)
+    })
+
+    it('returns false for a running run — a mid-execution run is not yanked back to pending', async () => {
+      await storage.createRun(makeRun({ id: 'r' }))
+      const claimed = expectPresent(await storage.claimNextRun(['test']))
+      expect(claimed.id).toBe('r')
+
+      expect(await storage.requeueRun('r')).toBe(false)
+      expect(expectPresent(await storage.getRun('r')).status).toBe('running')
     })
 
     it('clears the lease so a stale lease can no longer write', async () => {

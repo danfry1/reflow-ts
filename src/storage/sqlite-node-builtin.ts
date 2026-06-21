@@ -379,7 +379,7 @@ export class SQLiteStorage implements StorageAdapter {
   }
 
   async listRuns(filter: ListRunsFilter = {}): Promise<WorkflowRun[]> {
-    const { status, workflow, limit = 100, before } = filter
+    const { status, workflow, limit = 100, before, beforeId } = filter
     const conditions: string[] = []
     const args: SqlParam[] = []
 
@@ -392,8 +392,14 @@ export class SQLiteStorage implements StorageAdapter {
       args.push(workflow)
     }
     if (before !== undefined) {
-      conditions.push('created_at < ?')
-      args.push(before)
+      // Keyset cursor over the (created_at DESC, id DESC) order.
+      if (beforeId !== undefined) {
+        conditions.push('(created_at < ? OR (created_at = ? AND id < ?))')
+        args.push(before, before, beforeId)
+      } else {
+        conditions.push('created_at < ?')
+        args.push(before)
+      }
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
@@ -401,7 +407,7 @@ export class SQLiteStorage implements StorageAdapter {
 
     const rows = this.all<WorkflowRunRow>(
       `SELECT * FROM workflow_runs ${where}
-       ORDER BY created_at DESC, rowid DESC
+       ORDER BY created_at DESC, id DESC
        LIMIT ?`,
       ...args,
     )

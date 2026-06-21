@@ -105,7 +105,15 @@ export interface CreateRunResult {
   created: boolean
 }
 
-/** Filter for {@link StorageAdapter.listRuns} and `engine.listRuns()`. */
+/**
+ * Filter for {@link StorageAdapter.listRuns} and `engine.listRuns()`.
+ *
+ * Results are ordered by `createdAt` descending, then `id` descending, so the
+ * order is total and stable even when runs share a `createdAt`. For exact
+ * keyset pagination pass both `before` and `beforeId` from the last row of the
+ * previous page; passing `before` alone is a coarse "created before T" filter
+ * that can drop runs tied on that millisecond.
+ */
 export interface ListRunsFilter {
   /** Only return runs with this status. */
   status?: RunStatus
@@ -113,8 +121,10 @@ export interface ListRunsFilter {
   workflow?: string
   /** Maximum number of runs to return (default: 100). */
   limit?: number
-  /** Only return runs created strictly before this timestamp. Use the `createdAt` of the last row of a page to fetch the next one. */
+  /** Keyset cursor: return runs ordered before this `createdAt` (paired with `beforeId` for the tie-break). */
   before?: number
+  /** Keyset cursor tie-break: with `before`, return runs strictly after this `(createdAt, id)` position in the sort order. */
+  beforeId?: string
 }
 
 /**

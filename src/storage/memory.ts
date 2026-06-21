@@ -193,7 +193,7 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   async listRuns(filter: ListRunsFilter = {}): Promise<WorkflowRun[]> {
-    const { status, workflow, limit = 100, before } = filter
+    const { status, workflow, limit = 100, before, beforeId } = filter
     return Array.from(this.runs.values())
       .filter((run) => {
         if (status !== undefined && run.status !== status) {
@@ -202,8 +202,14 @@ export class MemoryStorage implements StorageAdapter {
         if (workflow !== undefined && run.workflow !== workflow) {
           return false
         }
-        if (before !== undefined && run.createdAt >= before) {
-          return false
+        if (before !== undefined) {
+          // Keyset cursor over the (createdAt DESC, id DESC) order.
+          const afterCursor = beforeId !== undefined
+            ? run.createdAt < before || (run.createdAt === before && run.id < beforeId)
+            : run.createdAt < before
+          if (!afterCursor) {
+            return false
+          }
         }
         return true
       })
