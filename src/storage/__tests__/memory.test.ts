@@ -354,4 +354,101 @@ describe('MemoryStorage', () => {
   })
 
 
+  describe('listRuns', () => {
+    it('returns runs most-recent-first', async () => {
+      await storage.createRun(makeRun({ id: 'a', createdAt: 1 }))
+      await storage.createRun(makeRun({ id: 'b', createdAt: 2 }))
+      await storage.createRun(makeRun({ id: 'c', createdAt: 3 }))
+
+      const runs = await storage.listRuns()
+      expect(runs.map((r) => r.id)).toEqual(['c', 'b', 'a'])
+    })
+
+    it('filters by status', async () => {
+      await storage.createRun(makeRun({ id: 'a', status: 'completed', createdAt: 1 }))
+      await storage.createRun(makeRun({ id: 'b', status: 'failed', createdAt: 2 }))
+
+      const failed = await storage.listRuns({ status: 'failed' })
+      expect(failed.map((r) => r.id)).toEqual(['b'])
+    })
+
+    it('filters by workflow', async () => {
+      await storage.createRun(makeRun({ id: 'a', workflow: 'alpha', createdAt: 1 }))
+      await storage.createRun(makeRun({ id: 'b', workflow: 'beta', createdAt: 2 }))
+
+      const alpha = await storage.listRuns({ workflow: 'alpha' })
+      expect(alpha.map((r) => r.id)).toEqual(['a'])
+    })
+
+    it('applies limit and before for pagination', async () => {
+      await storage.createRun(makeRun({ id: 'a', createdAt: 1 }))
+      await storage.createRun(makeRun({ id: 'b', createdAt: 2 }))
+      await storage.createRun(makeRun({ id: 'c', createdAt: 3 }))
+
+      const page1 = await storage.listRuns({ limit: 2 })
+      expect(page1.map((r) => r.id)).toEqual(['c', 'b'])
+
+      const page2 = await storage.listRuns({ limit: 2, before: page1[page1.length - 1].createdAt })
+      expect(page2.map((r) => r.id)).toEqual(['a'])
+    })
+
+    it('returns an empty array when nothing matches', async () => {
+      expect(await storage.listRuns({ status: 'completed' })).toEqual([])
+    })
+
+    it('returns copies — mutating does not affect storage', async () => {
+      await storage.createRun(makeRun({ id: 'a', input: { x: 1 } }))
+      const runs = await storage.listRuns()
+      ;(runs[0] as any).input = { x: 999 }
+
+      const fresh = await storage.listRuns()
+      expect(fresh[0].input).toEqual({ x: 1 })
+    })
+  })
+
+  describe('requeueRun', () => {
+    it('resets a failed run to pending, drops failed steps, and is claimable again', async () => {
+      await storage.createRun(makeRun({ id: 'run_1', status: 'failed' }))
+      await storage.saveStepResult(makeStep({ id: 's1', name: 'ok', status: 'completed' }))
+      await storage.saveStepResult(makeStep({ id: 's2', name: 'boom', status: 'failed', output: null, error: 'x' }))
+
+      expect(await storage.requeueRun('run_1')).toBe(true)
+      expect(expectPresent(await storage.getRun('run_1')).status).toBe('pending')
+
+      const steps = await storage.getStepResults('run_1')
+      expect(steps.map((s) => s.name)).toEqual(['ok'])
+
+      const claimed = expectPresent(await storage.claimNextRun(['test']))
+      expect(claimed.id).toBe('run_1')
+    })
+
+    it('resets a cancelled run to pending', async () => {
+      await storage.createRun(makeRun({ id: 'run_1', status: 'cancelled' }))
+      expect(await storage.requeueRun('run_1')).toBe(true)
+      expect(expectPresent(await storage.getRun('run_1')).status).toBe('pending')
+    })
+
+    it('returns false for a nonexistent run', async () => {
+      expect(await storage.requeueRun('nope')).toBe(false)
+    })
+
+    it('returns false for runs that are not failed or cancelled', async () => {
+      await storage.createRun(makeRun({ id: 'p', status: 'pending' }))
+      await storage.createRun(makeRun({ id: 'c', status: 'completed' }))
+
+      expect(await storage.requeueRun('p')).toBe(false)
+      expect(await storage.requeueRun('c')).toBe(false)
+    })
+
+    it('clears the lease so a stale lease can no longer write', async () => {
+      await storage.createRun(makeRun({ id: 'run_1' }))
+      const claimed = expectPresent(await storage.claimNextRun(['test']))
+      await storage.updateClaimedRunStatus('run_1', claimed.leaseId, 'failed')
+
+      expect(await storage.requeueRun('run_1')).toBe(true)
+
+      const saved = await storage.saveStepResult(makeStep({ id: 'x' }), claimed.leaseId)
+      expect(saved).toBe(false)
+    })
+  })
 })

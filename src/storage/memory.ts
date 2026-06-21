@@ -3,6 +3,7 @@ import type {
   ClaimedRun,
   CreateRunResult,
   PersistedValue,
+  ListRunsFilter,
   RunStatus,
   StepResult,
   StorageAdapter,
@@ -189,6 +190,46 @@ export class MemoryStorage implements StorageAdapter {
   async getRun(runId: string): Promise<WorkflowRun | null> {
     const run = this.runs.get(runId)
     return run ? cloneWorkflowRun(run) : null
+  }
+
+  async listRuns(filter: ListRunsFilter = {}): Promise<WorkflowRun[]> {
+    const { status, workflow, limit = 100, before } = filter
+    return Array.from(this.runs.values())
+      .filter((run) => {
+        if (status !== undefined && run.status !== status) {
+          return false
+        }
+        if (workflow !== undefined && run.workflow !== workflow) {
+          return false
+        }
+        if (before !== undefined && run.createdAt >= before) {
+          return false
+        }
+        return true
+      })
+      .sort((left, right) =>
+        right.createdAt - left.createdAt || (left.id < right.id ? 1 : left.id > right.id ? -1 : 0),
+      )
+      .slice(0, limit)
+      .map(cloneWorkflowRun)
+  }
+
+  async requeueRun(runId: string): Promise<boolean> {
+    const run = this.runs.get(runId)
+    if (!run || (run.status !== 'failed' && run.status !== 'cancelled')) {
+      return false
+    }
+
+    run.status = 'pending'
+    run.leaseId = null
+    run.updatedAt = Date.now()
+
+    const steps = this.steps.get(runId)
+    if (steps) {
+      this.steps.set(runId, steps.filter((step) => step.status !== 'failed'))
+    }
+
+    return true
   }
 
   async getStepResults(runId: string): Promise<StepResult[]> {

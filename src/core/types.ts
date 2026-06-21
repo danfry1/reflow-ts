@@ -105,6 +105,18 @@ export interface CreateRunResult {
   created: boolean
 }
 
+/** Filter for {@link StorageAdapter.listRuns} and `engine.listRuns()`. */
+export interface ListRunsFilter {
+  /** Only return runs with this status. */
+  status?: RunStatus
+  /** Only return runs of this workflow. */
+  workflow?: string
+  /** Maximum number of runs to return (default: 100). */
+  limit?: number
+  /** Only return runs created strictly before this timestamp. Use the `createdAt` of the last row of a page to fetch the next one. */
+  before?: number
+}
+
 /**
  * Interface for durable workflow storage backends.
  *
@@ -155,6 +167,15 @@ export interface StorageAdapter {
   takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
   /** Fetch a run by ID, or null if not found. */
   getRun(runId: string): Promise<WorkflowRun | null>
+  /** List runs in reverse-chronological order (most recent first), optionally filtered. */
+  listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
+  /**
+   * Reset a `failed` or `cancelled` run to `pending` so it can be re-executed,
+   * discarding any `failed` step results so the failed step runs again.
+   * Completed steps are preserved and skipped on replay. Returns false if the
+   * run does not exist or is not in a resumable state.
+   */
+  requeueRun(runId: string): Promise<boolean>
   /** Fetch all step results for a run, ordered by creation time. */
   getStepResults(runId: string): Promise<StepResult[]>
   /** Persist a step result. If `leaseId` is provided, fails when the lease is no longer held. */

@@ -24,6 +24,7 @@ import type {
   ClaimedRun,
   CreateRunResult,
   PersistedValue,
+  ListRunsFilter,
   RunStatus,
   StepResult,
   StorageAdapter,
@@ -375,6 +376,57 @@ export class SQLiteStorage implements StorageAdapter {
   async getRun(runId: string): Promise<WorkflowRun | null> {
     const row = this.get<WorkflowRunRow>(`SELECT * FROM workflow_runs WHERE id = ?`, runId)
     return row ? mapWorkflowRunRow(row) : null
+  }
+
+  async listRuns(filter: ListRunsFilter = {}): Promise<WorkflowRun[]> {
+    const { status, workflow, limit = 100, before } = filter
+    const conditions: string[] = []
+    const args: SqlParam[] = []
+
+    if (status !== undefined) {
+      conditions.push('status = ?')
+      args.push(status)
+    }
+    if (workflow !== undefined) {
+      conditions.push('workflow = ?')
+      args.push(workflow)
+    }
+    if (before !== undefined) {
+      conditions.push('created_at < ?')
+      args.push(before)
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    args.push(limit)
+
+    const rows = this.all<WorkflowRunRow>(
+      `SELECT * FROM workflow_runs ${where}
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT ?`,
+      ...args,
+    )
+
+    return rows.map(mapWorkflowRunRow)
+  }
+
+  async requeueRun(runId: string): Promise<boolean> {
+    return this.transaction(() => {
+      const changes = this.run(
+        `UPDATE workflow_runs
+         SET status = 'pending', lease_id = NULL, updated_at = ?
+         WHERE id = ? AND status IN ('failed', 'cancelled')`,
+        Date.now(),
+        runId,
+      )
+
+      if (changes === 0) {
+        return false
+      }
+
+      this.run(`DELETE FROM workflow_steps WHERE run_id = ? AND status = 'failed'`, runId)
+
+      return true
+    })
   }
 
   async getStepResults(runId: string): Promise<StepResult[]> {

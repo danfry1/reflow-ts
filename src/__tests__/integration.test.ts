@@ -348,4 +348,85 @@ describe('integration: real-world scenarios', () => {
       })
     })
   })
+
+  describe('resume & observability', () => {
+    it('resumes a failed run from the failed step without re-running completed steps', async () => {
+      const charges = vi.fn()
+      let shipShouldFail = true
+
+      const wf = createWorkflow({
+        name: 'resumable',
+        input: z.object({ orderId: z.string() }),
+      })
+        .step('charge', async ({ input }) => {
+          charges(input.orderId)
+          return { chargeId: 'ch_1' }
+        })
+        .step('ship', async ({ prev }) => {
+          if (shipShouldFail) {
+            throw new Error('warehouse offline')
+          }
+          return { tracking: `TRK_${prev.chargeId}` }
+        })
+
+      const storage = new MemoryStorage()
+      const engine = createEngine({ storage, workflows: [wf] })
+
+      const run = await engine.enqueue('resumable', { orderId: 'ORD_1' })
+      await engine.tick()
+
+      expect((await engine.getRunStatus(run.id))?.run.status).toBe('failed')
+      expect(charges).toHaveBeenCalledTimes(1)
+
+      // The transient failure clears; resume should pick up at `ship`.
+      shipShouldFail = false
+      expect(await engine.resume(run.id)).toBe(true)
+      await engine.tick()
+
+      const status = await engine.getRunStatus(run.id)
+      expect(status?.run.status).toBe('completed')
+      // `charge` already succeeded — it must not run a second time.
+      expect(charges).toHaveBeenCalledTimes(1)
+      expect(status?.steps.find((s) => s.name === 'ship')?.output).toEqual({ tracking: 'TRK_ch_1' })
+      // The earlier failed `ship` result was discarded on requeue.
+      expect(status?.steps.filter((s) => s.name === 'ship')).toHaveLength(1)
+    })
+
+    it('resume returns false for a run that is not failed or cancelled', async () => {
+      const wf = createWorkflow({ name: 'noop', input: z.object({}) }).step('a', async () => ({ ok: true }))
+      const storage = new MemoryStorage()
+      const engine = createEngine({ storage, workflows: [wf] })
+
+      const run = await engine.enqueue('noop', {})
+      await engine.tick()
+
+      expect((await engine.getRunStatus(run.id))?.run.status).toBe('completed')
+      expect(await engine.resume(run.id)).toBe(false)
+    })
+
+    it('listRuns surfaces failed runs for dead-letter inspection', async () => {
+      const wf = createWorkflow({ name: 'breaks', input: z.object({ n: z.number() }) }).step('boom', async () => {
+        throw new Error('always fails')
+      })
+      const storage = new MemoryStorage()
+      const engine = createEngine({ storage, workflows: [wf] })
+
+      await engine.enqueue('breaks', { n: 1 })
+      await engine.enqueue('breaks', { n: 2 })
+      await engine.tick()
+      await engine.tick()
+
+      const failed = await engine.listRuns({ status: 'failed', workflow: 'breaks' })
+      expect(failed).toHaveLength(2)
+      expect(failed.every((r) => r.status === 'failed')).toBe(true)
+    })
+
+    it('rejects a non-positive listRuns limit', async () => {
+      const wf = createWorkflow({ name: 'x', input: z.object({}) }).step('a', async () => ({}))
+      const storage = new MemoryStorage()
+      const engine = createEngine({ storage, workflows: [wf] })
+
+      await expect(engine.listRuns({ limit: 0 })).rejects.toThrow('positive integer')
+    })
+  })
 })
