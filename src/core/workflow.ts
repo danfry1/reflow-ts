@@ -120,6 +120,11 @@ export interface Workflow<
    *
    * `duration` is a number of milliseconds or a string with a unit suffix
    * (`'500ms'`, `'30s'`, `'24h'`, `'7d'`). `name` must be unique within the workflow.
+   *
+   * The sleep emits `stepStart` when it begins and `stepComplete` when it
+   * elapses. If the run resumes on a *different* engine instance after
+   * suspending, that instance emits only `stepComplete` — `stepStart` was
+   * emitted by the instance that began the sleep.
    */
   sleep(name: string, duration: number | string): Workflow<TName, TInput, TPrev, TSteps>
 

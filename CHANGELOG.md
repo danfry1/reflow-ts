@@ -10,6 +10,7 @@
 
 - `StorageAdapter` gains `sleepRun(runId, leaseId, wakeAt)`, and `claimNextRun` now also reclaims `sleeping` runs whose wake time has passed. Both are implemented across all built-in adapters; the SQLite adapters add a `wake_at` column with an automatic, backward-compatible migration for existing databases. Custom adapters must implement `sleepRun` and wake due `sleeping` runs in `claimNextRun`.
 - `RunStatus` gains `sleeping`; `StepStatus` gains `sleeping`.
+- The `node:sqlite` adapter now opens transactions with `BEGIN IMMEDIATE` so concurrent claims under WAL take the write lock up front instead of risking a non-retryable `SQLITE_BUSY_SNAPSHOT`.
 
 ### Fixed
 

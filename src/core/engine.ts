@@ -548,6 +548,16 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
             return
           }
         } else if (unit.kind === 'sleep') {
+          // Mirror the step branch: if the run was cancelled (or the engine
+          // stopped) on an await before this unit, bail before emitting a
+          // spurious stepStart or touching storage.
+          if (activeRun.runAbortController.signal.aborted) {
+            const latestRun = await storage.getRun(run.id)
+            if (!latestRun || latestRun.status === 'cancelled') {
+              return
+            }
+          }
+
           const existing = completedMap.get(unit.name)
           if (existing?.status === 'completed') {
             // Already slept on a previous execution — `prev` passes through.

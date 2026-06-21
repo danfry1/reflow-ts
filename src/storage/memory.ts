@@ -72,8 +72,13 @@ export class MemoryStorage implements StorageAdapter {
         return staleBefore !== undefined && run.status === 'running' && run.updatedAt <= staleBefore
       })
       .sort((left, right) => {
-        if (left.status !== right.status) {
-          return left.status === 'pending' ? -1 : 1
+        // Pending runs are claimed before woken sleeping / stale running runs;
+        // within a rank, oldest first. Rank-based so the comparator stays a
+        // valid total order when both non-pending kinds are present.
+        const rank = (status: RunStatus): number => (status === 'pending' ? 0 : 1)
+        const rankDiff = rank(left.status) - rank(right.status)
+        if (rankDiff !== 0) {
+          return rankDiff
         }
         return left.createdAt - right.createdAt
       })

@@ -169,4 +169,28 @@ describe('durable sleep', () => {
         .sleep('x', '1s'),
     ).toThrow(DuplicateStepError)
   })
+
+  it('supports a sleep as the very first unit (prev stays undefined)', async () => {
+    let firstPrev: unknown = 'unset'
+
+    const wf = createWorkflow({ name: 'sleep-first', input: z.object({}) })
+      .sleep('warmup', '1h')
+      .step('first', async ({ prev }) => {
+        firstPrev = prev
+        return { ran: true }
+      })
+
+    const storage = new MemoryStorage()
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('sleep-first', {})
+
+    await engine.tick()
+    expect((await engine.getRunStatus(run.id))?.run.status).toBe('sleeping')
+
+    vi.setSystemTime(Date.now() + 3_600_001)
+    await engine.tick()
+
+    expect(firstPrev).toBeUndefined()
+    expect((await engine.getRunStatus(run.id))?.run.status).toBe('completed')
+  })
 })

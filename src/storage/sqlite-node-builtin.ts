@@ -372,7 +372,11 @@ export class SQLiteStorage implements StorageAdapter {
   }
 
   private transaction<T>(fn: () => T): T {
-    this.db.exec('BEGIN')
+    // BEGIN IMMEDIATE takes the write lock up front. A deferred BEGIN that does
+    // a SELECT then an UPDATE (e.g. claimNextRun) can hit SQLITE_BUSY_SNAPSHOT
+    // under concurrent writers in WAL mode — which busy_timeout does NOT retry.
+    // The better-sqlite3 and bun adapters get this via their native helpers.
+    this.db.exec('BEGIN IMMEDIATE')
     try {
       const result = fn()
       this.db.exec('COMMIT')
