@@ -148,7 +148,7 @@ export interface Workflow<
    */
   waitForEvent<TEventName extends string, TPayload extends PersistedValue = PersistedValue>(
     eventName: TEventName,
-    options?: { schema?: StandardSchemaV1<TPayload>; timeoutMs?: number },
+    options?: { schema?: StandardSchemaV1<unknown, TPayload>; timeoutMs?: number },
   ): Workflow<TName, TInput, TPayload, Prettify<TSteps & Record<TEventName, TPayload>>>
 
   onFailure(
@@ -346,7 +346,7 @@ function buildWorkflow<
 
     waitForEvent<TEventName extends string, TPayload extends PersistedValue>(
       eventName: TEventName,
-      options?: { schema?: StandardSchemaV1<TPayload>; timeoutMs?: number },
+      options?: { schema?: StandardSchemaV1<unknown, TPayload>; timeoutMs?: number },
     ): Workflow<TName, TInput, TPayload, Prettify<TSteps & Record<TEventName, TPayload>>> {
       if (getAllStepNames(executionUnits).has(eventName)) {
         throw new DuplicateStepError(name, eventName)

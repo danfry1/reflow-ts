@@ -134,8 +134,9 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    * schema, if any — becomes the wait's result and the next step's `prev`.
    * Delivery is durable and order-independent: an event sent before the run
    * reaches the wait is buffered and consumed when it gets there. Returns false
-   * if the run does not exist; throws if the workflow has no such event step or
-   * the payload fails schema validation.
+   * if the run does not exist or has already finished (completed / failed /
+   * cancelled); throws if the workflow has no such event step or the payload
+   * fails schema validation.
    */
   sendEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
   /** Enqueue a workflow on a recurring interval. Returns a schedule ID. */
@@ -654,10 +655,12 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           const stepId = existing?.id ?? randomUUID()
           const createdAt = existing?.createdAt ?? Date.now()
 
-          // Consume a buffered event if one has been delivered.
+          // Consume a buffered event if one has been delivered. The payload was
+          // already validated against the schema in sendEvent, so it is used
+          // as-is here (re-validating could fail a non-idempotent transform).
           const delivered = await storage.takeEvent(run.id, unit.name)
           if (delivered) {
-            const payload = validateEventPayload(unit.name, unit.schema, delivered.payload)
+            const payload = delivered.payload
             if (!waiting) {
               await emit({ type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: unit.name }, observerSignal)
             }
@@ -667,6 +670,9 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
               output: payload, error: null, attempts: 0, createdAt, updatedAt: now,
             }, run.leaseId)
             if (!saved) {
+              // Lost the lease after consuming the event — put it back so the
+              // engine that reclaims the run can consume it, then bail.
+              await storage.deliverEvent(run.id, unit.name, payload)
               throw new LeaseExpiredError(run.id)
             }
             await emit({
@@ -1079,6 +1085,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   async function sendEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean> {
     const run = await storage.getRun(runId)
     if (!run) {
+      return false
+    }
+    // Don't buffer events for a run that can never consume them (it would leak
+    // and mislead the caller into thinking delivery was meaningful).
+    if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
       return false
     }
 

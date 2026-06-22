@@ -223,10 +223,83 @@ describe('waitForEvent', () => {
     expect(await engine.cancel(run.id)).toBe(true)
     expect((await engine.getRunStatus(run.id))?.run.status).toBe('cancelled')
 
-    // Delivering afterward does not resurrect it.
-    await engine.sendEvent(run.id, 'never', {})
+    // Delivering afterward is a no-op and reports it was not delivered.
+    expect(await engine.sendEvent(run.id, 'never', {})).toBe(false)
     await engine.tick()
     expect((await engine.getRunStatus(run.id))?.run.status).toBe('cancelled')
+  })
+
+  it('does not re-validate the payload on consume (supports non-idempotent transforms)', async () => {
+    // The schema transforms a string to its length. Validating the stored
+    // (already-transformed) number again would fail z.string() — so the engine
+    // must trust the value validated at send time.
+    const wf = createWorkflow({ name: 'transform', input: z.object({}) })
+      .waitForEvent('len', { schema: z.string().transform((s) => s.length) })
+      .step('done', async ({ prev }) => ({ length: prev }))
+
+    const storage = new MemoryStorage()
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('transform', {})
+    await engine.tick()
+
+    expect(await engine.sendEvent(run.id, 'len', 'hello')).toBe(true)
+    await engine.tick()
+
+    const info = await engine.getRunStatus(run.id)
+    expect(info?.run.status).toBe('completed')
+    expect(info?.steps.find((s) => s.name === 'done')?.output).toEqual({ length: 5 })
+  })
+
+  it('sendEvent returns false once the run has finished', async () => {
+    const wf = createWorkflow({ name: 'done-evt', input: z.object({}) })
+      .waitForEvent('x')
+      .step('b', async () => ({ ok: true }))
+
+    const storage = new MemoryStorage()
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('done-evt', {})
+
+    await engine.tick()
+    await engine.sendEvent(run.id, 'x', {})
+    await engine.tick()
+    expect((await engine.getRunStatus(run.id))?.run.status).toBe('completed')
+
+    // A run that has already finished cannot consume events.
+    expect(await engine.sendEvent(run.id, 'x', {})).toBe(false)
+  })
+
+  it('restores the consumed event if the lease is lost before the step is saved', async () => {
+    // Simulate a lost lease: the first attempt to persist the completed wait
+    // step fails (as if another engine reclaimed the run). The event must be put
+    // back so it is not lost.
+    class FlakyStorage extends MemoryStorage {
+      failNextWaitSave = true
+      override async saveStepResult(result: Parameters<MemoryStorage['saveStepResult']>[0], leaseId?: string) {
+        if (this.failNextWaitSave && result.name === 'e' && result.status === 'completed') {
+          this.failNextWaitSave = false
+          return false
+        }
+        return super.saveStepResult(result, leaseId)
+      }
+    }
+
+    const wf = createWorkflow({ name: 'lease-loss', input: z.object({}) })
+      .waitForEvent('e')
+      .step('done', async () => ({ ok: true }))
+
+    const storage = new FlakyStorage()
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('lease-loss', {})
+
+    await engine.tick() // → waiting
+    await engine.sendEvent(run.id, 'e', { value: 7 })
+    await engine.tick() // consumes the event, fails to save, restores the event
+
+    // The wait did not complete...
+    const info = await engine.getRunStatus(run.id)
+    expect(info?.steps.find((s) => s.name === 'e')?.status).not.toBe('completed')
+    // ...and the event is back in storage for the reclaiming engine to consume.
+    expect(await storage.takeEvent(run.id, 'e')).toEqual({ payload: { value: 7 } })
   })
 
   it('rejects a waitForEvent whose name collides with another step', () => {
