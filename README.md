@@ -73,6 +73,19 @@ Now the user is charged but never got their welcome email. Worse — you don't k
 - You need sub-second latency on workflow dispatch
 - You're already running Temporal or similar
 
+## Performance
+
+Reflow's overhead is small — most of the cost in real workflows is your own step logic. The numbers below measure the engine and storage layers alone (trivial handlers, no-op input schema), processed end-to-end (enqueue → durable completion).
+
+| Storage      | Steps/run | Runs/sec | Steps/sec |
+|--------------|-----------|----------|-----------|
+| in-memory    | 1         | ~36,000  | ~36,000   |
+| in-memory    | 5         | ~25,000  | ~124,000  |
+| SQLite (Bun) | 1         | ~4,600   | ~4,600    |
+| SQLite (Bun) | 5         | ~2,600   | ~13,000   |
+
+<sub>2,000 runs/scenario, concurrency 25, Bun on an Apple Silicon laptop. Reproduce with `bun run bench` ([`benchmarks/`](benchmarks/index.ts)). Numbers vary by machine and runtime; SQLite figures reflect durable, fsync-backed persistence in WAL mode.</sub>
+
 ## Install
 
 ```bash
