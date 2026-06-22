@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Run on every pull request regardless of base branch, so stacked PRs
+  # (a feature branched off a not-yet-merged fix) still get CI.
   pull_request:
-    branches: [main]
 
 permissions: read-all
 
