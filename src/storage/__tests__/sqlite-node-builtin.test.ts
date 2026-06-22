@@ -223,4 +223,28 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
     expect(woken.status).toBe('running')
     expect(woken.leaseId).not.toBe(claimed.leaseId)
   })
+
+  it('delivers/takes events FIFO and waitRun + deliverEvent wake a run', async () => {
+    await storage.createRun(makeRun({ id: 'run_1' }))
+    expect(await storage.deliverEvent('nope', 'e', {})).toBe(false)
+    expect(await storage.deliverEvent('run_1', 'e', { n: 1 })).toBe(true)
+    expect(await storage.deliverEvent('run_1', 'e', { n: 2 })).toBe(true)
+    expect(await storage.takeEvent('run_1', 'e')).toEqual({ payload: { n: 1 } })
+    expect(await storage.takeEvent('run_1', 'e')).toEqual({ payload: { n: 2 } })
+    expect(await storage.takeEvent('run_1', 'e')).toBeNull()
+
+    const claimed = expectPresent(await storage.claimNextRun(['test']))
+    expect(await storage.waitRun('run_1', claimed.leaseId, 'e', null)).toBe(true)
+    expect(expectPresent(await storage.getRun('run_1')).status).toBe('waiting')
+    await storage.deliverEvent('run_1', 'e', { ok: true })
+    expect(expectPresent(await storage.claimNextRun(['test'])).id).toBe('run_1')
+  })
+
+  it('waitRun stays reclaimable when a matching event is already buffered', async () => {
+    await storage.createRun(makeRun({ id: 'run_1' }))
+    const claimed = expectPresent(await storage.claimNextRun(['test']))
+    await storage.deliverEvent('run_1', 'e', { ok: true })
+    expect(await storage.waitRun('run_1', claimed.leaseId, 'e', null)).toBe(true)
+    expect(expectPresent(await storage.getRun('run_1')).status).toBe('pending')
+  })
 })

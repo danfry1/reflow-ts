@@ -72,6 +72,23 @@ Durably pauses the workflow for `duration` before the next step. The run is pers
 
 `duration` is a number of milliseconds or a string with a unit suffix (`'500ms'`, `'30s'`, `'15m'`, `'24h'`, `'7d'`); an invalid value throws [`ConfigError`](/api/errors). `name` shares the step namespace — duplicates throw [`DuplicateStepError`](/api/errors). See [Durable Sleep](/guide/sleep).
 
+## `.waitForEvent(name, options?)`
+
+Durably pauses the workflow until an external event named `name` is delivered via [`engine.sendEvent(runId, name, payload)`](/api/engine). The run is persisted as `waiting` with its lease released, so it survives process exit and resumes — on any engine instance — when the event arrives. The delivered payload becomes the next step's `prev` (and `steps[name]`).
+
+```typescript
+.step('request-approval', async ({ input }) => notifyApprover(input.requestId))
+.waitForEvent('approved', { schema: z.object({ approver: z.string() }), timeoutMs: 24 * 60 * 60 * 1000 })
+.step('proceed', async ({ prev }) => fulfil(prev.approver)) // prev = the event payload
+```
+
+| Option | Type | Description |
+|---|---|---|
+| `schema` | `StandardSchemaV1<T>` | Validates the payload on delivery; infers the `prev`/`steps[name]` type as `T`. |
+| `timeoutMs` | `number` | If set, the run fails with [`WaitTimeoutError`](/api/errors) when no event arrives within this many ms. |
+
+Delivery is durable and order-independent — an event sent before the run reaches the wait is buffered and consumed when it gets there. `name` shares the step namespace (duplicates throw [`DuplicateStepError`](/api/errors)). See [Waiting for Events](/guide/wait-for-event).
+
 ## `.onFailure(handler)`
 
 Attaches a compensation handler, called when a step fails after exhausting its retries.

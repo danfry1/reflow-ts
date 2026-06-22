@@ -292,4 +292,63 @@ describe('MemoryStorage', () => {
       expect(woken.leaseId).not.toBe(claimed.leaseId)
     })
   })
+
+  describe('waitRun / events', () => {
+    it('delivers and takes events FIFO; returns null when none remain', async () => {
+      await storage.createRun(makeRun({ id: 'run_1' }))
+
+      expect(await storage.deliverEvent('run_1', 'e', { n: 1 })).toBe(true)
+      expect(await storage.deliverEvent('run_1', 'e', { n: 2 })).toBe(true)
+      expect(await storage.deliverEvent('run_1', 'other', { x: 9 })).toBe(true)
+
+      expect(await storage.takeEvent('run_1', 'e')).toEqual({ payload: { n: 1 } })
+      expect(await storage.takeEvent('run_1', 'e')).toEqual({ payload: { n: 2 } })
+      expect(await storage.takeEvent('run_1', 'e')).toBeNull()
+      expect(await storage.takeEvent('run_1', 'other')).toEqual({ payload: { x: 9 } })
+    })
+
+    it('deliverEvent returns false for a missing run', async () => {
+      expect(await storage.deliverEvent('nope', 'e', {})).toBe(false)
+    })
+
+    it('waitRun suspends a claimed run; a non-matching lease cannot', async () => {
+      await storage.createRun(makeRun({ id: 'run_1' }))
+      const claimed = expectPresent(await storage.claimNextRun(['test']))
+
+      expect(await storage.waitRun('run_1', 'wrong-lease', 'e', Date.now() + 60_000)).toBe(false)
+      expect(await storage.waitRun('run_1', claimed.leaseId, 'e', Date.now() + 60_000)).toBe(true)
+      expect(expectPresent(await storage.getRun('run_1')).status).toBe('waiting')
+      expect(await storage.claimNextRun(['test'])).toBeNull()
+    })
+
+    it('waitRun stays reclaimable when a matching event is already buffered (race)', async () => {
+      await storage.createRun(makeRun({ id: 'run_1' }))
+      const claimed = expectPresent(await storage.claimNextRun(['test']))
+      await storage.deliverEvent('run_1', 'e', { ok: true })
+
+      expect(await storage.waitRun('run_1', claimed.leaseId, 'e', null)).toBe(true)
+      expect(expectPresent(await storage.getRun('run_1')).status).toBe('pending')
+    })
+
+    it('deliverEvent wakes a waiting run so it can be reclaimed', async () => {
+      await storage.createRun(makeRun({ id: 'run_1' }))
+      const claimed = expectPresent(await storage.claimNextRun(['test']))
+      await storage.waitRun('run_1', claimed.leaseId, 'e', null)
+      expect(expectPresent(await storage.getRun('run_1')).status).toBe('waiting')
+
+      await storage.deliverEvent('run_1', 'e', { ok: true })
+      const woken = expectPresent(await storage.claimNextRun(['test']))
+      expect(woken.id).toBe('run_1')
+    })
+
+    it('claim reclaims a waiting run after its timeout deadline', async () => {
+      await storage.createRun(makeRun({ id: 'run_1' }))
+      const claimed = expectPresent(await storage.claimNextRun(['test']))
+      await storage.waitRun('run_1', claimed.leaseId, 'e', Date.now() - 1)
+
+      const woken = expectPresent(await storage.claimNextRun(['test']))
+      expect(woken.id).toBe('run_1')
+      expect(woken.leaseId).not.toBe(claimed.leaseId)
+    })
+  })
 })

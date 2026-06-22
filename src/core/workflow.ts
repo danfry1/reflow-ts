@@ -29,11 +29,17 @@ export interface StepDefinition {
   timeoutMs?: number
 }
 
-/** A single execution unit: a sequential step, a parallel group, or a durable sleep. */
+/** A single execution unit: a sequential step, a parallel group, a durable sleep, or a wait for an external event. */
 export type ExecutionUnit =
   | { readonly kind: 'step'; readonly definition: StepDefinition }
   | { readonly kind: 'parallel'; readonly branches: readonly StepDefinition[] }
   | { readonly kind: 'sleep'; readonly name: string; readonly durationMs: number }
+  | {
+      readonly kind: 'waitForEvent'
+      readonly name: string
+      readonly schema?: StandardSchemaV1<PersistedValue>
+      readonly timeoutMs?: number
+    }
 
 /** Configuration object form for `.step()` when you need retry or timeout options. */
 export interface StepConfig<
@@ -128,6 +134,23 @@ export interface Workflow<
    */
   sleep(name: string, duration: number | string): Workflow<TName, TInput, TPrev, TSteps>
 
+  /**
+   * Durably pause the workflow until an external event named `eventName` is
+   * delivered via `engine.sendEvent(runId, eventName, payload)`. The run is
+   * persisted as `waiting` with its lease released, so it survives process exit
+   * and is resumed (on any engine instance) when the event arrives — or fails
+   * with `WaitTimeoutError` if `options.timeoutMs` elapses first.
+   *
+   * The delivered payload becomes the next step's `prev` (and `steps[eventName]`).
+   * If `options.schema` is given, the payload is validated against it on delivery.
+   * `eventName` must be unique within the workflow. Events delivered before the
+   * run reaches the wait are buffered and consumed when it gets there.
+   */
+  waitForEvent<TEventName extends string, TPayload extends PersistedValue = PersistedValue>(
+    eventName: TEventName,
+    options?: { schema?: StandardSchemaV1<TPayload>; timeoutMs?: number },
+  ): Workflow<TName, TInput, TPayload, Prettify<TSteps & Record<TEventName, TPayload>>>
+
   onFailure(
     handler: (ctx: FailureContext<TInput>) => Promise<void>,
   ): Workflow<TName, TInput, TPrev, TSteps>
@@ -189,7 +212,7 @@ function getAllStepNames(units: readonly ExecutionUnit[]): Set<string> {
   for (const unit of units) {
     if (unit.kind === 'step') {
       names.add(unit.definition.name)
-    } else if (unit.kind === 'sleep') {
+    } else if (unit.kind === 'sleep' || unit.kind === 'waitForEvent') {
       names.add(unit.name)
     } else {
       for (const branch of unit.branches) {
@@ -317,6 +340,33 @@ function buildWorkflow<
         name,
         inputSchema,
         [...executionUnits, { kind: 'sleep', name: sleepName, durationMs }],
+        failureHandler,
+      )
+    },
+
+    waitForEvent<TEventName extends string, TPayload extends PersistedValue>(
+      eventName: TEventName,
+      options?: { schema?: StandardSchemaV1<TPayload>; timeoutMs?: number },
+    ): Workflow<TName, TInput, TPayload, Prettify<TSteps & Record<TEventName, TPayload>>> {
+      if (getAllStepNames(executionUnits).has(eventName)) {
+        throw new DuplicateStepError(name, eventName)
+      }
+      if (options?.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) {
+        throw new ConfigError(`waitForEvent "${eventName}" timeoutMs must be a positive number`)
+      }
+
+      return buildWorkflow<TName, TInput, TPayload, Prettify<TSteps & Record<TEventName, TPayload>>>(
+        name,
+        inputSchema,
+        [
+          ...executionUnits,
+          {
+            kind: 'waitForEvent',
+            name: eventName,
+            schema: options?.schema as StandardSchemaV1<PersistedValue> | undefined,
+            timeoutMs: options?.timeoutMs,
+          },
+        ],
         failureHandler,
       )
     },
