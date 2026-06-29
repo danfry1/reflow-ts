@@ -78,13 +78,13 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",
-    "@vitest/coverage-v8": "4.1.8",
-    "better-sqlite3": "12.10.0",
-    "syncpack": "15.3.1",
-    "tsdown": "0.22.2",
+    "@vitest/coverage-v8": "4.1.9",
+    "better-sqlite3": "12.11.1",
+    "syncpack": "15.3.2",
+    "tsdown": "0.22.3",
     "typescript": "6.0.3",
     "vitepress": "1.6.4",
-    "vitest": "4.1.8",
+    "vitest": "4.1.9",
     "zod": "4.4.3"
   },
   "dependencies": {
