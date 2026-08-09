@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import { clonePersistedValue, persistedValuesEqual } from '../storage/codec'
+import { persistedValuesEqual } from '../storage/codec'
 import {
   createBoundedAsyncIterator,
   type AbortableSubscriber,
@@ -8,66 +8,31 @@ import {
 import {
   ConfigError,
   DuplicateWorkflowError,
-  EarlyCompleteError,
   IdempotencyConflictError,
   LeaseExpiredError,
-  ParallelCompleteError,
   RunCancelledError,
   RunControlError,
-  StepTimeoutError,
   ValidationError,
-  WaitTimeoutError,
   WorkflowNotFoundError,
 } from './errors'
+import { cloneEngineEvent, type EngineEvent, type EngineHooks } from './events'
+import { parallelExecutor } from './execution/parallel'
+import { sleepExecutor } from './execution/sleep'
+import { stepExecutor } from './execution/step'
+import { toError } from './execution/signals'
+import type { ExecutionContext, RunSignals, StepRecord, UnitOutcome } from './execution/types'
+import { waitForEventExecutor } from './execution/wait-for-event'
 import type {
   ClaimedRun,
   PersistedValue,
   RunInfo,
+  StepResult,
   StorageAdapter,
   WorkflowRun,
 } from './types'
-import type { AnyWorkflow, StepDefinition, WorkflowInputMap } from './workflow'
+import type { AnyWorkflow, ExecutionUnit, WorkflowInputMap } from './workflow'
 
-/**
- * A lifecycle event emitted during workflow execution.
- *
- * Consumed both by the {@link EngineHooks} callbacks and by {@link Engine.stream}.
- * Every event carries the owning `workflow` name so a single stream can fan out
- * across multiple workflows.
- */
-export type EngineEvent =
-  | { readonly type: 'runStart'; readonly runId: string; readonly workflow: string }
-  | { readonly type: 'stepStart'; readonly runId: string; readonly workflow: string; readonly stepName: string }
-  | {
-      readonly type: 'stepComplete'
-      readonly runId: string
-      readonly workflow: string
-      readonly stepName: string
-      readonly output: PersistedValue
-      readonly attempts: number
-    }
-  | { readonly type: 'runComplete'; readonly runId: string; readonly workflow: string; readonly output: PersistedValue }
-  | { readonly type: 'runFailed'; readonly runId: string; readonly workflow: string; readonly stepName: string; readonly error: Error }
-
-/** Narrow {@link EngineEvent} to a single `type` (or union of types). */
-export type EngineEventOf<T extends EngineEvent['type']> = Extract<EngineEvent, { type: T }>
-
-/**
- * Lifecycle hooks fired during workflow execution.
- *
- * Hooks may be synchronous or `async` — an async hook is awaited before the
- * engine proceeds, so it can apply backpressure or guarantee ordering. A hook
- * that throws (or rejects) never affects engine state; the error is swallowed.
- */
-export interface EngineHooks {
-  onRunStart?: (event: EngineEventOf<'runStart'>) => void
-  onStepStart?: (event: EngineEventOf<'stepStart'>) => void
-  onStepComplete?: (event: EngineEventOf<'stepComplete'>) => void
-  onRunComplete?: (event: EngineEventOf<'runComplete'>) => void
-  onRunFailed?: (event: EngineEventOf<'runFailed'>) => void
-  /** Called when a background operation fails (scheduled enqueue, poll cycle). Without this hook, these errors are silently swallowed. */
-  onError?: (error: Error) => void
-}
+export type { EngineEvent, EngineEventOf, EngineHooks } from './events'
 
 /** Options for {@link Engine.stream}. */
 export interface StreamOptions {
@@ -172,8 +137,7 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
 
 interface ActiveRunState {
   leaseId: string
-  runAbortController: AbortController
-  observerAbortController: AbortController
+  signals: RunSignals
   heartbeatTimer: ReturnType<typeof setInterval> | null
   heartbeatInFlight: boolean
 }
@@ -281,7 +245,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
    * Dispatch a lifecycle event to the user hook and every active stream, then
    * wait for them all to settle. Awaiting here is what lets an `async` hook or a
    * backpressured stream pace the engine. Neither a throwing hook nor a stream
-   * may affect engine state, so all errors are contained.
+   * may affect engine state, so all errors are contained — except an abort of
+   * `signal`, which is a control-flow signal and propagates.
    */
   async function emit(event: EngineEvent, signal: AbortSignal): Promise<void> {
     try {
@@ -302,7 +267,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
     const deliveries = Array.from(
       subscribers,
-      (subscriber) => subscriber.push(cloneEngineEvent(event), signal),
+      (subscriber) => subscriber.push(cloneEngineEvent(event, 'Stream event'), signal),
     )
 
     try {
@@ -319,32 +284,24 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   }
 
   function dispatchHook(event: EngineEvent): unknown {
-    switch (event.type) {
+    const copy = cloneEngineEvent(event, 'Hook event')
+    switch (copy.type) {
       case 'runStart':
-        return hooks?.onRunStart?.({ ...event })
+        return hooks?.onRunStart?.(copy)
       case 'stepStart':
-        return hooks?.onStepStart?.({ ...event })
+        return hooks?.onStepStart?.(copy)
       case 'stepComplete':
-        return hooks?.onStepComplete?.({
-          ...event,
-          output: clonePersistedValue(event.output, 'Step hook output'),
-        })
+        return hooks?.onStepComplete?.(copy)
       case 'runComplete':
-        return hooks?.onRunComplete?.({
-          ...event,
-          output: clonePersistedValue(event.output, 'Run hook output'),
-        })
+        return hooks?.onRunComplete?.(copy)
       case 'runFailed':
-        return hooks?.onRunFailed?.({
-          ...event,
-          error: cloneError(event.error),
-        })
+        return hooks?.onRunFailed?.(copy)
     }
   }
 
   /** Report a background error to `onError`, swallowing any error it raises. */
   function reportError(error: unknown): void {
-    const err = error instanceof Error ? error : new Error(String(error))
+    const err = toError(error)
     void (async () => {
       try {
         await hooks?.onError?.(err)
@@ -371,12 +328,95 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     return channel.iterator
   }
 
+  /**
+   * Build the per-run context handed to every {@link UnitExecutor}.
+   *
+   * `saveStep` reuses the replayed row's `id` and `createdAt`, so re-executing a
+   * step after a reclaim updates that step's row in place rather than appending
+   * a second row under the same name.
+   */
+  function createExecutionContext(
+    run: ClaimedRun,
+    workflow: AnyWorkflow,
+    activeRun: ActiveRunState,
+    existingSteps: readonly StepResult[],
+  ): ExecutionContext {
+    const replay = new Map(existingSteps.map((step) => [step.name, step]))
+    const steps: Record<string, PersistedValue> = {}
+    const observerSignal = activeRun.signals.observer.signal
+
+    const trySaveStep = (record: StepRecord): Promise<boolean> => {
+      const existing = replay.get(record.name)
+      const now = Date.now()
+
+      return storage.saveStepResult({
+        id: existing?.id ?? randomUUID(),
+        runId: run.id,
+        name: record.name,
+        status: record.status,
+        output: record.output,
+        error: record.error ?? null,
+        attempts: record.attempts ?? 0,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      }, run.leaseId)
+    }
+
+    return {
+      run,
+      workflow,
+      storage,
+      signals: activeRun.signals,
+      replay,
+      steps,
+      emit: (event) => emit(event, observerSignal),
+      trySaveStep,
+      async saveStep(record) {
+        const saved = await trySaveStep(record)
+        if (!saved) {
+          throw new LeaseExpiredError(run.id)
+        }
+      },
+      snapshotSteps: () => deepFreeze(structuredClone(steps)),
+    }
+  }
+
+  /**
+   * Route one execution unit to its executor.
+   *
+   * Exhaustive over `ExecutionUnit['kind']`: adding a new kind is a compile
+   * error here until an executor is wired up for it.
+   */
+  function dispatchUnit(
+    unit: ExecutionUnit,
+    ctx: ExecutionContext,
+    prev: PersistedValue,
+  ): Promise<UnitOutcome> {
+    switch (unit.kind) {
+      case 'step':
+        return stepExecutor.execute(unit, ctx, prev)
+      case 'parallel':
+        return parallelExecutor.execute(unit, ctx, prev)
+      case 'sleep':
+        return sleepExecutor.execute(unit, ctx, prev)
+      case 'waitForEvent':
+        return waitForEventExecutor.execute(unit, ctx, prev)
+    }
+  }
+
+  /**
+   * Drive a claimed run through its execution units.
+   *
+   * Each unit reduces to a {@link UnitOutcome}, so this stays a flat loop: the
+   * decisions about replay, persistence, and suspension live in the executors,
+   * and the run-level transitions (complete, fail, halt) live here.
+   */
   async function executeRun(run: ClaimedRun): Promise<void> {
     const wf = registry.get(run.workflow)
     if (!wf) return
 
     const activeRun = registerActiveRun(run)
-    const observerSignal = activeRun.observerAbortController.signal
+    const runSignal = activeRun.signals.run.signal
 
     try {
       const currentRun = await storage.getRun(run.id)
@@ -384,398 +424,52 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         return
       }
 
-      await emit({ type: 'runStart', runId: run.id, workflow: run.workflow }, observerSignal)
+      await emit({ type: 'runStart', runId: run.id, workflow: run.workflow }, activeRun.signals.observer.signal)
 
       const existingSteps = await storage.getStepResults(run.id)
-      const completedMap = new Map(existingSteps.map((step) => [step.name, step]))
+      const ctx = createExecutionContext(run, wf, activeRun, existingSteps)
+
       let prev: PersistedValue = undefined
-      const stepsAccumulator: Record<string, PersistedValue> = {}
 
       for (const unit of wf.executionUnits) {
-        if (unit.kind === 'step') {
-          const stepDef = unit.definition
-          if (activeRun.runAbortController.signal.aborted) {
-            const latestRun = await storage.getRun(run.id)
-            if (!latestRun || latestRun.status === 'cancelled') {
-              return
-            }
-          }
-
-          const existing = completedMap.get(stepDef.name)
-          if (existing?.status === 'completed-early') {
-            // This step called complete() in a previous execution — finish the run
-            await emit({
-              type: 'stepComplete',
-              runId: run.id,
-              workflow: run.workflow,
-              stepName: stepDef.name,
-              output: existing.output,
-              attempts: existing.attempts,
-            }, observerSignal)
-
-            const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
-            if (!completed) {
-              throw new LeaseExpiredError(run.id)
-            }
-
-            await emit(
-              { type: 'runComplete', runId: run.id, workflow: run.workflow, output: existing.output },
-              observerSignal,
-            )
-
+        // A cancellation or engine stop can land on any await between units.
+        // Check once here rather than in every executor.
+        if (runSignal.aborted) {
+          const latest = await storage.getRun(run.id)
+          if (!latest || latest.status === 'cancelled') {
             return
           }
-          if (existing?.status === 'completed') {
-            prev = existing.output
-            stepsAccumulator[stepDef.name] = structuredClone(existing.output)
-            continue
-          }
+        }
 
-          const frozenSteps = snapshotSteps(stepsAccumulator)
+        const outcome = await dispatchUnit(unit, ctx, prev)
 
-          try {
-            await emit(
-              { type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: stepDef.name },
-              observerSignal,
-            )
-
-            const outcome = await executeStep(run, activeRun, stepDef, prev, frozenSteps)
-
-            if (outcome.kind === 'failed') {
-              // A control-flow abort (cancel / engine stop / lease loss) can land
-              // on an await point between steps — including a backpressured stream
-              // emit. When it does, executeStep reports a synthetic failure for a
-              // step that never really ran. That is a side effect of the abort, not
-              // a real failure: leave the run untouched (status stays as-is, so a
-              // stopped or lease-lost run remains reclaimable) instead of marking
-              // it failed. A non-control abort reason (e.g. a heartbeat storage
-              // error) is a genuine failure and still falls through below.
-              if (
-                activeRun.runAbortController.signal.aborted &&
-                activeRun.runAbortController.signal.reason instanceof RunControlError
-              ) {
-                return
-              }
-
-              // Persist the failed step result
-              const now = Date.now()
-              const saved = await storage.saveStepResult({
-                id: randomUUID(),
-                runId: run.id,
-                name: stepDef.name,
-                status: 'failed',
-                output: null,
-                error: outcome.error.message,
-                attempts: outcome.attempts,
-                createdAt: now,
-                updatedAt: now,
-              }, run.leaseId)
-
-              if (!saved) {
-                throw new LeaseExpiredError(run.id)
-              }
-
-              throw outcome.error
-            }
-
-            // Unified success path for both normal and early completion
-            const now = Date.now()
-            const saved = await storage.saveStepResult({
-              id: randomUUID(),
-              runId: run.id,
-              name: stepDef.name,
-              status: outcome.kind === 'early-complete' ? 'completed-early' : 'completed',
-              output: outcome.output,
-              error: null,
-              attempts: outcome.attempts,
-              createdAt: now,
-              updatedAt: now,
-            }, run.leaseId)
-
-            if (!saved) {
-              throw new LeaseExpiredError(run.id)
-            }
-
-            await emit({
-              type: 'stepComplete',
-              runId: run.id,
-              workflow: run.workflow,
-              stepName: stepDef.name,
-              output: outcome.output,
-              attempts: outcome.attempts,
-            }, observerSignal)
-
-            if (outcome.kind === 'early-complete') {
-              const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
-              if (!completed) {
-                throw new LeaseExpiredError(run.id)
-              }
-
-              await emit(
-                { type: 'runComplete', runId: run.id, workflow: run.workflow, output: outcome.output },
-                observerSignal,
-              )
-
-              return
-            }
-
+        switch (outcome.kind) {
+          case 'advance':
             prev = outcome.output
-            stepsAccumulator[stepDef.name] = structuredClone(prev)
-          } catch (error) {
-            const err = error instanceof Error ? error : new Error(String(error))
-
-            if (err instanceof EarlyCompleteError) {
-              throw new Error(`EarlyCompleteError escaped executeStep for step "${stepDef.name}"`)
-            }
-
-            if (err instanceof RunControlError) {
-              return
-            }
-
-            if (activeRun.runAbortController.signal.aborted) {
-              const currentRun = await storage.getRun(run.id)
-              if (!currentRun || currentRun.status === 'cancelled') {
-                return
-              }
-            }
-
-            const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
-            if (!failed) {
-              return
-            }
-
-            await emit(
-              { type: 'runFailed', runId: run.id, workflow: run.workflow, stepName: stepDef.name, error: err },
-              observerSignal,
-            )
-
-            if (wf.failureHandler) {
-              try {
-                await wf.failureHandler({
-                  error: err,
-                  stepName: stepDef.name,
-                  input: run.input,
-                })
-              } catch { /* onFailure must not affect engine state */ }
-            }
-
-            return
-          }
-        } else if (unit.kind === 'sleep') {
-          // Mirror the step branch: if the run was cancelled (or the engine
-          // stopped) on an await before this unit, bail before emitting a
-          // spurious stepStart or touching storage.
-          if (activeRun.runAbortController.signal.aborted) {
-            const latestRun = await storage.getRun(run.id)
-            if (!latestRun || latestRun.status === 'cancelled') {
-              return
-            }
-          }
-
-          const existing = completedMap.get(unit.name)
-          if (existing?.status === 'completed') {
-            // Already slept on a previous execution — `prev` passes through.
             continue
-          }
-
-          const resuming = existing?.status === 'sleeping'
-          const wakeAt = resuming ? Number(existing.output) : Date.now() + unit.durationMs
-          const stepId = existing?.id ?? randomUUID()
-          const createdAt = existing?.createdAt ?? Date.now()
-
-          if (!resuming) {
-            await emit(
-              { type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: unit.name },
-              observerSignal,
-            )
-          }
-
-          if (Date.now() >= wakeAt) {
-            // The sleep has elapsed (or was zero-length) — record it and continue.
-            const now = Date.now()
-            const saved = await storage.saveStepResult({
-              id: stepId,
-              runId: run.id,
-              name: unit.name,
-              status: 'completed',
-              output: null,
-              error: null,
-              attempts: 0,
-              createdAt,
-              updatedAt: now,
-            }, run.leaseId)
-            if (!saved) {
-              throw new LeaseExpiredError(run.id)
-            }
-            await emit(
-              { type: 'stepComplete', runId: run.id, workflow: run.workflow, stepName: unit.name, output: null, attempts: 0 },
-              observerSignal,
-            )
+          case 'passthrough':
             continue
-          }
-
-          // Not yet time: persist the wake target and durably suspend the run.
-          const now = Date.now()
-          const saved = await storage.saveStepResult({
-            id: stepId,
-            runId: run.id,
-            name: unit.name,
-            status: 'sleeping',
-            output: wakeAt,
-            error: null,
-            attempts: 0,
-            createdAt,
-            updatedAt: now,
-          }, run.leaseId)
-          if (!saved) {
-            throw new LeaseExpiredError(run.id)
-          }
-
-          const slept = await storage.sleepRun(run.id, run.leaseId, wakeAt)
-          if (!slept) {
-            throw new LeaseExpiredError(run.id)
-          }
-          return
-        } else if (unit.kind === 'waitForEvent') {
-          if (activeRun.runAbortController.signal.aborted) {
-            const latestRun = await storage.getRun(run.id)
-            if (!latestRun || latestRun.status === 'cancelled') {
-              return
-            }
-          }
-
-          const existing = completedMap.get(unit.name)
-          if (existing?.status === 'completed') {
-            prev = existing.output
-            stepsAccumulator[unit.name] = structuredClone(existing.output)
-            continue
-          }
-
-          const waiting = existing?.status === 'waiting'
-          const stepId = existing?.id ?? randomUUID()
-          const createdAt = existing?.createdAt ?? Date.now()
-
-          // Consume a buffered event if one has been delivered. The payload was
-          // already validated against the schema in sendEvent, so it is used
-          // as-is here (re-validating could fail a non-idempotent transform).
-          const delivered = await storage.takeEvent(run.id, unit.name)
-          if (delivered) {
-            const payload = delivered.payload
-            if (!waiting) {
-              await emit({ type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: unit.name }, observerSignal)
-            }
-            const now = Date.now()
-            const saved = await storage.saveStepResult({
-              id: stepId, runId: run.id, name: unit.name, status: 'completed',
-              output: payload, error: null, attempts: 0, createdAt, updatedAt: now,
-            }, run.leaseId)
-            if (!saved) {
-              // Lost the lease after consuming the event — put it back so the
-              // engine that reclaims the run can consume it, then bail.
-              await storage.deliverEvent(run.id, unit.name, payload)
-              throw new LeaseExpiredError(run.id)
-            }
-            await emit({
-              type: 'stepComplete', runId: run.id, workflow: run.workflow, stepName: unit.name, output: payload, attempts: 0,
-            }, observerSignal)
-            prev = payload
-            stepsAccumulator[unit.name] = structuredClone(payload)
-            continue
-          }
-
-          // No event yet — compute the (stable) timeout deadline, if any.
-          const deadline = unit.timeoutMs === undefined
-            ? null
-            : (waiting && typeof existing?.output === 'number' ? existing.output : Date.now() + unit.timeoutMs)
-
-          // Timed out while waiting and still no event: fail the run here.
-          if (waiting && deadline !== null && Date.now() >= deadline) {
-            const error = new WaitTimeoutError(unit.name, unit.timeoutMs as number)
-            const now = Date.now()
-            const saved = await storage.saveStepResult({
-              id: stepId, runId: run.id, name: unit.name, status: 'failed',
-              output: null, error: error.message, attempts: 0, createdAt, updatedAt: now,
-            }, run.leaseId)
-            if (!saved) {
-              throw new LeaseExpiredError(run.id)
-            }
-            const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
-            if (!failed) {
-              return
-            }
-            await emit({ type: 'runFailed', runId: run.id, workflow: run.workflow, stepName: unit.name, error }, observerSignal)
-            if (wf.failureHandler) {
-              try {
-                await wf.failureHandler({ error, stepName: unit.name, input: run.input })
-              } catch { /* onFailure must not affect engine state */ }
-            }
+          case 'halt':
+          case 'suspend':
             return
-          }
-
-          // Suspend until the event arrives (or the deadline, if set).
-          if (!waiting) {
-            await emit({ type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: unit.name }, observerSignal)
-          }
-          const now = Date.now()
-          const saved = await storage.saveStepResult({
-            id: stepId, runId: run.id, name: unit.name, status: 'waiting',
-            output: deadline, error: null, attempts: 0, createdAt, updatedAt: now,
-          }, run.leaseId)
-          if (!saved) {
-            throw new LeaseExpiredError(run.id)
-          }
-          const waited = await storage.waitRun(run.id, run.leaseId, unit.name, deadline)
-          if (!waited) {
-            throw new LeaseExpiredError(run.id)
-          }
-          return
-        } else {
-          const result = await executeParallelGroup(run, activeRun, unit.branches, prev, stepsAccumulator, completedMap)
-          if (result.kind === 'skipped-cancelled') {
+          case 'complete':
+            await finishRun(run, ctx, outcome.output)
             return
-          }
-          if (result.kind === 'failed') {
-            const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
-            if (!failed) {
-              return
-            }
-
-            await emit(
-              { type: 'runFailed', runId: run.id, workflow: run.workflow, stepName: result.branchName, error: result.error },
-              observerSignal,
-            )
-
-            if (wf.failureHandler) {
-              try {
-                await wf.failureHandler({
-                  error: result.error,
-                  stepName: result.branchName,
-                  input: run.input,
-                })
-              } catch { /* onFailure must not affect engine state */ }
-            }
-
+          case 'failed':
+            await failRun(run, wf, ctx, outcome.stepName, outcome.error)
             return
-          }
-          prev = result.merged
         }
       }
 
-      const latestRun = await storage.getRun(run.id)
-      if (!latestRun || latestRun.status === 'cancelled') {
+      const latest = await storage.getRun(run.id)
+      if (!latest || latest.status === 'cancelled') {
         return
       }
 
-      const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
-      if (!completed) {
-        return
-      }
-
-      await emit(
-        { type: 'runComplete', runId: run.id, workflow: run.workflow, output: prev },
-        observerSignal,
-      )
+      await finishRun(run, ctx, prev)
     } catch (error) {
+      // Control-flow signals (cancel, stop, lease loss) unwind the run without
+      // recording a failure; anything else is a genuine bug and propagates.
       if (!(error instanceof RunControlError)) {
         throw error
       }
@@ -784,289 +478,37 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }
   }
 
-  type StepOutcome =
-    | { kind: 'completed'; output: PersistedValue; attempts: number }
-    | { kind: 'early-complete'; output: PersistedValue; attempts: number }
-    | { kind: 'failed'; error: Error; attempts: number }
-
-  async function executeStep(
-    run: ClaimedRun,
-    activeRun: ActiveRunState,
-    stepDef: StepDefinition,
-    prev: PersistedValue,
-    steps: Record<string, PersistedValue>,
-  ): Promise<StepOutcome> {
-    const maxAttempts = stepDef.retry?.maxAttempts ?? 1
-    if (maxAttempts < 1) {
-      throw new ConfigError(`Step "${stepDef.name}" retry maxAttempts must be at least 1`)
+  /** Mark a run completed and announce it. No-ops if the lease was lost. */
+  async function finishRun(run: ClaimedRun, ctx: ExecutionContext, output: PersistedValue): Promise<void> {
+    const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
+    if (!completed) {
+      return
     }
-    const backoff = stepDef.retry?.backoff ?? 'linear'
-    const initialDelay = stepDef.retry?.initialDelayMs ?? 1000
-    const timeoutMs = stepDef.timeoutMs ?? stepDef.retry?.timeoutMs
 
-    let lastError: Error | null = null
+    await ctx.emit({ type: 'runComplete', runId: run.id, workflow: run.workflow, output })
+  }
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      // Bail out of further retry attempts once the run/group signal is aborted.
-      // A handler is not re-entered (runWithSignal short-circuits), but iterating
-      // the loop just to reject again wastes work and confuses metrics.
-      if (activeRun.runAbortController.signal.aborted) {
-        break
-      }
+  /** Mark a run failed, announce it, then invoke the workflow's `onFailure`. No-ops if the lease was lost. */
+  async function failRun(
+    run: ClaimedRun,
+    wf: AnyWorkflow,
+    ctx: ExecutionContext,
+    stepName: string,
+    error: Error,
+  ): Promise<void> {
+    const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
+    if (!failed) {
+      return
+    }
 
-      const attemptSignal = createAttemptSignal(activeRun.runAbortController.signal, timeoutMs)
+    await ctx.emit({ type: 'runFailed', runId: run.id, workflow: run.workflow, stepName, error })
 
+    if (wf.failureHandler) {
       try {
-        const complete = (value?: PersistedValue): never => {
-          throw new EarlyCompleteError(value)
-        }
-        const rawOutput = await runWithSignal(
-          () => stepDef.handler({ input: run.input, prev, signal: attemptSignal.signal, complete, steps }),
-          attemptSignal.signal,
-        )
-        const output: PersistedValue = rawOutput === undefined ? undefined : rawOutput
-
-        return { kind: 'completed', output, attempts: attempt }
-      } catch (error) {
-        if (error instanceof EarlyCompleteError) {
-          const earlyOutput: PersistedValue = error.value === undefined ? undefined : error.value
-          return { kind: 'early-complete', output: earlyOutput, attempts: attempt }
-        }
-
-        const err = error instanceof Error ? error : new Error(String(error))
-
-        if (err instanceof RunControlError) {
-          throw err
-        }
-
-        lastError = err
-
-        if (attempt < maxAttempts) {
-          const delay = backoff === 'exponential'
-            ? initialDelay * Math.pow(2, attempt - 1)
-            : initialDelay * attempt
-
-          if (delay > 0) {
-            await delayWithSignal(delay, activeRun.runAbortController.signal)
-          }
-        }
-      } finally {
-        attemptSignal.cleanup()
-      }
-    }
-
-    // RunControlError is rethrown inside the loop; if we reach here, lastError is a
-    // regular failure (or null when the signal was aborted before any attempt ran).
-    return { kind: 'failed', error: lastError ?? new Error('Unknown error'), attempts: maxAttempts }
-  }
-
-  type ParallelGroupResult =
-    | { kind: 'completed'; merged: Record<string, PersistedValue> }
-    | { kind: 'skipped-cancelled' }
-    | { kind: 'failed'; branchName: string; error: Error }
-
-  async function executeParallelGroup(
-    run: ClaimedRun,
-    activeRun: ActiveRunState,
-    branches: readonly StepDefinition[],
-    prev: PersistedValue,
-    stepsAccumulator: Record<string, PersistedValue>,
-    completedMap: Map<string, { id: string; status: string; output: PersistedValue; attempts: number }>,
-  ): Promise<ParallelGroupResult> {
-    if (activeRun.runAbortController.signal.aborted) {
-      const latestRun = await storage.getRun(run.id)
-      if (!latestRun || latestRun.status === 'cancelled') {
-        return { kind: 'skipped-cancelled' }
-      }
-    }
-
-    // Crash-recovery: any branch already persisted as 'completed' is reused.
-    // Failed records do not count — they get retried fresh, matching sequential semantics.
-    const merged: Record<string, PersistedValue> = {}
-    const pendingBranches: StepDefinition[] = []
-    for (const branchDef of branches) {
-      const existing = completedMap.get(branchDef.name)
-      if (existing?.status === 'completed') {
-        merged[branchDef.name] = existing.output
-        stepsAccumulator[branchDef.name] = structuredClone(existing.output)
-      } else {
-        pendingBranches.push(branchDef)
-      }
-    }
-
-    if (pendingBranches.length === 0) {
-      return { kind: 'completed', merged }
-    }
-
-    const frozenSteps = snapshotSteps(stepsAccumulator)
-
-    const groupAbort = new AbortController()
-    // Track which branch was the *original* failure that caused the group to abort.
-    // Siblings that fail because they observed the abort are downstream effects, not
-    // the underlying cause — distinguishing this keeps onRunFailed accurate.
-    let causeBranch: BranchFailedError | null = null
-    const onRunAbort = () => {
-      if (!groupAbort.signal.aborted) {
-        groupAbort.abort(activeRun.runAbortController.signal.reason)
-      }
-    }
-    if (activeRun.runAbortController.signal.aborted) {
-      groupAbort.abort(activeRun.runAbortController.signal.reason)
-    } else {
-      activeRun.runAbortController.signal.addEventListener('abort', onRunAbort, { once: true })
-    }
-
-    try {
-      for (const branchDef of pendingBranches) {
-        await emit(
-          { type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: branchDef.name },
-          activeRun.observerAbortController.signal,
-        )
-      }
-
-      const groupActiveRun: ActiveRunState = {
-        ...activeRun,
-        runAbortController: groupAbort,
-      }
-
-      // Run all pending branches; collect both successes and failures so siblings
-      // get a chance to settle (allSettled, not all) before we tear down.
-      const settled = await Promise.allSettled(
-        pendingBranches.map(async (branchDef) => {
-          const guardedHandler: StepDefinition['handler'] = (ctx) => {
-            const guardedComplete = (): never => {
-              throw new ParallelCompleteError(branchDef.name)
-            }
-            return branchDef.handler({ ...ctx, complete: guardedComplete })
-          }
-
-          const guardedDef: StepDefinition = { ...branchDef, handler: guardedHandler }
-          const outcome = await executeStep(run, groupActiveRun, guardedDef, prev, frozenSteps)
-
-          // `outcome.kind === 'early-complete'` is unreachable: guardedComplete throws
-          // ParallelCompleteError (a regular error) before EarlyCompleteError can be
-          // raised, so executeStep returns 'completed' or 'failed' for parallel branches.
-          if (outcome.kind === 'failed') {
-            const failure = new BranchFailedError(branchDef.name, outcome.error, outcome.attempts)
-            if (!groupAbort.signal.aborted) {
-              causeBranch = failure
-              groupAbort.abort(outcome.error)
-            }
-            throw failure
-          }
-
-          return { name: branchDef.name, output: outcome.output, attempts: outcome.attempts }
-        }),
-      )
-
-      // If the run itself was aborted by a control-flow signal while branches were
-      // running (cancel, engine stop, or lease loss), surface that before reporting
-      // branch failures. A branch that failed because it observed the run-level
-      // abort is a downstream effect, not the cause — reporting it would mark a
-      // stopped/reclaimable run as failed. A non-control abort (e.g. a heartbeat
-      // storage error) is a genuine failure and still falls through below.
-      if (
-        activeRun.runAbortController.signal.aborted &&
-        activeRun.runAbortController.signal.reason instanceof RunControlError
-      ) {
-        return { kind: 'skipped-cancelled' }
-      }
-
-      // Prefer the branch that actually caused the abort; only fall back to scanning
-      // settled when no cause was recorded (e.g. group aborted from outside the loop).
-      let firstFailure: BranchFailedError | null = causeBranch
-      if (!firstFailure) {
-        for (const result of settled) {
-          if (result.status === 'rejected') {
-            const err = result.reason instanceof Error ? result.reason : new Error(String(result.reason))
-            if (err instanceof RunControlError) {
-              return { kind: 'skipped-cancelled' }
-            }
-            if (err instanceof BranchFailedError) {
-              firstFailure = err
-              break
-            }
-            // Defensive: wrap unknown error as branch failure on first pending branch.
-            firstFailure = new BranchFailedError(pendingBranches[0].name, err, 1)
-            break
-          }
-        }
-      }
-
-      if (firstFailure) {
-        // Persist the failed step result. Reuse the existing row id so a retry upserts
-        // in place rather than appending a duplicate. If the lease is lost mid-write,
-        // we still report the failure — the outer code will no-op the run-status
-        // update because the same lease check will fail there.
-        const failedBranch = firstFailure.branchName
-        const existingRow = completedMap.get(failedBranch)
-        const now = Date.now()
-        await storage.saveStepResult({
-          id: existingRow?.id ?? randomUUID(),
-          runId: run.id,
-          name: failedBranch,
-          status: 'failed',
-          output: null,
-          error: firstFailure.branchError.message,
-          attempts: firstFailure.attempts,
-          createdAt: now,
-          updatedAt: now,
-        }, run.leaseId)
-
-        return { kind: 'failed', branchName: failedBranch, error: firstFailure.branchError }
-      }
-
-      // All pending branches succeeded — persist their results and fire complete hooks.
-      for (const result of settled) {
-        if (result.status !== 'fulfilled') continue
-        const branchResult = result.value
-        const existingRow = completedMap.get(branchResult.name)
-        const now = Date.now()
-        const saved = await storage.saveStepResult({
-          id: existingRow?.id ?? randomUUID(),
-          runId: run.id,
-          name: branchResult.name,
-          status: 'completed',
-          output: branchResult.output,
-          error: null,
-          attempts: branchResult.attempts,
-          createdAt: now,
-          updatedAt: now,
-        }, run.leaseId)
-
-        if (!saved) {
-          throw new LeaseExpiredError(run.id)
-        }
-
-        await emit({
-          type: 'stepComplete',
-          runId: run.id,
-          workflow: run.workflow,
-          stepName: branchResult.name,
-          output: branchResult.output,
-          attempts: branchResult.attempts,
-        }, activeRun.observerAbortController.signal)
-
-        stepsAccumulator[branchResult.name] = structuredClone(branchResult.output)
-        merged[branchResult.name] = branchResult.output
-      }
-
-      return { kind: 'completed', merged }
-    } catch (error) {
-      // Promise.allSettled above swallows per-branch failures, so this catch only
-      // fires for LeaseExpiredError thrown during success-path persistence.
-      const err = error instanceof Error ? error : new Error(String(error))
-
-      if (err instanceof RunControlError) {
-        return { kind: 'skipped-cancelled' }
-      }
-
-      return { kind: 'failed', branchName: pendingBranches[0].name, error: err }
-    } finally {
-      activeRun.runAbortController.signal.removeEventListener('abort', onRunAbort)
+        await wf.failureHandler({ error, stepName, input: run.input })
+      } catch { /* onFailure must not affect engine state */ }
     }
   }
-
 
   async function cancel(runId: string): Promise<boolean> {
     const run = await storage.getRun(runId)
@@ -1236,8 +678,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
     const activeRun: ActiveRunState = {
       leaseId: run.leaseId,
-      runAbortController: new AbortController(),
-      observerAbortController: new AbortController(),
+      signals: { run: new AbortController(), observer: new AbortController() },
       heartbeatTimer: null,
       heartbeatInFlight: false,
     }
@@ -1249,7 +690,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
   function startHeartbeat(run: ClaimedRun, activeRun: ActiveRunState): void {
     const sendHeartbeat = async () => {
-      if (activeRun.heartbeatInFlight || activeRun.runAbortController.signal.aborted) {
+      if (activeRun.heartbeatInFlight || activeRun.signals.run.signal.aborted) {
         return
       }
 
@@ -1261,7 +702,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           abortActiveRun(run.id, new LeaseExpiredError(run.id))
         }
       } catch (error) {
-        abortActiveRun(run.id, error instanceof Error ? error : new Error(String(error)))
+        abortActiveRun(run.id, toError(error))
       } finally {
         activeRun.heartbeatInFlight = false
       }
@@ -1291,15 +732,17 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       return
     }
 
-    if (!activeRun.runAbortController.signal.aborted) {
-      activeRun.runAbortController.abort(reason)
+    if (!activeRun.signals.run.signal.aborted) {
+      activeRun.signals.run.abort(reason)
     }
 
+    // Only a control-flow abort tears down observers. A genuine error (e.g. a
+    // heartbeat storage failure) still needs its `runFailed` event delivered.
     if (
       reason instanceof RunControlError &&
-      !activeRun.observerAbortController.signal.aborted
+      !activeRun.signals.observer.signal.aborted
     ) {
-      activeRun.observerAbortController.abort(reason)
+      activeRun.signals.observer.abort(reason)
     }
   }
 
@@ -1337,35 +780,6 @@ function validateEventPayload(
   return result.value as PersistedValue
 }
 
-function cloneEngineEvent(event: EngineEvent): EngineEvent {
-  switch (event.type) {
-    case 'stepComplete':
-      return {
-        ...event,
-        output: clonePersistedValue(event.output, 'Step event output'),
-      }
-    case 'runComplete':
-      return {
-        ...event,
-        output: clonePersistedValue(event.output, 'Run event output'),
-      }
-    case 'runFailed':
-      return {
-        ...event,
-        error: cloneError(event.error),
-      }
-    default:
-      return { ...event }
-  }
-}
-
-function cloneError(error: Error): Error {
-  return Object.create(
-    Object.getPrototypeOf(error),
-    Object.getOwnPropertyDescriptors(error),
-  ) as Error
-}
-
 function runWithSignal<T>(
   promiseFactory: () => Promise<T>,
   signal: AbortSignal,
@@ -1401,69 +815,6 @@ function runWithSignal<T>(
   })
 }
 
-function createAttemptSignal(
-  runSignal: AbortSignal,
-  timeoutMs?: number,
-): { signal: AbortSignal; cleanup: () => void } {
-  const controller = new AbortController()
-  const cleanups: Array<() => void> = []
-
-  const forwardAbort = (reason: unknown) => {
-    if (!controller.signal.aborted) {
-      controller.abort(toError(reason))
-    }
-  }
-
-  if (runSignal.aborted) {
-    forwardAbort(runSignal.reason)
-  } else {
-    const onRunAbort = () => forwardAbort(runSignal.reason)
-    runSignal.addEventListener('abort', onRunAbort, { once: true })
-    cleanups.push(() => runSignal.removeEventListener('abort', onRunAbort))
-  }
-
-  if (timeoutMs) {
-    const timer = setTimeout(() => {
-      forwardAbort(new StepTimeoutError(timeoutMs))
-    }, timeoutMs)
-    cleanups.push(() => clearTimeout(timer))
-  }
-
-  return {
-    signal: controller.signal,
-    cleanup: () => {
-      for (const cleanup of cleanups) {
-        cleanup()
-      }
-    },
-  }
-}
-
-function delayWithSignal(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) {
-    return Promise.reject(toError(signal.reason))
-  }
-
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup()
-      resolve()
-    }, ms)
-
-    const onAbort = () => {
-      cleanup()
-      reject(toError(signal.reason))
-    }
-
-    const cleanup = () => {
-      clearTimeout(timer)
-      signal.removeEventListener('abort', onAbort)
-    }
-
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
-}
-
 function normalizeIdempotencyKey(idempotencyKey?: string): string | null {
   if (idempotencyKey === undefined) {
     return null
@@ -1480,15 +831,7 @@ function defaultHeartbeatInterval(runLeaseDurationMs: number): number {
   return Math.max(1, Math.min(runLeaseDurationMs - 1, Math.floor(runLeaseDurationMs / 3)))
 }
 
-function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error))
-}
-
 function noop() {}
-
-function snapshotSteps(accumulator: Record<string, PersistedValue>): Readonly<Record<string, PersistedValue>> {
-  return deepFreeze(structuredClone(accumulator))
-}
 
 function deepFreeze<T extends Record<string, unknown>>(obj: T): T {
   Object.freeze(obj)
@@ -1498,19 +841,4 @@ function deepFreeze<T extends Record<string, unknown>>(obj: T): T {
     }
   }
   return obj
-}
-
-/**
- * Carries branch metadata (name, original error, attempts) through Promise.all rejections.
- * @internal Not exported from the public API.
- */
-class BranchFailedError extends Error {
-  constructor(
-    public readonly branchName: string,
-    public readonly branchError: Error,
-    public readonly attempts: number,
-  ) {
-    super(branchError.message)
-    this.name = 'BranchFailedError'
-  }
 }
