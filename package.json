@@ -51,6 +51,7 @@
     "build": "tsdown",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:bun": "bun scripts/smoke-bun-adapter.ts",
     "typecheck": "tsc --noEmit",
     "lint:deps": "syncpack lint",
     "fix:deps": "syncpack fix",

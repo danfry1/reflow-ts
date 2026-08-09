@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Run on every pull request regardless of base branch, so stacked PRs
+  # (a feature branched off a not-yet-merged fix) still get CI.
   pull_request:
-    branches: [main]
 
 permissions: read-all
 
@@ -19,6 +20,8 @@ jobs:
         run: bun run lint:deps
       - run: bun run typecheck
       - run: bun run test -- --coverage
+      - name: Smoke-test the bun:sqlite adapter under Bun
+        run: bun run test:bun
       - run: bun run build
 
   node-compat:

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`reflow-ts/sqlite-bun` change detection** — `bun:sqlite` reports affected-row counts on the `run()` result, not on `Database.changes` (which is `undefined`). The adapter read the latter, so `heartbeatRun`, `updateRunStatus`, `updateClaimedRunStatus`, and the `claimNextRun` double-claim guard never reflected real row counts — heartbeats always reported the lease lost and the claim guard never engaged. The adapter now reads the count from the statement result. Adds a Bun-native smoke test (`bun run test:bun`) wired into CI so the Bun adapter — which the Node-based Vitest suite cannot load — has real coverage.
+
 ## 0.5.0 — 2026-06-10
 
 ### Added
