@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, unlinkSync } from 'node:fs'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import type { StepResult, WorkflowRun } from '../../core/types'
+import type { StepResult, WorkflowRun, WorkflowSchedule } from '../../core/types'
 import { SQLiteStorage } from '../sqlite-node-builtin'
 import { at } from '../../__tests__/helpers'
 
@@ -248,4 +248,56 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
     expect(await storage.waitRun('run_1', claimed.leaseId, 'e', null)).toBe(true)
     expect(expectPresent(await storage.getRun('run_1')).status).toBe('pending')
   })
+
+  describe('schedules', () => {
+    const makeSchedule = (overrides: Partial<WorkflowSchedule> = {}): WorkflowSchedule => {
+      const now = Date.now()
+      return {
+        key: 'nightly',
+        workflow: 'test',
+        input: { olderThanDays: 30 },
+        intervalMs: 60_000,
+        nextRunAt: now + 60_000,
+        createdAt: now,
+        updatedAt: now,
+        ...overrides,
+      }
+    }
+
+    it('registers, lists, and deletes a schedule', async () => {
+      await storage.upsertSchedule(makeSchedule())
+      expect(await storage.listSchedules()).toHaveLength(1)
+
+      expect(await storage.deleteSchedule('nightly')).toBe(true)
+      expect(await storage.deleteSchedule('nightly')).toBe(false)
+      expect(await storage.listSchedules()).toStrictEqual([])
+    })
+
+    it('preserves the cadence on re-registration, resets it when the interval changes', async () => {
+      const first = await storage.upsertSchedule(makeSchedule({ nextRunAt: 5_000 }))
+
+      expect((await storage.upsertSchedule(makeSchedule({ nextRunAt: 900_000 }))).nextRunAt)
+        .toBe(first.nextRunAt)
+      expect((await storage.upsertSchedule(
+        makeSchedule({ intervalMs: 120_000, nextRunAt: 900_000 }),
+      )).nextRunAt).toBe(900_000)
+    })
+
+    it('claims a due occurrence exactly once, advancing past now', async () => {
+      await storage.upsertSchedule(makeSchedule({ nextRunAt: 1_000, intervalMs: 100 }))
+
+      const claimed = await storage.claimDueSchedule(['test'], 1_250)
+      expect(claimed?.nextRunAt).toBe(1_000)
+      expect(at(await storage.listSchedules(), 0).nextRunAt).toBe(1_300)
+      expect(await storage.claimDueSchedule(['test'], 1_250)).toBeNull()
+    })
+
+    it('only claims schedules for the given workflows', async () => {
+      await storage.upsertSchedule(makeSchedule({ workflow: 'elsewhere', nextRunAt: 1_000 }))
+
+      expect(await storage.claimDueSchedule(['test'], 5_000)).toBeNull()
+      expect(await storage.claimDueSchedule(['elsewhere'], 5_000)).not.toBeNull()
+    })
+  })
+
 })

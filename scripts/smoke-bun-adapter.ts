@@ -71,6 +71,46 @@ assert((await storage.getRun('run_2'))?.status === 'waiting', 'run should be wai
 await storage.deliverEvent('run_2', 'e', { n: 2 })
 assert((await storage.claimNextRun(['test']))?.id === 'run_2', 'delivering an event should wake the waiting run')
 
+// Durable schedules: the upsert cadence rule and the claim-and-advance
+// transaction both hinge on affected-row counts, the same class of bug.
+const scheduleAt = (nextRunAt: number, intervalMs = 100) => ({
+  key: 'nightly',
+  workflow: 'test',
+  input: { olderThanDays: 30 },
+  intervalMs,
+  nextRunAt,
+  createdAt: 0,
+  updatedAt: 0,
+})
+
+await storage.upsertSchedule(scheduleAt(5_000))
+assert(
+  (await storage.upsertSchedule(scheduleAt(900_000))).nextRunAt === 5_000,
+  're-registering with the same interval must preserve the cadence',
+)
+assert(
+  (await storage.upsertSchedule(scheduleAt(900_000, 200))).nextRunAt === 900_000,
+  'changing the interval must reset the cadence',
+)
+
+await storage.upsertSchedule(scheduleAt(1_000))
+const due = await storage.claimDueSchedule(['test'], 1_250)
+assert(due?.nextRunAt === 1_000, 'claim should report the occurrence it fired for')
+assert(
+  (await storage.listSchedules())[0]?.nextRunAt === 1_300,
+  'claim should advance the stored schedule past now',
+)
+assert(
+  (await storage.claimDueSchedule(['test'], 1_250)) === null,
+  'an occurrence must only be claimable once',
+)
+assert(
+  (await storage.claimDueSchedule(['elsewhere'], 5_000)) === null,
+  'claim must filter by workflow name',
+)
+assert(await storage.deleteSchedule('nightly'), 'deleteSchedule should report the removal')
+assert(!(await storage.deleteSchedule('nightly')), 'deleteSchedule on a missing key should return false')
+
 storage.close()
 // eslint-disable-next-line no-console
-console.log('OK: sqlite-bun adapter change-count paths verified under Bun')
+console.log('OK: sqlite-bun adapter change-count and schedule paths verified under Bun')

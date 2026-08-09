@@ -73,6 +73,32 @@ export interface RunInfo {
   steps: StepResult[]
 }
 
+/**
+ * A durably registered recurring schedule.
+ *
+ * Unlike a run, a schedule is long-lived and shared: every engine instance
+ * registering the same `key` addresses one row, and whichever instance claims a
+ * due firing enqueues it.
+ */
+export interface WorkflowSchedule {
+  /**
+   * Stable identity of the schedule, shared across engine instances and across
+   * restarts. Re-registering the same key updates that schedule rather than
+   * creating a second one.
+   */
+  key: string
+  /** Name of the workflow to enqueue. */
+  workflow: string
+  /** Validated input handed to each enqueued run. */
+  input: PersistedValue
+  /** Gap between firings, in milliseconds. */
+  intervalMs: number
+  /** Epoch ms at which this schedule is next due to fire. */
+  nextRunAt: number
+  createdAt: number
+  updatedAt: number
+}
+
 /** Result of `storage.createRun()`. `created` is false when an existing idempotent run was returned. */
 export interface CreateRunResult {
   run: WorkflowRun
@@ -137,6 +163,35 @@ export interface StorageAdapter {
   updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
   /** Update run status only if the caller still holds the lease. */
   updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean>
+  /**
+   * Register a recurring schedule, or update the existing one with the same
+   * `key`. Returns the stored schedule.
+   *
+   * Re-registering must **preserve `nextRunAt`** when the interval is unchanged,
+   * so a restarting process rejoins the existing cadence instead of pushing the
+   * next firing out by a full interval every deploy. When the interval does
+   * change, the supplied `nextRunAt` takes effect.
+   */
+  upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule>
+  /**
+   * Atomically claim the next schedule due at or before `now`, advancing its
+   * `nextRunAt` to the first occurrence after `now` in the same transaction.
+   *
+   * The returned schedule carries the `nextRunAt` it was claimed *for* (the slot
+   * that came due), not the advanced value. Advancing as part of the claim is
+   * what stops several engine instances firing the same slot. Returns null when
+   * nothing is due.
+   *
+   * Only schedules whose workflow appears in `workflowNames` are considered.
+   * Claiming advances the schedule, so claiming one this instance cannot run
+   * would silently swallow that firing in a fleet where workers register
+   * different workflows.
+   */
+  claimDueSchedule(workflowNames: readonly string[], now: number): Promise<WorkflowSchedule | null>
+  /** Remove a schedule by key. Returns false if no such schedule existed. */
+  deleteSchedule(key: string): Promise<boolean>
+  /** All registered schedules, ordered by key. */
+  listSchedules(): Promise<WorkflowSchedule[]>
   /** Release resources (e.g. close the database connection). */
   close(): void
 }

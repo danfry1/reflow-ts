@@ -32,6 +32,7 @@ import type {
   StepResult,
   StorageAdapter,
   WorkflowRun,
+  WorkflowSchedule,
 } from './types'
 import type { AnyWorkflow, ExecutionUnit, WorkflowInputMap } from './workflow'
 
@@ -123,27 +124,34 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    */
   sendEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
   /**
-   * Enqueue a workflow on a recurring interval. Returns a schedule ID for
-   * {@link Engine.unschedule}.
+   * Register a recurring schedule, durably. Returns its key.
    *
-   * Ticks are aligned to wall-clock slots of `intervalMs` rather than to
-   * elapsed time since the call, and each enqueue carries an idempotency key
-   * derived from the schedule's identity and its slot. Every engine instance
-   * therefore computes the same key for the same moment, so a schedule
-   * registered on N instances still produces exactly one run per interval
-   * instead of N.
+   * The schedule is stored, not held as an in-process timer, so it survives a
+   * restart or a deploy: any engine instance running the workflow picks up the
+   * next firing. Registering the same key again updates that schedule in place
+   * rather than creating a second one, which makes calling this at startup on
+   * every instance the intended usage.
    *
-   * Schedules themselves are in-memory timers and do not survive a restart —
-   * only the deduplication is durable.
+   * Each due firing is claimed atomically and its next occurrence advanced in
+   * the same transaction, so a schedule shared by N instances still produces
+   * one run per interval rather than N.
+   *
+   * Occurrences missed while every instance was down are **skipped, not
+   * backfilled**: the schedule fires once on return and resumes its cadence.
    */
   schedule<TName extends string & keyof TWorkflowMap>(
     workflowName: TName,
     input: TWorkflowMap[TName],
     intervalMs: number,
     options?: ScheduleOptions,
-  ): string
-  /** Cancel a recurring schedule by ID. */
-  unschedule(scheduleId: string): boolean
+  ): Promise<string>
+  /**
+   * Remove a durable schedule by key. Returns false if no such schedule
+   * existed. Because schedules are shared, this stops it for every instance.
+   */
+  unschedule(key: string): Promise<boolean>
+  /** All registered schedules, ordered by key. */
+  listSchedules(): Promise<readonly WorkflowSchedule[]>
   /**
    * Subscribe to a live, pull-based stream of execution events
    * ({@link EngineEvent}). Use it to consume step/run results as they happen,
@@ -163,7 +171,14 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
   tick(): Promise<void>
   /** Initialize storage and start the polling loop. Call once at startup. */
   start(pollIntervalMs?: number): Promise<void>
-  /** Stop the polling loop, clear all schedules, and wait for in-flight ticks to finish. */
+  /**
+   * Stop the polling loop and wait for in-flight ticks to finish.
+   *
+   * Durable schedules are deliberately left registered — they belong to the
+   * storage, not to this instance, and stopping one worker must not cancel a
+   * schedule the rest of the fleet is still serving. Use `unschedule()` to
+   * remove one.
+   */
   stop(): Promise<void>
 }
 
@@ -219,7 +234,6 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   const storage = translateStorageErrors(rawStorage)
 
   const registry = new Map<string, AnyWorkflow>()
-  const schedules = new Map<string, ReturnType<typeof setInterval>>()
   const activeRuns = new Map<string, ActiveRunState>()
   const subscribers = new Set<AbortableSubscriber<EngineEvent>>()
   let running = false
@@ -603,12 +617,12 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     return storage.deliverEvent(runId, eventName, validated)
   }
 
-  function schedule(
+  async function schedule(
     workflowName: string,
     input: PersistedValue,
     intervalMs: number,
     options?: ScheduleOptions,
-  ): string {
+  ): Promise<string> {
     if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
       throw new ConfigError('Schedule intervalMs must be a positive number')
     }
@@ -617,33 +631,60 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     if (!wf) throw new WorkflowNotFoundError(workflowName)
 
     const parsedInput = wf.parseInput(input)
-    const scheduleKey = options?.key ?? deriveScheduleKey(workflowName, intervalMs, parsedInput)
-    const scheduleId = randomUUID()
+    const key = options?.key ?? deriveScheduleKey(workflowName, intervalMs, parsedInput)
+    const now = Date.now()
 
-    const fire = () => {
-      // Slot by wall clock rather than by elapsed time since this call. Every
-      // instance independently derives the same slot for the same moment, so
-      // the idempotency keys collide and storage keeps exactly one run — which
-      // is what stops a schedule registered on N workers producing N runs.
-      const slot = Math.floor(Date.now() / intervalMs)
-      void enqueue(workflowName, parsedInput, {
-        idempotencyKey: `reflow.schedule:${scheduleKey}:${slot}`,
-      }).catch(reportError)
-    }
+    // `nextRunAt` here is only the value used when the schedule is new (or its
+    // interval changed) — storage preserves an existing cadence otherwise.
+    const stored = await storage.upsertSchedule({
+      key,
+      workflow: workflowName,
+      input: parsedInput,
+      intervalMs,
+      nextRunAt: now + intervalMs,
+      createdAt: now,
+      updatedAt: now,
+    })
 
-    const interval = setInterval(fire, intervalMs)
-
-    schedules.set(scheduleId, interval)
-    return scheduleId
+    return stored.key
   }
 
-  function unschedule(scheduleId: string): boolean {
-    const interval = schedules.get(scheduleId)
-    if (!interval) return false
+  function unschedule(key: string): Promise<boolean> {
+    return storage.deleteSchedule(key)
+  }
 
-    clearInterval(interval)
-    schedules.delete(scheduleId)
-    return true
+  function listSchedules(): Promise<readonly WorkflowSchedule[]> {
+    return storage.listSchedules()
+  }
+
+  /**
+   * Enqueue every schedule that has come due.
+   *
+   * Each claim advances that schedule past `now` inside the same transaction,
+   * so this loop terminates after at most one firing per registered schedule
+   * and two instances ticking together cannot both fire the same occurrence.
+   */
+  async function processDueSchedules(): Promise<void> {
+    const now = Date.now()
+
+    for (;;) {
+      const due = await storage.claimDueSchedule(workflowNames, now)
+      if (!due) {
+        return
+      }
+
+      try {
+        // Keyed by the occurrence it fired for. The atomic claim already makes
+        // this a single firing; the key is what keeps that true if a retry ever
+        // replays the enqueue.
+        await enqueue(due.workflow, due.input, {
+          idempotencyKey: `reflow.schedule:${due.key}:${due.nextRunAt}`,
+        })
+      } catch (error) {
+        // One bad schedule must not stop the others from firing.
+        reportError(error)
+      }
+    }
   }
 
   async function tick(): Promise<void> {
@@ -655,6 +696,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     tickInFlight = true
     const promise = (async () => {
       try {
+        await processDueSchedules()
+
         const staleBefore = Date.now() - runLeaseDurationMs
         const runs: ClaimedRun[] = []
 
@@ -716,11 +759,6 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     if (timer) {
       clearInterval(timer)
       timer = null
-    }
-
-    for (const [scheduleId, interval] of schedules) {
-      clearInterval(interval)
-      schedules.delete(scheduleId)
     }
 
     for (const [runId] of activeRuns) {
@@ -823,6 +861,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     sendEvent,
     schedule,
     unschedule,
+    listSchedules,
     stream: createStream,
     tick,
     start,

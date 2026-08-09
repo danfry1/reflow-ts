@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { z } from 'zod'
-import { createWorkflow, createEngine, ConfigError, ValidationError, WaitTimeoutError } from '../../index'
+import { createWorkflow, createEngine, ConfigError, ValidationError } from '../../index'
 import { DuplicateStepError } from '../errors'
 import { MemoryStorage } from '../../storage/memory'
 

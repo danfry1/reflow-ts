@@ -27,6 +27,7 @@ type StepStatus =
 | `StepResult` | `{ id, runId, name, status, output, error, attempts, createdAt, updatedAt }` |
 | `RunInfo` | `{ run: WorkflowRun; steps: StepResult[] }` — returned by `getRunStatus()` |
 | `CreateRunResult` | `{ run: WorkflowRun; created: boolean }` — returned by `storage.createRun()` |
+| `WorkflowSchedule` | `{ key, workflow, input, intervalMs, nextRunAt, createdAt, updatedAt }` — a registered [schedule](/guide/scheduling) |
 | `RetryConfig` | `{ maxAttempts, backoff, initialDelayMs?, timeoutMs? }` |
 
 ## Workflow & engine types

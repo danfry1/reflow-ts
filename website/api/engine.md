@@ -8,7 +8,7 @@ Initializes storage and starts the polling loop, running `tick()` every `pollInt
 
 ## `engine.stop()`
 
-Stops the polling loop, clears all schedules, ends all open [streams](/api/events), aborts in-flight steps, and waits for any in-flight tick to finish. In-flight runs are left `running` so they can be reclaimed. Returns `Promise<void>`.
+Stops the polling loop, ends all open [streams](/api/events), aborts in-flight steps, and waits for any in-flight tick to finish. In-flight runs are left `running` so they can be reclaimed. Registered [schedules](/guide/scheduling) are deliberately left in place — they belong to the storage, not to this instance. Returns `Promise<void>`.
 
 ## `engine.tick()`
 
@@ -48,13 +48,19 @@ await engine.sendEvent(run.id, 'approved', { approver: 'alice' })
 
 Delivery is durable and order-independent: an event sent before the run reaches the wait is buffered and consumed when it gets there. Returns `false` if the run does not exist or has already finished (completed / failed / cancelled); throws [`ConfigError`](/api/errors) if the workflow has no such event step, or [`ValidationError`](/api/errors) if the payload fails the wait's schema. See [Waiting for Events](/guide/wait-for-event).
 
-## `engine.schedule(name, input, intervalMs)`
+## `engine.schedule(name, input, intervalMs, options?)`
 
-Enqueues a run on a recurring interval. Returns a `scheduleId` string. Validates `name` and `input` immediately. See [Scheduled Workflows](/guide/scheduling).
+Registers a durable recurring schedule. Returns `Promise<string>` resolving to its key. Validates `name` and `input` immediately.
 
-## `engine.unschedule(scheduleId)`
+The schedule is persisted rather than held as an in-process timer, so it survives restarts; registering the same key again updates it in place, preserving the cadence unless the interval changed. Due firings are claimed atomically, so N instances sharing a schedule produce one run per interval. `options.key` sets the identity explicitly (it otherwise defaults to a hash of the name, interval, and input). See [Scheduled Workflows](/guide/scheduling).
 
-Cancels a recurring schedule by id. Returns `true` if a schedule was removed, `false` otherwise.
+## `engine.unschedule(key)`
+
+Removes a durable schedule. Returns `Promise<boolean>` — `false` if no such schedule existed. Because schedules are shared, this stops it for every instance.
+
+## `engine.listSchedules()`
+
+Returns `Promise<readonly WorkflowSchedule[]>` — every registered schedule, ordered by key, each carrying its `nextRunAt`.
 
 ## `engine.getRunStatus(runId)`
 

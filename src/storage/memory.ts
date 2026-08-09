@@ -7,8 +7,10 @@ import type {
   StepResult,
   StorageAdapter,
   WorkflowRun,
+  WorkflowSchedule,
 } from '../core/types'
 import { InternalError } from '../core/errors'
+import { nextOccurrence } from '../core/schedule-timing'
 import { clonePersistedValue } from './codec'
 
 interface StoredRun extends WorkflowRun {
@@ -26,6 +28,7 @@ export class MemoryStorage implements StorageAdapter {
   private runs: Map<string, StoredRun> = new Map()
   private steps: Map<string, StepResult[]> = new Map()
   private events: Map<string, StoredEvent[]> = new Map()
+  private schedules: Map<string, WorkflowSchedule> = new Map()
 
   async initialize(): Promise<void> {}
 
@@ -248,6 +251,58 @@ export class MemoryStorage implements StorageAdapter {
     return true
   }
 
+  async upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule> {
+    const existing = this.schedules.get(schedule.key)
+
+    const stored: WorkflowSchedule = {
+      ...schedule,
+      input: clonePersistedValue(schedule.input, 'Schedule input'),
+      // A restarting process must rejoin the existing cadence rather than push
+      // the next firing out by a full interval on every deploy.
+      nextRunAt: existing && existing.intervalMs === schedule.intervalMs
+        ? existing.nextRunAt
+        : schedule.nextRunAt,
+      createdAt: existing?.createdAt ?? schedule.createdAt,
+    }
+
+    this.schedules.set(schedule.key, stored)
+    return cloneSchedule(stored)
+  }
+
+  async claimDueSchedule(
+    workflowNames: readonly string[],
+    now: number,
+  ): Promise<WorkflowSchedule | null> {
+    const due = Array.from(this.schedules.values())
+      .filter((schedule) => schedule.nextRunAt <= now && workflowNames.includes(schedule.workflow))
+      .sort((left, right) => left.nextRunAt - right.nextRunAt)[0]
+
+    if (!due) {
+      return null
+    }
+
+    // Advance before returning: the caller treats a claim as exclusive, and in
+    // this adapter the "transaction" is simply that nothing else runs between
+    // these two statements.
+    this.schedules.set(due.key, {
+      ...due,
+      nextRunAt: nextOccurrence(due.nextRunAt, due.intervalMs, now),
+      updatedAt: now,
+    })
+
+    return cloneSchedule(due)
+  }
+
+  async deleteSchedule(key: string): Promise<boolean> {
+    return this.schedules.delete(key)
+  }
+
+  async listSchedules(): Promise<WorkflowSchedule[]> {
+    return Array.from(this.schedules.values())
+      .sort((left, right) => (left.key < right.key ? -1 : left.key > right.key ? 1 : 0))
+      .map(cloneSchedule)
+  }
+
   close(): void {}
 }
 
@@ -271,5 +326,12 @@ function cloneClaimedRun(run: StoredRun): ClaimedRun {
   return {
     ...cloneWorkflowRun(run),
     leaseId: run.leaseId,
+  }
+}
+
+function cloneSchedule(schedule: WorkflowSchedule): WorkflowSchedule {
+  return {
+    ...schedule,
+    input: clonePersistedValue(schedule.input, 'Schedule input'),
   }
 }

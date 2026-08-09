@@ -61,6 +61,7 @@ export type {
   PersistedValue,
   StorageAdapter,
   WorkflowRun,
+  WorkflowSchedule,
   StepResult,
   RunStatus,
   StepStatus,
