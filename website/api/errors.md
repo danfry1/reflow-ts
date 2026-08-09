@@ -34,6 +34,7 @@ if (error instanceof ReflowError) {
 | `WaitTimeoutError` | `WAIT_TIMEOUT` | A `waitForEvent` step's `timeoutMs` elapses before the event arrives | `eventName`, `timeoutMs` |
 | `RunCancelledError` | `RUN_CANCELLED` | A run is cancelled via `engine.cancel()` | `runId` |
 | `LeaseExpiredError` | `LEASE_EXPIRED` | A worker loses its lease on a run | `runId` |
+| `StorageError` | `STORAGE` | A storage backend operation failed; the driver's error is on `cause` | `operation`, `cause` |
 | `StepFailedError` | `STEP_FAILED` | A step exhausts its retries with no error of its own (run aborted first) | `stepName`, `attempts` |
 | `HookError` | `HOOK` | A lifecycle hook, stream consumer, or `onFailure` handler threw. Delivered to `onError`, never thrown into a run | `source`, `cause` |
 | `ThrownValueError` | `THROWN_VALUE` | User code threw a non-`Error` value (`throw 'boom'`) | `value`, `cause` |

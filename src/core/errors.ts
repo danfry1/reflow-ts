@@ -35,6 +35,7 @@ export type ReflowErrorCode =
   | 'STEP_FAILED'
   | 'BRANCH_FAILED'
   | 'HOOK'
+  | 'STORAGE'
   | 'THROWN_VALUE'
   | 'TEST_RUN_INCOMPLETE'
   | 'INTERNAL'
@@ -354,6 +355,41 @@ export class HookError extends ReflowError {
 }
 
 /**
+ * Wraps a failure raised by the storage backend.
+ *
+ * Storage drivers throw their own error types — `better-sqlite3`, `bun:sqlite`,
+ * and `node:sqlite` each report the same condition (a busy database, a failed
+ * write) with a different shape. Translating at the boundary means callers can
+ * catch one type instead of branching per driver, while the driver's own error
+ * stays reachable on `cause` for anything driver-specific.
+ */
+export class StorageError extends ReflowError {
+  constructor(
+    /** The `StorageAdapter` method that failed, e.g. `'createRun'`. */
+    public readonly operation: string,
+    options?: { cause?: unknown },
+  ) {
+    // The driver's own message is folded into this one rather than left only on
+    // `cause`. A failed step persists its error as a plain string, and a cause
+    // chain does not survive that — without this the stored record would say a
+    // storage call failed but not why.
+    const detail = describeCause(options?.cause)
+    super(
+      'STORAGE',
+      detail === null
+        ? `Storage operation "${operation}" failed`
+        : `Storage operation "${operation}" failed: ${detail}`,
+      options,
+    )
+    this.name = 'StorageError'
+  }
+
+  protected override context() {
+    return { operation: this.operation }
+  }
+}
+
+/**
  * Thrown by the `testEngine` helper when a run does not reach a terminal state
  * within its single `tick()`.
  *
@@ -441,6 +477,17 @@ export class LeaseExpiredError extends RunControlError {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** The human-readable part of a wrapped cause, or null when there is nothing useful to add. */
+function describeCause(cause: unknown): string | null {
+  if (cause instanceof Error) {
+    return cause.message.length > 0 ? cause.message : null
+  }
+  if (cause === undefined || cause === null) {
+    return null
+  }
+  return String(cause)
+}
 
 /**
  * Normalize an unknown throwable into an `Error`.

@@ -14,6 +14,7 @@ export {
   WaitTimeoutError,
   StepFailedError,
   HookError,
+  StorageError,
   ThrownValueError,
   TestRunIncompleteError,
   InternalError,

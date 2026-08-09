@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import { canonicalizePersistedValue, persistedValuesEqual } from '../storage/codec'
+import { translateStorageErrors } from '../storage/translate-errors'
 import {
   createBoundedAsyncIterator,
   type AbortableSubscriber,
@@ -189,7 +190,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   config: EngineConfig<TWorkflows>,
 ): Engine<WorkflowInputMap<TWorkflows>> {
   const {
-    storage,
+    storage: rawStorage,
     workflows,
     hooks,
     concurrency = 1,
@@ -212,6 +213,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   if (heartbeatIntervalMs >= runLeaseDurationMs) {
     throw new ConfigError('Engine heartbeatIntervalMs must be smaller than runLeaseDurationMs')
   }
+
+  // Driver failures become StorageError at the boundary, so nothing downstream
+  // has to know which SQLite binding raised them.
+  const storage = translateStorageErrors(rawStorage)
 
   const registry = new Map<string, AnyWorkflow>()
   const schedules = new Map<string, ReturnType<typeof setInterval>>()

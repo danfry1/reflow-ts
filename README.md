@@ -730,6 +730,7 @@ hooks: {
 | `LeaseExpiredError` | `LEASE_EXPIRED` | Worker lost its lease on a run | `runId` |
 | `WaitTimeoutError` | `WAIT_TIMEOUT` | A `waitForEvent` step's `timeoutMs` elapsed | `eventName`, `timeoutMs` |
 | `ParallelCompleteError` | `PARALLEL_COMPLETE` | `complete()` called inside a parallel branch | `stepName` |
+| `StorageError` | `STORAGE` | A storage backend operation failed; driver error on `cause` | `operation`, `cause` |
 | `StepFailedError` | `STEP_FAILED` | A step exhausted its retries with no error of its own | `stepName`, `attempts` |
 | `HookError` | `HOOK` | A hook, stream consumer, or `onFailure` threw. Delivered to `onError`, never into a run | `source`, `cause` |
 | `ThrownValueError` | `THROWN_VALUE` | User code threw a non-`Error` value | `value`, `cause` |
