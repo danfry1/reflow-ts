@@ -250,4 +250,37 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
   })
 
 
+  it('listRuns returns runs most-recent-first, filtered and paginated', async () => {
+    await storage.createRun(makeRun({ id: 'a', workflow: 'alpha', status: 'completed', createdAt: 1 }))
+    await storage.createRun(makeRun({ id: 'b', workflow: 'alpha', status: 'failed', createdAt: 2 }))
+    await storage.createRun(makeRun({ id: 'c', workflow: 'beta', status: 'failed', createdAt: 3 }))
+
+    expect((await storage.listRuns()).map((r) => r.id)).toEqual(['c', 'b', 'a'])
+    expect((await storage.listRuns({ status: 'failed' })).map((r) => r.id)).toEqual(['c', 'b'])
+    expect((await storage.listRuns({ workflow: 'alpha' })).map((r) => r.id)).toEqual(['b', 'a'])
+
+    const page1 = await storage.listRuns({ limit: 1 })
+    expect(page1.map((r) => r.id)).toEqual(['c'])
+    const page2 = await storage.listRuns({ limit: 1, before: at(page1, 0).createdAt })
+    expect(page2.map((r) => r.id)).toEqual(['b'])
+  })
+
+  it('requeueRun resets a failed run and drops failed steps', async () => {
+    await storage.createRun(makeRun({ id: 'run_1', status: 'failed' }))
+    await storage.saveStepResult(makeStep({ id: 's1', name: 'ok', status: 'completed' }))
+    await storage.saveStepResult(makeStep({ id: 's2', name: 'boom', status: 'failed', output: null, error: 'x' }))
+
+    expect(await storage.requeueRun('run_1')).toBe(true)
+    expect(expectPresent(await storage.getRun('run_1')).status).toBe('pending')
+    expect((await storage.getStepResults('run_1')).map((s) => s.name)).toEqual(['ok'])
+
+    const claimed = expectPresent(await storage.claimNextRun(['test']))
+    expect(claimed.id).toBe('run_1')
+  })
+
+  it('requeueRun returns false for non-resumable runs', async () => {
+    await storage.createRun(makeRun({ id: 'p', status: 'pending' }))
+    expect(await storage.requeueRun('p')).toBe(false)
+    expect(await storage.requeueRun('nope')).toBe(false)
+  })
 })

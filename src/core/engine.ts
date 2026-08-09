@@ -27,6 +27,7 @@ import type { ExecutionContext, RunSignals, StepRecord, UnitOutcome } from './ex
 import { waitForEventExecutor } from './execution/wait-for-event'
 import type {
   ClaimedRun,
+  ListRunsFilter,
   PersistedValue,
   RunInfo,
   StepResult,
@@ -110,6 +111,17 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
   ): Promise<WorkflowRun>
   /** Get a run and its step results, or null if not found. */
   getRunStatus(runId: string): Promise<RunInfo | null>
+  /**
+   * List runs for inspection or dead-letter visibility, most recent first.
+   * Filter by `status` and/or `workflow`, page with `limit` and `before`.
+   */
+  listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
+  /**
+   * Re-queue a `failed` or `cancelled` run so the engine picks it up again,
+   * resuming from the failed step (completed steps are skipped on replay).
+   * Returns true if the run was resumable, false otherwise.
+   */
+  resume(runId: string): Promise<boolean>
   /** Cancel a pending or running workflow. Returns true if cancelled. */
   cancel(runId: string): Promise<boolean>
   /**
@@ -289,6 +301,30 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
     const steps = await storage.getStepResults(runId)
     return { run, steps }
+  }
+
+  async function listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]> {
+    if (
+      filter?.limit !== undefined &&
+      (!Number.isInteger(filter.limit) || filter.limit < 1)
+    ) {
+      throw new ConfigError('listRuns limit must be a positive integer')
+    }
+    return storage.listRuns(filter)
+  }
+
+  async function resume(runId: string): Promise<boolean> {
+    const run = await storage.getRun(runId)
+    if (!run) {
+      return false
+    }
+    // Re-queuing a run whose workflow this engine doesn't know would leave it
+    // pending but unclaimable (a zombie), since claimNextRun only asks for
+    // registered workflows. Fail loudly instead.
+    if (!registry.has(run.workflow)) {
+      throw new WorkflowNotFoundError(run.workflow)
+    }
+    return storage.requeueRun(runId)
   }
 
   /**
@@ -864,6 +900,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   return {
     enqueue,
     getRunStatus,
+    listRuns,
+    resume,
     cancel,
     sendEvent,
     schedule,

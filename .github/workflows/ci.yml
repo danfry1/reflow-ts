@@ -53,6 +53,8 @@ jobs:
             deliverEvent: async () => true,
             takeEvent: async () => null,
             getRun: async () => null,
+            listRuns: async () => [],
+            requeueRun: async () => false,
             getStepResults: async () => [],
             saveStepResult: async () => true,
             updateRunStatus: async () => true,

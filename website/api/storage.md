@@ -62,6 +62,8 @@ interface StorageAdapter {
   deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
   takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
   getRun(runId: string): Promise<WorkflowRun | null>
+  listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
+  requeueRun(runId: string): Promise<boolean>
   getStepResults(runId: string): Promise<StepResult[]>
   saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
   updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
@@ -85,6 +87,8 @@ interface StorageAdapter {
 | `deliverEvent` | Durably buffer an event and wake the run if it is `waiting`. Return `false` if the run does not exist. Backs `engine.sendEvent()`. |
 | `takeEvent` | Atomically consume the oldest buffered event for `(runId, eventName)`, or return `null`. |
 | `getRun` / `getStepResults` | Read a run / its step results. |
+| `listRuns` | List runs most-recent-first, filtered by `status` / `workflow` and paged with `limit` / `before`. Backs `engine.listRuns()`. |
+| `requeueRun` | Reset a `failed` / `cancelled` run to `pending` and discard its `failed` step results. Return `false` if the run is not in a resumable state. Backs `engine.resume()`. |
 | `saveStepResult` | Persist a step result. With a `leaseId`, must fail (return `false`) if the lease is no longer held. |
 | `updateRunStatus` | Update status without a lease check (used for cancellation). |
 | `updateClaimedRunStatus` | Update status only if the caller still holds the lease. |

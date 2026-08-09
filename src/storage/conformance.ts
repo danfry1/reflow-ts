@@ -239,6 +239,74 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
 
+  {
+    name: 'listRuns returns runs newest first',
+    async run(storage) {
+      await storage.createRun(makeRun({ id: 'a', createdAt: 1 }))
+      await storage.createRun(makeRun({ id: 'b', createdAt: 2 }))
+      await storage.createRun(makeRun({ id: 'c', createdAt: 3 }))
+
+      assertEqual(
+        (await storage.listRuns()).map((run) => run.id),
+        ['c', 'b', 'a'],
+        'reverse-chronological order',
+      )
+    },
+  },
+  {
+    name: 'listRuns filters by status and workflow',
+    async run(storage) {
+      await storage.createRun(makeRun({ id: 'a', status: 'failed' }))
+      await storage.createRun(makeRun({ id: 'b', workflow: 'other' }))
+
+      assertEqual((await storage.listRuns({ status: 'failed' })).map((r) => r.id), ['a'], 'by status')
+      assertEqual((await storage.listRuns({ workflow: 'other' })).map((r) => r.id), ['b'], 'by workflow')
+    },
+  },
+  {
+    name: 'listRuns paginates exactly when runs share a createdAt',
+    async run(storage) {
+      // The tie-break is the point: ordering by createdAt alone would make a
+      // cursor either skip or repeat rows that landed in the same millisecond.
+      for (const id of ['a', 'b', 'c']) {
+        await storage.createRun(makeRun({ id, createdAt: 1 }))
+      }
+
+      const first = await storage.listRuns({ limit: 2 })
+      assertEqual(first.length, 2, 'first page size')
+
+      const cursor = first[first.length - 1]
+      assert(cursor, 'expected a cursor row')
+      const second = await storage.listRuns({ limit: 2, before: cursor.createdAt, beforeId: cursor.id })
+
+      const seen = [...first, ...second].map((run) => run.id)
+      assertEqual(new Set(seen).size, 3, 'every run seen exactly once across pages')
+    },
+  },
+  {
+    name: 'requeueRun resets a failed run and discards only its failed steps',
+    async run(storage) {
+      await storage.createRun(makeRun({ status: 'failed' }))
+      await storage.saveStepResult(makeStep({ id: 's1', name: 'a', status: 'completed' }))
+      await storage.saveStepResult(makeStep({ id: 's2', name: 'b', status: 'failed', output: null }))
+
+      assert(await storage.requeueRun('run_1'), 'a failed run must be requeueable')
+      assertEqual((await storage.getRun('run_1'))?.status, 'pending', 'reset to pending')
+
+      const steps = await storage.getStepResults('run_1')
+      assertEqual(steps.map((step) => step.name), ['a'], 'completed steps kept, failed discarded')
+    },
+  },
+  {
+    name: 'requeueRun refuses a run that is not in a resumable state',
+    async run(storage) {
+      await storage.createRun(makeRun({ status: 'running' }))
+
+      assert(!(await storage.requeueRun('run_1')), 'a running run is not resumable')
+      assert(!(await storage.requeueRun('missing')), 'a missing run is not resumable')
+    },
+  },
+
   // -------------------------------------------------------------------------
   // Step results
   // -------------------------------------------------------------------------

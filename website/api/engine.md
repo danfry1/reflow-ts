@@ -71,3 +71,38 @@ const info = await engine.getRunStatus(run.id)
 info?.run.status // 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
 info?.steps      // StepResult[]
 ```
+
+## `engine.listRuns(filter?)`
+
+Lists runs ordered by `createdAt` descending, then `id` descending (a total, stable order even when runs share a `createdAt`). For inspection or dead-letter visibility. All filter fields are optional:
+
+```typescript
+await engine.listRuns({
+  status: 'failed',   // only this RunStatus
+  workflow: 'order',  // only this workflow
+  limit: 50,          // max rows (default 100; must be a positive integer)
+  before: cursor,     // keyset cursor (createdAt), paired with beforeId
+  beforeId: cursorId, // keyset cursor tie-break (id)
+})
+```
+
+Paginate with a keyset cursor — pass the last row's `createdAt` **and** `id`. Using both is exact even when timestamps collide; `before` alone is a coarse "created before T" filter that can drop runs tied on that millisecond:
+
+```typescript
+const page1 = await engine.listRuns({ limit: 50 })
+const last = page1.at(-1)
+const page2 = last
+  ? await engine.listRuns({ limit: 50, before: last.createdAt, beforeId: last.id })
+  : []
+```
+
+## `engine.resume(runId)`
+
+Re-queues a `failed` or `cancelled` run so the engine picks it up again. Completed steps are preserved and skipped on replay, so execution resumes at the step that failed; the failed step's result is discarded and re-run. Returns `true` if the run was resumable, `false` if it does not exist or is in any other state (`pending` / `running` / `completed`).
+
+```typescript
+const failed = await engine.listRuns({ status: 'failed' })
+for (const run of failed) {
+  await engine.resume(run.id)
+}
+```

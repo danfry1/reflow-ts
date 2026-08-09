@@ -859,6 +859,8 @@ describe('Parallel engine execution', () => {
         takeEvent: (runId, eventName) => delegate.takeEvent(runId, eventName),
         getRun: (runId) => delegate.getRun(runId),
         getStepResults: (runId) => delegate.getStepResults(runId),
+        listRuns: (filter) => delegate.listRuns(filter),
+        requeueRun: (runId) => delegate.requeueRun(runId),
         saveStepResult: async (result, leaseId) => {
           saveCalls++
           // Drop the first parallel-branch save to simulate lease loss mid-persistence.
@@ -918,6 +920,8 @@ describe('Parallel engine execution', () => {
         takeEvent: (runId, eventName) => delegate.takeEvent(runId, eventName),
         getRun: (runId) => delegate.getRun(runId),
         getStepResults: (runId) => delegate.getStepResults(runId),
+        listRuns: (filter) => delegate.listRuns(filter),
+        requeueRun: (runId) => delegate.requeueRun(runId),
         saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
         updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
         updateClaimedRunStatus: (runId, leaseId, status) =>

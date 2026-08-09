@@ -48,6 +48,8 @@ export function delegatingAdapter(
     deliverEvent: (runId, name, payload) => delegate.deliverEvent(runId, name, payload),
     takeEvent: (runId, name) => delegate.takeEvent(runId, name),
     getRun: (runId) => delegate.getRun(runId),
+    listRuns: (filter) => delegate.listRuns(filter),
+    requeueRun: (runId) => delegate.requeueRun(runId),
     getStepResults: (runId) => delegate.getStepResults(runId),
     saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
     updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),

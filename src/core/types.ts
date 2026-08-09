@@ -106,6 +106,28 @@ export interface CreateRunResult {
 }
 
 /**
+ * Filter for {@link StorageAdapter.listRuns} and `engine.listRuns()`.
+ *
+ * Results are ordered by `createdAt` descending, then `id` descending, so the
+ * order is total and stable even when runs share a `createdAt`. For exact
+ * keyset pagination pass both `before` and `beforeId` from the last row of the
+ * previous page; passing `before` alone is a coarse "created before T" filter
+ * that can drop runs tied on that millisecond.
+ */
+export interface ListRunsFilter {
+  /** Only return runs with this status. */
+  status?: RunStatus
+  /** Only return runs of this workflow. */
+  workflow?: string
+  /** Maximum number of runs to return (default: 100). */
+  limit?: number
+  /** Keyset cursor: return runs ordered before this `createdAt` (paired with `beforeId` for the tie-break). */
+  before?: number
+  /** Keyset cursor tie-break: with `before`, return runs strictly after this `(createdAt, id)` position in the sort order. */
+  beforeId?: string
+}
+
+/**
  * Interface for durable workflow storage backends.
  *
  * Implement this to use a custom database. Reflow ships with `SQLiteStorage` (for both Bun and Node.js) and `MemoryStorage`.
@@ -155,6 +177,15 @@ export interface StorageAdapter {
   takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
   /** Fetch a run by ID, or null if not found. */
   getRun(runId: string): Promise<WorkflowRun | null>
+  /** List runs in reverse-chronological order (most recent first), optionally filtered. */
+  listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
+  /**
+   * Reset a `failed` or `cancelled` run to `pending` so it can be re-executed,
+   * discarding any `failed` step results so the failed step runs again.
+   * Completed steps are preserved and skipped on replay. Returns false if the
+   * run does not exist or is not in a resumable state.
+   */
+  requeueRun(runId: string): Promise<boolean>
   /** Fetch all step results for a run, ordered by creation time. */
   getStepResults(runId: string): Promise<StepResult[]>
   /** Persist a step result. If `leaseId` is provided, fails when the lease is no longer held. */

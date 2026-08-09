@@ -56,6 +56,7 @@ export type {
 export type {
   ClaimedRun,
   CreateRunResult,
+  ListRunsFilter,
   PersistedPrimitive,
   PersistedObject,
   PersistedValue,
