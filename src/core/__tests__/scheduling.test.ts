@@ -298,6 +298,27 @@ describe('durable schedules', () => {
     expect(created.map((run) => run.workflow)).toStrictEqual(['report'])
   })
 
+  it('keeps executing runs when the scheduler itself is failing', async () => {
+    // Schedule processing is the first await in every tick. It is an auxiliary
+    // responsibility, so a storage failure there must not stop the engine
+    // claiming and running work, which is its primary job.
+    const onError = vi.fn()
+    const delegate = new MemoryStorage()
+    await delegate.initialize()
+
+    const storage = delegatingAdapter(delegate, {
+      claimDueSchedule: () => Promise.reject(new Error('schedule table locked')),
+    })
+
+    const engine = createEngine({ storage, workflows: [cleanup], hooks: { onError } })
+    const run = await engine.enqueue('cleanup', { olderThanDays: 30 })
+
+    await engine.tick()
+
+    expect((await engine.getRunStatus(run.id))?.run.status).toBe('completed')
+    expect(onError).toHaveBeenCalled()
+  })
+
   it('rejects a non-positive interval', async () => {
     const engine = createEngine({ storage: new MemoryStorage(), workflows: [cleanup] })
 
@@ -342,6 +363,14 @@ describe('nextOccurrence', () => {
   it('skips a long outage in one step rather than stepping through it', () => {
     // A year of missed one-second firings must not cost a loop of 31 million.
     expect(nextOccurrence(0, 1_000, 365 * 24 * 60 * 60 * 1_000)).toBe(31_536_001_000)
+  })
+
+  it('rejects an interval that would produce NaN rather than writing it', () => {
+    // A NaN next_run_at compares false against every clock, so the schedule
+    // would stop firing permanently and silently.
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => nextOccurrence(0, bad, 1_000)).toThrow(ConfigError)
+    }
   })
 
   it('always returns a time strictly after now', () => {
