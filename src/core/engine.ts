@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import { canonicalizePersistedValue, persistedValuesEqual } from '../storage/codec'
 import { translateStorageErrors } from '../storage/translate-errors'
-import { nextOccurrence } from './schedule-timing'
 import {
   createBoundedAsyncIterator,
   type AbortableSubscriber,

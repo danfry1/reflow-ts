@@ -4,7 +4,6 @@ import type {
   StepStatus,
   WorkflowRun,
   StepResult,
-  StorageAdapter,
   RetryConfig,
 } from '../types'
 

@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow, createEngine, StorageError, LeaseExpiredError } from '../../index'
-import type { StorageAdapter } from '../../index'
 import { MemoryStorage } from '../memory'
 import { translateStorageErrors } from '../translate-errors'
 import { delegatingAdapter } from '../../__tests__/helpers'

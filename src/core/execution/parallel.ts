@@ -3,7 +3,7 @@ import type { PersistedValue } from '../types'
 import type { StepDefinition } from '../workflow'
 import { toError } from './signals'
 import { runStepHandler } from './step'
-import type { ExecutionContext, UnitExecutor, UnitOutcome } from './types'
+import type { UnitExecutor, UnitOutcome } from './types'
 
 /**
  * Executes a `.parallel()` group.
