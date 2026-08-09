@@ -37,6 +37,10 @@
     "./test": {
       "types": "./dist/test/index.d.mts",
       "import": "./dist/test/index.mjs"
+    },
+    "./conformance": {
+      "types": "./dist/conformance.d.mts",
+      "import": "./dist/conformance.mjs"
     }
   },
   "publishConfig": {

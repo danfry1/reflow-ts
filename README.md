@@ -893,6 +893,10 @@ Returns `{ run, steps }` with the run's current status and all step results, or 
 
 Creates a test engine with in-memory storage. Accepts `{ workflows }` and returns a `run()` method for synchronous workflow execution.
 
+### `storageConformanceCases` — `reflow-ts/conformance`
+
+The behavioural contract the built-in adapters are held to, as a list of `{ name, run(storage) }` cases. Run them against a custom `StorageAdapter` to validate it. Each case takes a freshly initialized, empty adapter and throws on failure, with no test-framework dependency.
+
 ### `SQLiteStorage(path)` — Bun
 
 SQLite storage adapter for Bun runtime. Uses the built-in `bun:sqlite` module — no native dependencies. WAL mode and transactional claiming.

@@ -57,19 +57,31 @@ Implement the [`StorageAdapter`](/api/storage) interface to back Reflow with any
 - `claimNextRun(workflowNames, staleBefore?)` must **atomically** claim the next pending or stale run, returning a unique `leaseId`. This is what prevents two workers from running the same run.
 - `saveStepResult` / `updateClaimedRunStatus` take a `leaseId` and must **no-op when the lease no longer matches**, so a worker that lost its lease can't clobber a run another worker has taken over.
 
+- `claimDueSchedule(workflowNames, now)` must claim a due [schedule](/guide/scheduling) **and advance its next occurrence in the same transaction**, so one occurrence cannot fire on two workers.
+
+See the [Storage API reference](/api/storage) for the full interface and each method's contract.
+
+### Verifying your adapter
+
+Rather than inferring the contract from prose, run it. The suite the built-in adapters are held to ships with the package:
+
 ```typescript
-interface StorageAdapter {
-  initialize(): Promise<void>
-  createRun(run: WorkflowRun): Promise<CreateRunResult>
-  claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
-  heartbeatRun(runId: string, leaseId: string): Promise<boolean>
-  getRun(runId: string): Promise<WorkflowRun | null>
-  getStepResults(runId: string): Promise<StepResult[]>
-  saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
-  updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
-  updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean>
-  close(): void
+import { storageConformanceCases } from 'reflow-ts/conformance'
+import { MyStorage } from './my-storage'
+
+for (const testCase of storageConformanceCases) {
+  it(testCase.name, async () => {
+    const storage = new MyStorage(/* ... */)
+    await storage.initialize()
+    try {
+      await testCase.run(storage)
+    } finally {
+      storage.close()
+    }
+  })
 }
 ```
 
-See the [Storage API reference](/api/storage) for each method's contract.
+Each case takes a freshly initialized, empty adapter and throws on failure, so it works with any test runner — or none. The cases deliberately avoid any test-framework import, which is also how the Bun adapter is covered: `bun:sqlite` cannot load under the Node-based test run, so the same list is driven against it by a Bun script.
+
+Passing every case does not prove an adapter is correct under real concurrency — the atomicity requirements above need a database that actually enforces them — but failing one is a definite bug.
