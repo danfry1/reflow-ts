@@ -1,8 +1,8 @@
 /** Lifecycle state of a workflow run. */
-export type RunStatus = 'pending' | 'running' | 'sleeping' | 'completed' | 'failed' | 'cancelled'
+export type RunStatus = 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
 
 /** Lifecycle state of a single step within a run. */
-export type StepStatus = 'pending' | 'running' | 'completed' | 'completed-early' | 'sleeping' | 'failed'
+export type StepStatus = 'pending' | 'running' | 'completed' | 'completed-early' | 'sleeping' | 'waiting' | 'failed'
 
 /** Primitive values that can be persisted to storage. */
 export type PersistedPrimitive = string | number | boolean | null | undefined | Date
@@ -83,8 +83,8 @@ export interface StorageAdapter {
   createRun(run: WorkflowRun): Promise<CreateRunResult>
   /**
    * Atomically claim the next runnable run for execution: a `pending` run, a
-   * stale `running` run (older than `staleBefore`), or a `sleeping` run whose
-   * wake time has passed.
+   * stale `running` run (older than `staleBefore`), or a `sleeping`/`waiting`
+   * run whose wake time has passed.
    */
   claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
   /** Renew the lease on a running run. Returns false if the lease was lost. */
@@ -95,6 +95,30 @@ export interface StorageAdapter {
    * the caller still holds the lease; returns false otherwise.
    */
   sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean>
+  /**
+   * Suspend a running run until the named event arrives (or `wakeAt`, if
+   * non-null, for a timeout), releasing its lease. Like {@link StorageAdapter.sleepRun}
+   * but the run is `waiting` and may also be woken early by {@link StorageAdapter.deliverEvent}.
+   *
+   * Must, in the same transaction, check for an already-buffered event matching
+   * `eventName`: if one exists the run is left `pending` (reclaimable) rather than
+   * `waiting`, closing the race where an event is delivered between the caller's
+   * {@link StorageAdapter.takeEvent} check and this call. Only succeeds if the
+   * caller still holds the lease.
+   */
+  waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
+  /**
+   * Durably record an event for a run and wake it if it is currently `waiting`.
+   * The event is buffered (it may arrive before the run reaches the wait) and
+   * consumed later by {@link StorageAdapter.takeEvent}. Returns false if the run
+   * does not exist.
+   */
+  deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
+  /**
+   * Atomically consume the oldest buffered event matching `(runId, eventName)`,
+   * removing it. Returns the payload wrapper, or null when no such event exists.
+   */
+  takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
   /** Fetch a run by ID, or null if not found. */
   getRun(runId: string): Promise<WorkflowRun | null>
   /** Fetch all step results for a run, ordered by creation time. */

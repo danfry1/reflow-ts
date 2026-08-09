@@ -18,6 +18,7 @@ import { ReflowError, WorkflowNotFoundError, ValidationError, StepTimeoutError }
 | `IdempotencyConflictError` | Same idempotency key with different input | `workflowName`, `idempotencyKey` |
 | `SerializationError` | A step output / input contains non-persistable data | `path` |
 | `StepTimeoutError` | A step attempt exceeds `timeoutMs` | `timeoutMs` |
+| `WaitTimeoutError` | A `waitForEvent` step's `timeoutMs` elapses before the event arrives | `eventName`, `timeoutMs` |
 | `RunCancelledError` | A run is cancelled via `engine.cancel()` | `runId` |
 | `LeaseExpiredError` | A worker loses its lease on a run | `runId` |
 

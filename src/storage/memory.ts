@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   ClaimedRun,
   CreateRunResult,
+  PersistedValue,
   RunStatus,
   StepResult,
   StorageAdapter,
@@ -14,9 +15,16 @@ interface StoredRun extends WorkflowRun {
   wakeAt: number | null
 }
 
+interface StoredEvent {
+  eventName: string
+  payload: PersistedValue
+  createdAt: number
+}
+
 export class MemoryStorage implements StorageAdapter {
   private runs: Map<string, StoredRun> = new Map()
   private steps: Map<string, StepResult[]> = new Map()
+  private events: Map<string, StoredEvent[]> = new Map()
 
   async initialize(): Promise<void> {}
 
@@ -65,7 +73,11 @@ export class MemoryStorage implements StorageAdapter {
           return true
         }
 
-        if (run.status === 'sleeping' && run.wakeAt !== null && run.wakeAt <= now) {
+        if (
+          (run.status === 'sleeping' || run.status === 'waiting')
+          && run.wakeAt !== null
+          && run.wakeAt <= now
+        ) {
           return true
         }
 
@@ -117,6 +129,54 @@ export class MemoryStorage implements StorageAdapter {
     run.wakeAt = wakeAt
     run.updatedAt = Date.now()
     return true
+  }
+
+  async waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean> {
+    const run = this.runs.get(runId)
+    if (!run || run.status !== 'running' || run.leaseId !== leaseId) {
+      return false
+    }
+
+    // If a matching event is already buffered, stay reclaimable instead of
+    // waiting — closes the deliver-during-suspend race.
+    const buffered = (this.events.get(runId) ?? []).some((event) => event.eventName === eventName)
+    run.status = buffered ? 'pending' : 'waiting'
+    run.leaseId = null
+    run.wakeAt = buffered ? null : wakeAt
+    run.updatedAt = Date.now()
+    return true
+  }
+
+  async deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean> {
+    const run = this.runs.get(runId)
+    if (!run) {
+      return false
+    }
+
+    const list = this.events.get(runId) ?? []
+    list.push({ eventName, payload: clonePersistedValue(payload, 'Event payload'), createdAt: Date.now() })
+    this.events.set(runId, list)
+
+    if (run.status === 'waiting') {
+      run.status = 'pending'
+      run.leaseId = null
+      run.wakeAt = null
+      run.updatedAt = Date.now()
+    }
+    return true
+  }
+
+  async takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null> {
+    const list = this.events.get(runId)
+    if (!list) {
+      return null
+    }
+    const index = list.findIndex((event) => event.eventName === eventName)
+    if (index < 0) {
+      return null
+    }
+    const [taken] = list.splice(index, 1)
+    return { payload: clonePersistedValue(taken.payload, 'Event payload') }
   }
 
   async getRun(runId: string): Promise<WorkflowRun | null> {

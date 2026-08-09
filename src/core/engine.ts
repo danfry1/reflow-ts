@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { StandardSchemaV1 } from '@standard-schema/spec'
 import { clonePersistedValue, persistedValuesEqual } from '../storage/codec'
 import {
   createBoundedAsyncIterator,
@@ -14,6 +15,8 @@ import {
   RunCancelledError,
   RunControlError,
   StepTimeoutError,
+  ValidationError,
+  WaitTimeoutError,
   WorkflowNotFoundError,
 } from './errors'
 import type {
@@ -125,6 +128,17 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
   getRunStatus(runId: string): Promise<RunInfo | null>
   /** Cancel a pending or running workflow. Returns true if cancelled. */
   cancel(runId: string): Promise<boolean>
+  /**
+   * Deliver an external event to a run that is (or will be) waiting on
+   * `waitForEvent(eventName)`. The payload — validated against that wait's
+   * schema, if any — becomes the wait's result and the next step's `prev`.
+   * Delivery is durable and order-independent: an event sent before the run
+   * reaches the wait is buffered and consumed when it gets there. Returns false
+   * if the run does not exist or has already finished (completed / failed /
+   * cancelled); throws if the workflow has no such event step or the payload
+   * fails schema validation.
+   */
+  sendEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
   /** Enqueue a workflow on a recurring interval. Returns a schedule ID. */
   schedule<TName extends string & keyof TWorkflowMap>(
     workflowName: TName,
@@ -622,6 +636,99 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
             throw new LeaseExpiredError(run.id)
           }
           return
+        } else if (unit.kind === 'waitForEvent') {
+          if (activeRun.runAbortController.signal.aborted) {
+            const latestRun = await storage.getRun(run.id)
+            if (!latestRun || latestRun.status === 'cancelled') {
+              return
+            }
+          }
+
+          const existing = completedMap.get(unit.name)
+          if (existing?.status === 'completed') {
+            prev = existing.output
+            stepsAccumulator[unit.name] = structuredClone(existing.output)
+            continue
+          }
+
+          const waiting = existing?.status === 'waiting'
+          const stepId = existing?.id ?? randomUUID()
+          const createdAt = existing?.createdAt ?? Date.now()
+
+          // Consume a buffered event if one has been delivered. The payload was
+          // already validated against the schema in sendEvent, so it is used
+          // as-is here (re-validating could fail a non-idempotent transform).
+          const delivered = await storage.takeEvent(run.id, unit.name)
+          if (delivered) {
+            const payload = delivered.payload
+            if (!waiting) {
+              await emit({ type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: unit.name }, observerSignal)
+            }
+            const now = Date.now()
+            const saved = await storage.saveStepResult({
+              id: stepId, runId: run.id, name: unit.name, status: 'completed',
+              output: payload, error: null, attempts: 0, createdAt, updatedAt: now,
+            }, run.leaseId)
+            if (!saved) {
+              // Lost the lease after consuming the event — put it back so the
+              // engine that reclaims the run can consume it, then bail.
+              await storage.deliverEvent(run.id, unit.name, payload)
+              throw new LeaseExpiredError(run.id)
+            }
+            await emit({
+              type: 'stepComplete', runId: run.id, workflow: run.workflow, stepName: unit.name, output: payload, attempts: 0,
+            }, observerSignal)
+            prev = payload
+            stepsAccumulator[unit.name] = structuredClone(payload)
+            continue
+          }
+
+          // No event yet — compute the (stable) timeout deadline, if any.
+          const deadline = unit.timeoutMs === undefined
+            ? null
+            : (waiting && typeof existing?.output === 'number' ? existing.output : Date.now() + unit.timeoutMs)
+
+          // Timed out while waiting and still no event: fail the run here.
+          if (waiting && deadline !== null && Date.now() >= deadline) {
+            const error = new WaitTimeoutError(unit.name, unit.timeoutMs as number)
+            const now = Date.now()
+            const saved = await storage.saveStepResult({
+              id: stepId, runId: run.id, name: unit.name, status: 'failed',
+              output: null, error: error.message, attempts: 0, createdAt, updatedAt: now,
+            }, run.leaseId)
+            if (!saved) {
+              throw new LeaseExpiredError(run.id)
+            }
+            const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
+            if (!failed) {
+              return
+            }
+            await emit({ type: 'runFailed', runId: run.id, workflow: run.workflow, stepName: unit.name, error }, observerSignal)
+            if (wf.failureHandler) {
+              try {
+                await wf.failureHandler({ error, stepName: unit.name, input: run.input })
+              } catch { /* onFailure must not affect engine state */ }
+            }
+            return
+          }
+
+          // Suspend until the event arrives (or the deadline, if set).
+          if (!waiting) {
+            await emit({ type: 'stepStart', runId: run.id, workflow: run.workflow, stepName: unit.name }, observerSignal)
+          }
+          const now = Date.now()
+          const saved = await storage.saveStepResult({
+            id: stepId, runId: run.id, name: unit.name, status: 'waiting',
+            output: deadline, error: null, attempts: 0, createdAt, updatedAt: now,
+          }, run.leaseId)
+          if (!saved) {
+            throw new LeaseExpiredError(run.id)
+          }
+          const waited = await storage.waitRun(run.id, run.leaseId, unit.name, deadline)
+          if (!waited) {
+            throw new LeaseExpiredError(run.id)
+          }
+          return
         } else {
           const result = await executeParallelGroup(run, activeRun, unit.branches, prev, stepsAccumulator, completedMap)
           if (result.kind === 'skipped-cancelled') {
@@ -975,6 +1082,27 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     return cancelled
   }
 
+  async function sendEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean> {
+    const run = await storage.getRun(runId)
+    if (!run) {
+      return false
+    }
+    // Don't buffer events for a run that can never consume them (it would leak
+    // and mislead the caller into thinking delivery was meaningful).
+    if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
+      return false
+    }
+
+    const wf = registry.get(run.workflow)
+    const unit = wf?.executionUnits.find((u) => u.kind === 'waitForEvent' && u.name === eventName)
+    if (!unit || unit.kind !== 'waitForEvent') {
+      throw new ConfigError(`Workflow "${run.workflow}" has no waitForEvent step named "${eventName}"`)
+    }
+
+    const validated = validateEventPayload(eventName, unit.schema, payload)
+    return storage.deliverEvent(runId, eventName, validated)
+  }
+
   function schedule(
     workflowName: string,
     input: PersistedValue,
@@ -1179,6 +1307,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     enqueue,
     getRunStatus,
     cancel,
+    sendEvent,
     schedule,
     unschedule,
     stream: createStream,
@@ -1186,6 +1315,26 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     start,
     stop,
   } as Engine<WorkflowInputMap<TWorkflows>>
+}
+
+/** Validate an event payload against the wait's schema (if any), returning the parsed value. */
+function validateEventPayload(
+  eventName: string,
+  schema: StandardSchemaV1<PersistedValue> | undefined,
+  payload: PersistedValue,
+): PersistedValue {
+  if (!schema) {
+    return payload
+  }
+  const result = schema['~standard'].validate(payload)
+  if (result instanceof Promise) {
+    throw new TypeError(`Async schema validation is not supported (event "${eventName}")`)
+  }
+  if (result.issues) {
+    const messages = result.issues.map((issue) => issue.message).join(', ')
+    throw new ValidationError(`Event "${eventName}" payload failed validation: ${messages}`, result.issues)
+  }
+  return result.value as PersistedValue
 }
 
 function cloneEngineEvent(event: EngineEvent): EngineEvent {

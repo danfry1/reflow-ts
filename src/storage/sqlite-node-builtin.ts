@@ -23,6 +23,7 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import type {
   ClaimedRun,
   CreateRunResult,
+  PersistedValue,
   RunStatus,
   StepResult,
   StorageAdapter,
@@ -94,6 +95,14 @@ export class SQLiteStorage implements StorageAdapter {
         created_at  INTEGER NOT NULL,
         updated_at  INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS workflow_events (
+        id          TEXT PRIMARY KEY,
+        run_id      TEXT NOT NULL,
+        event_name  TEXT NOT NULL,
+        payload     TEXT,
+        created_at  INTEGER NOT NULL
+      );
     `)
 
     // Migrate databases created before the wake_at column existed.
@@ -106,6 +115,7 @@ export class SQLiteStorage implements StorageAdapter {
       CREATE INDEX IF NOT EXISTS idx_runs_status ON workflow_runs(status, workflow);
       CREATE INDEX IF NOT EXISTS idx_runs_wake ON workflow_runs(status, wake_at);
       CREATE INDEX IF NOT EXISTS idx_steps_run_id ON workflow_steps(run_id);
+      CREATE INDEX IF NOT EXISTS idx_events_run_name ON workflow_events(run_id, event_name, created_at);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_workflow_idempotency
       ON workflow_runs(workflow, idempotency_key)
       WHERE idempotency_key IS NOT NULL;
@@ -188,7 +198,7 @@ export class SQLiteStorage implements StorageAdapter {
       const now = Date.now()
       const conditions = [
         `status = 'pending'`,
-        `(status = 'sleeping' AND wake_at IS NOT NULL AND wake_at <= ?)`,
+        `(status IN ('sleeping', 'waiting') AND wake_at IS NOT NULL AND wake_at <= ?)`,
       ]
       const clauseParams: number[] = [now]
       if (staleBefore !== undefined) {
@@ -259,6 +269,83 @@ export class SQLiteStorage implements StorageAdapter {
     )
 
     return changes > 0
+  }
+
+  async waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean> {
+    return this.transaction(() => {
+      const held = this.get<{ _: number }>(
+        `SELECT 1 AS _ FROM workflow_runs WHERE id = ? AND status = 'running' AND lease_id = ?`,
+        runId,
+        leaseId,
+      )
+      if (!held) {
+        return false
+      }
+
+      // If a matching event is already buffered, stay reclaimable instead of
+      // waiting — closes the deliver-during-suspend race.
+      const buffered = this.get<{ _: number }>(
+        `SELECT 1 AS _ FROM workflow_events WHERE run_id = ? AND event_name = ? LIMIT 1`,
+        runId,
+        eventName,
+      )
+
+      if (buffered) {
+        this.run(
+          `UPDATE workflow_runs SET status = 'pending', lease_id = NULL, wake_at = NULL, updated_at = ? WHERE id = ?`,
+          Date.now(),
+          runId,
+        )
+      } else {
+        this.run(
+          `UPDATE workflow_runs SET status = 'waiting', lease_id = NULL, wake_at = ?, updated_at = ? WHERE id = ?`,
+          wakeAt,
+          Date.now(),
+          runId,
+        )
+      }
+      return true
+    })
+  }
+
+  async deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean> {
+    return this.transaction(() => {
+      const exists = this.get<{ _: number }>(`SELECT 1 AS _ FROM workflow_runs WHERE id = ?`, runId)
+      if (!exists) {
+        return false
+      }
+
+      this.run(
+        `INSERT INTO workflow_events (id, run_id, event_name, payload, created_at) VALUES (?, ?, ?, ?, ?)`,
+        randomUUID(),
+        runId,
+        eventName,
+        serializePersistedValue(payload, 'Event payload'),
+        Date.now(),
+      )
+
+      this.run(
+        `UPDATE workflow_runs SET status = 'pending', lease_id = NULL, wake_at = NULL, updated_at = ? WHERE id = ? AND status = 'waiting'`,
+        Date.now(),
+        runId,
+      )
+      return true
+    })
+  }
+
+  async takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null> {
+    return this.transaction((): { payload: PersistedValue } | null => {
+      const row = this.get<{ id: string; payload: string | null }>(
+        `SELECT id, payload FROM workflow_events WHERE run_id = ? AND event_name = ? ORDER BY created_at ASC, rowid ASC LIMIT 1`,
+        runId,
+        eventName,
+      )
+      if (!row) {
+        return null
+      }
+      this.run(`DELETE FROM workflow_events WHERE id = ?`, row.id)
+      return { payload: row.payload === null ? null : deserializePersistedValue(row.payload) }
+    })
   }
 
   async getRun(runId: string): Promise<WorkflowRun | null> {

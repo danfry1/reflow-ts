@@ -11,6 +11,7 @@ export {
   IdempotencyConflictError,
   SerializationError,
   StepTimeoutError,
+  WaitTimeoutError,
   RunCancelledError,
   LeaseExpiredError,
 } from './core/errors'

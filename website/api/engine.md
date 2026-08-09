@@ -38,6 +38,16 @@ Invalid `bufferSize` (negative, or a non-integer that isn't `Infinity`) throws [
 
 Cancels a pending or running workflow. Returns `true` if cancelled, `false` if it already completed / failed / cancelled. Aborts the current step's `AbortSignal` immediately. See [Cancellation](/guide/cancellation).
 
+## `engine.sendEvent(runId, eventName, payload)`
+
+Delivers an external event to a run that is (or will be) waiting on [`waitForEvent(eventName)`](/api/workflow). The `payload` — validated against that wait's `schema`, if any — becomes the wait's result and the next step's `prev`.
+
+```typescript
+await engine.sendEvent(run.id, 'approved', { approver: 'alice' })
+```
+
+Delivery is durable and order-independent: an event sent before the run reaches the wait is buffered and consumed when it gets there. Returns `false` if the run does not exist or has already finished (completed / failed / cancelled); throws [`ConfigError`](/api/errors) if the workflow has no such event step, or [`ValidationError`](/api/errors) if the payload fails the wait's schema. See [Waiting for Events](/guide/wait-for-event).
+
 ## `engine.schedule(name, input, intervalMs)`
 
 Enqueues a run on a recurring interval. Returns a `scheduleId` string. Validates `name` and `input` immediately. See [Scheduled Workflows](/guide/scheduling).

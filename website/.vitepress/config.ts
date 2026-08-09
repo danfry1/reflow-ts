@@ -61,6 +61,7 @@ export default defineConfig({
             { text: 'Parallel Steps', link: '/guide/parallel' },
             { text: 'Early Completion', link: '/guide/early-completion' },
             { text: 'Durable Sleep', link: '/guide/sleep' },
+            { text: 'Waiting for Events', link: '/guide/wait-for-event' },
             { text: 'Hooks', link: '/guide/hooks' },
             { text: 'Streaming Results', link: '/guide/streaming' },
             { text: 'Cancellation', link: '/guide/cancellation' },

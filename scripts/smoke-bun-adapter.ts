@@ -57,6 +57,20 @@ assert((await storage.getRun('run_1'))?.status === 'completed', 'run should be c
 // updateRunStatus existence reporting.
 assert(!(await storage.updateRunStatus('missing', 'cancelled')), 'updateRunStatus on missing run should return false')
 
+// Event buffering + waiting/wake paths.
+await storage.createRun(makeRun({ id: 'run_2' }))
+const claimed2 = await storage.claimNextRun(['test'])
+assert(claimed2, 'second claim should succeed')
+assert(await storage.deliverEvent('run_2', 'e', { n: 1 }), 'deliverEvent should accept an existing run')
+assert(!(await storage.deliverEvent('missing', 'e', {})), 'deliverEvent on missing run should return false')
+const taken = await storage.takeEvent('run_2', 'e')
+assert(taken && JSON.stringify(taken.payload) === JSON.stringify({ n: 1 }), 'takeEvent should return the buffered payload')
+assert((await storage.takeEvent('run_2', 'e')) === null, 'takeEvent should return null when drained')
+assert(await storage.waitRun('run_2', claimed2.leaseId, 'e', null), 'waitRun should suspend with the held lease')
+assert((await storage.getRun('run_2'))?.status === 'waiting', 'run should be waiting')
+await storage.deliverEvent('run_2', 'e', { n: 2 })
+assert((await storage.claimNextRun(['test']))?.id === 'run_2', 'delivering an event should wake the waiting run')
+
 storage.close()
 // eslint-disable-next-line no-console
 console.log('OK: sqlite-bun adapter change-count paths verified under Bun')

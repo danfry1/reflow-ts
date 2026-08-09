@@ -137,6 +137,17 @@ export class StepTimeoutError extends ReflowError {
   }
 }
 
+/** Thrown when a `waitForEvent` step's `timeoutMs` elapses before the event is delivered. Reaches `onRunFailed`. */
+export class WaitTimeoutError extends ReflowError {
+  constructor(
+    public readonly eventName: string,
+    public readonly timeoutMs: number,
+  ) {
+    super(`Timed out after ${timeoutMs}ms waiting for event "${eventName}"`)
+    this.name = 'WaitTimeoutError'
+  }
+}
+
 /**
  * Internal base class for errors that represent control-flow signals
  * (cancellation, lease loss) rather than real failures. These do NOT

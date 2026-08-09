@@ -5,11 +5,12 @@
 ### Added
 
 - **Durable sleep** — `.sleep(name, duration)` pauses a workflow between steps for a duration that survives process exit, deploy, or crash. The run is persisted as `sleeping` with its lease released (so the process need not stay alive), and any engine instance reclaims and resumes it once the time elapses. `duration` is a number of milliseconds or a unit-suffixed string (`'500ms'`, `'30s'`, `'24h'`, `'7d'`). `prev` passes through unchanged, and the sleep is observable as a step (`sleeping` → `completed`).
+- **Wait for events** — `.waitForEvent(name, { schema?, timeoutMs? })` durably suspends a workflow until `engine.sendEvent(runId, name, payload)` delivers a matching event (e.g. a webhook, an approval, a human action). The run is persisted as `waiting` with its lease released and resumes — on any engine instance — when the event arrives; the payload (validated against `schema`, if given) becomes the next step's `prev`. Delivery is durable and order-independent: an event sent before the run reaches the wait is buffered and consumed when it gets there. With `timeoutMs`, the run fails with the new `WaitTimeoutError` if no event arrives in time. New exported error: `WaitTimeoutError`.
 
 ### Changed
 
-- `StorageAdapter` gains `sleepRun(runId, leaseId, wakeAt)`, and `claimNextRun` now also reclaims `sleeping` runs whose wake time has passed. Both are implemented across all built-in adapters; the SQLite adapters add a `wake_at` column with an automatic, backward-compatible migration for existing databases. Custom adapters must implement `sleepRun` and wake due `sleeping` runs in `claimNextRun`.
-- `RunStatus` gains `sleeping`; `StepStatus` gains `sleeping`.
+- `StorageAdapter` gains `sleepRun(runId, leaseId, wakeAt)`, `waitRun(runId, leaseId, eventName, wakeAt)`, `deliverEvent(runId, eventName, payload)`, and `takeEvent(runId, eventName)`; `claimNextRun` now also reclaims `sleeping`/`waiting` runs whose wake time has passed. All are implemented across the built-in adapters; the SQLite adapters add a `wake_at` column (with an automatic, backward-compatible migration) and a `workflow_events` table. Custom adapters must implement the new methods.
+- `RunStatus` gains `sleeping` and `waiting`; `StepStatus` gains `sleeping` and `waiting`.
 - The `node:sqlite` adapter now opens transactions with `BEGIN IMMEDIATE` so concurrent claims under WAL take the write lock up front instead of risking a non-retryable `SQLITE_BUSY_SNAPSHOT`.
 
 ### Fixed
