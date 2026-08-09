@@ -77,6 +77,7 @@ export default defineConfig({
             { text: 'Testing', link: '/guide/testing' },
             { text: 'Type Safety', link: '/guide/type-safety' },
             { text: 'Error Handling', link: '/guide/error-handling' },
+            { text: 'Migrating to 0.6', link: '/guide/migrating-0-6' },
           ],
         },
         {
