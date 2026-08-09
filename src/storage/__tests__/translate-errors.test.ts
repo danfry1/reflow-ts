@@ -4,35 +4,7 @@ import { createWorkflow, createEngine, StorageError, LeaseExpiredError } from '.
 import type { StorageAdapter } from '../../index'
 import { MemoryStorage } from '../memory'
 import { translateStorageErrors } from '../translate-errors'
-
-/**
- * A full adapter delegating to `delegate`, with `overrides` applied.
- *
- * Spread cannot be used on `MemoryStorage` directly — its methods live on the
- * prototype, so `{ ...instance }` would copy the internal maps and none of the
- * behaviour, producing an adapter that silently does nothing.
- */
-function adapterOver(delegate: MemoryStorage, overrides: Partial<StorageAdapter>): StorageAdapter {
-  const base: StorageAdapter = {
-    initialize: () => delegate.initialize(),
-    createRun: (run) => delegate.createRun(run),
-    claimNextRun: (names, staleBefore) => delegate.claimNextRun(names, staleBefore),
-    heartbeatRun: (runId, leaseId) => delegate.heartbeatRun(runId, leaseId),
-    sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
-    waitRun: (runId, leaseId, name, wakeAt) => delegate.waitRun(runId, leaseId, name, wakeAt),
-    deliverEvent: (runId, name, payload) => delegate.deliverEvent(runId, name, payload),
-    takeEvent: (runId, name) => delegate.takeEvent(runId, name),
-    getRun: (runId) => delegate.getRun(runId),
-    getStepResults: (runId) => delegate.getStepResults(runId),
-    saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
-    updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
-    updateClaimedRunStatus: (runId, leaseId, status) =>
-      delegate.updateClaimedRunStatus(runId, leaseId, status),
-    close: () => delegate.close(),
-  }
-
-  return { ...base, ...overrides }
-}
+import { delegatingAdapter } from '../../__tests__/helpers'
 
 /** Capture the error a promise rejects with, failing the test if it resolves. */
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
@@ -52,7 +24,7 @@ describe('translateStorageErrors', () => {
     const failure = driverError()
     const delegate = new MemoryStorage()
     const storage = translateStorageErrors(
-      adapterOver(delegate, { getRun: () => Promise.reject(failure) }),
+      delegatingAdapter(delegate, { getRun: () => Promise.reject(failure) }),
     )
 
     const error = await rejection(storage.getRun('run-1'))
@@ -79,7 +51,7 @@ describe('translateStorageErrors', () => {
     const original = new LeaseExpiredError('run-1')
     const delegate = new MemoryStorage()
     const storage = translateStorageErrors(
-      adapterOver(delegate, { heartbeatRun: () => Promise.reject(original) }),
+      delegatingAdapter(delegate, { heartbeatRun: () => Promise.reject(original) }),
     )
 
     expect(await rejection(storage.heartbeatRun('run-1', 'lease'))).toBe(original)
@@ -88,7 +60,7 @@ describe('translateStorageErrors', () => {
   it('translates a synchronous throw from close()', () => {
     const delegate = new MemoryStorage()
     const storage = translateStorageErrors(
-      adapterOver(delegate, {
+      delegatingAdapter(delegate, {
         close: () => {
           throw new Error('connection already closed')
         },
@@ -103,7 +75,7 @@ describe('translateStorageErrors', () => {
     const failure = driverError()
     const delegate = new MemoryStorage()
     const storage = translateStorageErrors(
-      adapterOver(delegate, {
+      delegatingAdapter(delegate, {
         // A driver that throws before returning a promise must still surface as
         // a rejection, not a synchronous throw into the engine's call site.
         createRun: () => {
@@ -151,7 +123,7 @@ describe('translateStorageErrors', () => {
       .step('a', async () => ({ ok: true }))
 
     const engine = createEngine({
-      storage: adapterOver(delegate, { createRun: () => Promise.reject(driverError()) }),
+      storage: delegatingAdapter(delegate, { createRun: () => Promise.reject(driverError()) }),
       workflows: [wf],
     })
 

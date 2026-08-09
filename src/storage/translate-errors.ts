@@ -44,6 +44,11 @@ export function translateStorageErrors(storage: StorageAdapter): StorageAdapter 
       guard('updateRunStatus', () => storage.updateRunStatus(runId, status)),
     updateClaimedRunStatus: (runId, leaseId, status) =>
       guard('updateClaimedRunStatus', () => storage.updateClaimedRunStatus(runId, leaseId, status)),
+    upsertSchedule: (schedule) => guard('upsertSchedule', () => storage.upsertSchedule(schedule)),
+    claimDueSchedule: (names, now) =>
+      guard('claimDueSchedule', () => storage.claimDueSchedule(names, now)),
+    deleteSchedule: (key) => guard('deleteSchedule', () => storage.deleteSchedule(key)),
+    listSchedules: () => guard('listSchedules', () => storage.listSchedules()),
     close: () => guardSync('close', () => storage.close()),
   }
 }

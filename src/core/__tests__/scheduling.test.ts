@@ -1,9 +1,25 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { z } from 'zod'
-import { createWorkflow, createEngine } from '../../index'
+import {
+  createWorkflow,
+  createEngine,
+  ConfigError,
+  ValidationError,
+  WorkflowNotFoundError,
+} from '../../index'
+import type { WorkflowRun } from '../../index'
 import { MemoryStorage } from '../../storage/memory'
 import { canonicalizePersistedValue } from '../../storage/codec'
-import type { WorkflowRun } from '../../index'
+import { nextOccurrence } from '../schedule-timing'
+import { at, delegatingAdapter } from '../../__tests__/helpers'
+
+const HOUR = 60 * 60 * 1000
+
+const cleanup = createWorkflow({ name: 'cleanup', input: z.object({ olderThanDays: z.number() }) })
+  .step('purge', async () => ({ purged: true }))
+
+const report = createWorkflow({ name: 'report', input: z.object({}) })
+  .step('build', async () => ({ built: true }))
 
 /**
  * Record the runs a storage actually creates, ignoring idempotent hits.
@@ -24,10 +40,7 @@ function trackCreatedRuns(storage: MemoryStorage): WorkflowRun[] {
   return created
 }
 
-const cleanup = createWorkflow({ name: 'cleanup', input: z.object({ olderThanDays: z.number() }) })
-  .step('purge', async () => ({ purged: true }))
-
-describe('scheduling', () => {
+describe('durable schedules', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -36,140 +49,326 @@ describe('scheduling', () => {
     vi.useRealTimers()
   })
 
-  it('produces one run per interval when the same schedule runs on several engines', async () => {
-    // The library documents running multiple engine instances against one
-    // store, so a schedule registered on each must not multiply the work.
+  it('does not fire before the first occurrence is due', async () => {
     const storage = new MemoryStorage()
     await storage.initialize()
-
     const created = trackCreatedRuns(storage)
-    const engines = [1, 2, 3].map(() => createEngine({ storage, workflows: [cleanup] }))
-    for (const engine of engines) {
-      engine.schedule('cleanup', { olderThanDays: 30 }, 60_000)
-    }
 
-    await vi.advanceTimersByTimeAsync(60_000)
+    const engine = createEngine({ storage, workflows: [cleanup] })
+    await engine.schedule('cleanup', { olderThanDays: 30 }, HOUR)
+
+    await engine.tick()
+
+    expect(created).toHaveLength(0)
+  })
+
+  it('fires once the occurrence comes due', async () => {
+    const storage = new MemoryStorage()
+    await storage.initialize()
+    const created = trackCreatedRuns(storage)
+
+    const engine = createEngine({ storage, workflows: [cleanup] })
+    await engine.schedule('cleanup', { olderThanDays: 30 }, HOUR)
+
+    vi.advanceTimersByTime(HOUR)
+    await engine.tick()
+
+    expect(created).toHaveLength(1)
+    expect(at(created, 0).input).toStrictEqual({ olderThanDays: 30 })
+  })
+
+  it('survives a restart — a fresh engine picks up the registered schedule', async () => {
+    // The whole point of making schedules durable: the process that registered
+    // the schedule is gone, and the work still happens.
+    const storage = new MemoryStorage()
+    await storage.initialize()
+    const created = trackCreatedRuns(storage)
+
+    const before = createEngine({ storage, workflows: [cleanup] })
+    await before.schedule('cleanup', { olderThanDays: 30 }, HOUR)
+    await before.stop()
+
+    vi.advanceTimersByTime(HOUR)
+
+    // A new process, with no memory of the registration.
+    const after = createEngine({ storage, workflows: [cleanup] })
+    await after.tick()
+
+    expect(created).toHaveLength(1)
+  })
+
+  it('fires an occurrence once even when several engines tick together', async () => {
+    const storage = new MemoryStorage()
+    await storage.initialize()
+    const created = trackCreatedRuns(storage)
+
+    const engines = [1, 2, 3].map(() => createEngine({ storage, workflows: [cleanup] }))
+    await at(engines, 0).schedule('cleanup', { olderThanDays: 30 }, HOUR)
+
+    vi.advanceTimersByTime(HOUR)
+    await Promise.all(engines.map((engine) => engine.tick()))
+
+    expect(created).toHaveLength(1)
+  })
+
+  it('skips missed occurrences instead of backfilling them', async () => {
+    // A three-hour outage on an hourly schedule must not enqueue three runs at
+    // once — that turns an outage into a thundering herd.
+    const storage = new MemoryStorage()
+    await storage.initialize()
+    const created = trackCreatedRuns(storage)
+
+    const engine = createEngine({ storage, workflows: [cleanup] })
+    await engine.schedule('cleanup', { olderThanDays: 30 }, HOUR)
+
+    vi.advanceTimersByTime(5 * HOUR)
+    await engine.tick()
 
     expect(created).toHaveLength(1)
 
-    for (const engine of engines) {
-      await engine.stop()
-    }
+    // ...and the cadence resumes rather than firing again immediately.
+    await engine.tick()
+    expect(created).toHaveLength(1)
+
+    vi.advanceTimersByTime(HOUR)
+    await engine.tick()
+    expect(created).toHaveLength(2)
   })
 
-  it('produces a distinct run for each successive interval', async () => {
+  it('keeps the existing cadence when a schedule is re-registered unchanged', async () => {
+    // Every instance registers at startup, and deploys are frequent. If
+    // re-registering reset the clock, a schedule could be starved indefinitely.
+    const storage = new MemoryStorage()
+    await storage.initialize()
+    const created = trackCreatedRuns(storage)
+
+    const engine = createEngine({ storage, workflows: [cleanup] })
+    await engine.schedule('cleanup', { olderThanDays: 30 }, HOUR)
+
+    // Redeploy repeatedly, each time just before the schedule would fire.
+    for (let restart = 0; restart < 4; restart++) {
+      vi.advanceTimersByTime(HOUR / 5)
+      await createEngine({ storage, workflows: [cleanup] }).schedule(
+        'cleanup',
+        { olderThanDays: 30 },
+        HOUR,
+      )
+    }
+
+    vi.advanceTimersByTime(HOUR / 5)
+    await engine.tick()
+
+    expect(created).toHaveLength(1)
+  })
+
+  it('resets the next firing when the interval changes', async () => {
     const storage = new MemoryStorage()
     await storage.initialize()
 
-    const created = trackCreatedRuns(storage)
     const engine = createEngine({ storage, workflows: [cleanup] })
-    engine.schedule('cleanup', { olderThanDays: 30 }, 60_000)
+    const key = await engine.schedule('cleanup', { olderThanDays: 30 }, HOUR, { key: 'nightly' })
 
-    await vi.advanceTimersByTimeAsync(180_000)
+    vi.advanceTimersByTime(HOUR / 2)
+    await engine.schedule('cleanup', { olderThanDays: 30 }, 2 * HOUR, { key: 'nightly' })
 
-    expect(created).toHaveLength(3)
-
-    await engine.stop()
+    const schedules = await engine.listSchedules()
+    expect(schedules).toHaveLength(1)
+    expect(at(schedules, 0).key).toBe(key)
+    expect(at(schedules, 0).intervalMs).toBe(2 * HOUR)
+    expect(at(schedules, 0).nextRunAt).toBe(Date.now() + 2 * HOUR)
   })
 
   it('keeps schedules with different inputs independent', async () => {
     const storage = new MemoryStorage()
     await storage.initialize()
-
     const created = trackCreatedRuns(storage)
-    const engine = createEngine({ storage, workflows: [cleanup] })
-    engine.schedule('cleanup', { olderThanDays: 30 }, 60_000)
-    engine.schedule('cleanup', { olderThanDays: 90 }, 60_000)
 
-    await vi.advanceTimersByTimeAsync(60_000)
+    const engine = createEngine({ storage, workflows: [cleanup] })
+    await engine.schedule('cleanup', { olderThanDays: 30 }, HOUR)
+    await engine.schedule('cleanup', { olderThanDays: 90 }, HOUR)
+
+    vi.advanceTimersByTime(HOUR)
+    await engine.tick()
 
     expect(created).toHaveLength(2)
     expect(created.map((run) => run.input)).toStrictEqual(
       expect.arrayContaining([{ olderThanDays: 30 }, { olderThanDays: 90 }]),
     )
-
-    await engine.stop()
   })
 
-  it('treats a shared explicit key as one schedule across engines', async () => {
+  it('treats a shared explicit key as one schedule', async () => {
     const storage = new MemoryStorage()
     await storage.initialize()
 
-    const created = trackCreatedRuns(storage)
     const a = createEngine({ storage, workflows: [cleanup] })
     const b = createEngine({ storage, workflows: [cleanup] })
 
-    a.schedule('cleanup', { olderThanDays: 30 }, 60_000, { key: 'nightly-cleanup' })
-    b.schedule('cleanup', { olderThanDays: 30 }, 60_000, { key: 'nightly-cleanup' })
+    await a.schedule('cleanup', { olderThanDays: 30 }, HOUR, { key: 'nightly-cleanup' })
+    await b.schedule('cleanup', { olderThanDays: 90 }, HOUR, { key: 'nightly-cleanup' })
 
-    await vi.advanceTimersByTimeAsync(60_000)
-
-    expect(created).toHaveLength(1)
-
-    await a.stop()
-    await b.stop()
+    // Same key means one schedule; the later registration wins on input.
+    const schedules = await a.listSchedules()
+    expect(schedules).toHaveLength(1)
+    expect(at(schedules, 0).input).toStrictEqual({ olderThanDays: 90 })
   })
 
-  it('splits one workflow into separate schedules when given distinct keys', async () => {
+  it('leaves schedules for workflows this engine does not run alone', async () => {
+    // A fleet where workers register different workflows: claiming advances the
+    // schedule, so claiming one you cannot run would swallow that firing.
+    const storage = new MemoryStorage()
+    await storage.initialize()
+    const created = trackCreatedRuns(storage)
+
+    const both = createEngine({ storage, workflows: [cleanup, report] })
+    await both.schedule('report', {}, HOUR)
+
+    const cleanupOnly = createEngine({ storage, workflows: [cleanup] })
+
+    vi.advanceTimersByTime(HOUR)
+    await cleanupOnly.tick()
+    expect(created).toHaveLength(0)
+
+    // The occurrence is still pending for a worker that can serve it.
+    await both.tick()
+    expect(created).toHaveLength(1)
+    expect(at(created, 0).workflow).toBe('report')
+  })
+
+  it('stops firing once unscheduled, for every instance', async () => {
+    const storage = new MemoryStorage()
+    await storage.initialize()
+    const created = trackCreatedRuns(storage)
+
+    const a = createEngine({ storage, workflows: [cleanup] })
+    const b = createEngine({ storage, workflows: [cleanup] })
+    const key = await a.schedule('cleanup', { olderThanDays: 30 }, HOUR)
+
+    expect(await a.unschedule(key)).toBe(true)
+    expect(await a.unschedule(key)).toBe(false)
+
+    vi.advanceTimersByTime(3 * HOUR)
+    await a.tick()
+    await b.tick()
+
+    expect(created).toHaveLength(0)
+    expect(await b.listSchedules()).toStrictEqual([])
+  })
+
+  it('keeps schedules registered across engine.stop()', async () => {
+    // Schedules belong to the storage, not the instance: stopping one worker
+    // must not cancel a schedule the rest of the fleet is still serving.
     const storage = new MemoryStorage()
     await storage.initialize()
 
-    const created = trackCreatedRuns(storage)
     const engine = createEngine({ storage, workflows: [cleanup] })
-    engine.schedule('cleanup', { olderThanDays: 30 }, 60_000, { key: 'eu' })
-    engine.schedule('cleanup', { olderThanDays: 30 }, 60_000, { key: 'us' })
-
-    await vi.advanceTimersByTimeAsync(60_000)
-
-    expect(created).toHaveLength(2)
-
+    await engine.schedule('cleanup', { olderThanDays: 30 }, HOUR)
     await engine.stop()
+
+    expect(await engine.listSchedules()).toHaveLength(1)
   })
 
-  it('stops enqueuing once unscheduled', async () => {
-    const storage = new MemoryStorage()
-    await storage.initialize()
+  it('reports a failing schedule without stopping the others', async () => {
+    const onError = vi.fn()
+    const delegate = new MemoryStorage()
+    await delegate.initialize()
+    const created: WorkflowRun[] = []
 
-    const created = trackCreatedRuns(storage)
-    const engine = createEngine({ storage, workflows: [cleanup] })
-    const scheduleId = engine.schedule('cleanup', { olderThanDays: 30 }, 60_000)
+    // Injected through the adapter rather than a spy: `trackCreatedRuns`
+    // already replaces `createRun`, and stacking a second spy on the same
+    // method makes the two wrappers fight over which one delegates.
+    const storage = delegatingAdapter(delegate, {
+      createRun: async (run) => {
+        if (run.workflow === 'cleanup') {
+          throw new Error('storage exploded')
+        }
+        const result = await delegate.createRun(run)
+        if (result.created) created.push(result.run)
+        return result
+      },
+    })
 
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(engine.unschedule(scheduleId)).toBe(true)
-    await vi.advanceTimersByTimeAsync(180_000)
+    const engine = createEngine({ storage, workflows: [cleanup, report], hooks: { onError } })
+    await engine.schedule('cleanup', { olderThanDays: 30 }, HOUR, { key: 'a-broken' })
+    await engine.schedule('report', {}, HOUR, { key: 'b-fine' })
 
-    expect(created).toHaveLength(1)
+    vi.advanceTimersByTime(HOUR)
+    await engine.tick()
 
-    await engine.stop()
+    expect(onError).toHaveBeenCalled()
+    expect(created.map((run) => run.workflow)).toStrictEqual(['report'])
+  })
+
+  it('rejects a non-positive interval', async () => {
+    const engine = createEngine({ storage: new MemoryStorage(), workflows: [cleanup] })
+
+    await expect(engine.schedule('cleanup', { olderThanDays: 1 }, 0)).rejects.toThrow(ConfigError)
+    await expect(engine.schedule('cleanup', { olderThanDays: 1 }, -1)).rejects.toThrow(
+      /intervalMs must be a positive number/,
+    )
+  })
+
+  it('rejects an unregistered workflow name', async () => {
+    const engine = createEngine({ storage: new MemoryStorage(), workflows: [cleanup] })
+
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (engine as any).schedule('unknown', {}, HOUR),
+    ).rejects.toThrow(WorkflowNotFoundError)
+  })
+
+  it('validates the input against the workflow schema at registration', async () => {
+    // Registering is the last point a bad input can be reported to a caller —
+    // after this the schedule fires unattended.
+    const engine = createEngine({ storage: new MemoryStorage(), workflows: [cleanup] })
+
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      engine.schedule('cleanup', { olderThanDays: 'soon' } as any, HOUR),
+    ).rejects.toThrow(ValidationError)
+  })
+})
+
+describe('nextOccurrence', () => {
+  it('leaves a future occurrence untouched', () => {
+    expect(nextOccurrence(1_000, 100, 500)).toBe(1_000)
+  })
+
+  it('advances past now by whole intervals', () => {
+    expect(nextOccurrence(1_000, 100, 1_000)).toBe(1_100)
+    expect(nextOccurrence(1_000, 100, 1_050)).toBe(1_100)
+    expect(nextOccurrence(1_000, 100, 1_100)).toBe(1_200)
+  })
+
+  it('skips a long outage in one step rather than stepping through it', () => {
+    // A year of missed one-second firings must not cost a loop of 31 million.
+    expect(nextOccurrence(0, 1_000, 365 * 24 * 60 * 60 * 1_000)).toBe(31_536_001_000)
+  })
+
+  it('always returns a time strictly after now', () => {
+    for (const now of [0, 1, 99, 100, 101, 12_345]) {
+      expect(nextOccurrence(0, 100, now)).toBeGreaterThan(now)
+    }
   })
 })
 
 describe('canonicalizePersistedValue', () => {
   it('is independent of object key order', () => {
-    const left = canonicalizePersistedValue({ a: 1, b: { c: 2, d: 3 } }, 'test')
-    const right = canonicalizePersistedValue({ b: { d: 3, c: 2 }, a: 1 }, 'test')
-
-    expect(left).toBe(right)
+    expect(canonicalizePersistedValue({ a: 1, b: { c: 2, d: 3 } }, 'test'))
+      .toBe(canonicalizePersistedValue({ b: { d: 3, c: 2 }, a: 1 }, 'test'))
   })
 
   it('still distinguishes different values', () => {
-    const left = canonicalizePersistedValue({ a: 1 }, 'test')
-    const right = canonicalizePersistedValue({ a: 2 }, 'test')
-
-    expect(left).not.toBe(right)
+    expect(canonicalizePersistedValue({ a: 1 }, 'test'))
+      .not.toBe(canonicalizePersistedValue({ a: 2 }, 'test'))
   })
 
   it('does not conflate a key order swap with a value swap', () => {
-    const left = canonicalizePersistedValue({ a: 1, b: 2 }, 'test')
-    const right = canonicalizePersistedValue({ a: 2, b: 1 }, 'test')
-
-    expect(left).not.toBe(right)
+    expect(canonicalizePersistedValue({ a: 1, b: 2 }, 'test'))
+      .not.toBe(canonicalizePersistedValue({ a: 2, b: 1 }, 'test'))
   })
 
   it('preserves array order, which is significant', () => {
-    const left = canonicalizePersistedValue([1, 2], 'test')
-    const right = canonicalizePersistedValue([2, 1], 'test')
-
-    expect(left).not.toBe(right)
+    expect(canonicalizePersistedValue([1, 2], 'test'))
+      .not.toBe(canonicalizePersistedValue([2, 1], 'test'))
   })
 })

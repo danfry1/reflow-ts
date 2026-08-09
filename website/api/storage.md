@@ -66,6 +66,10 @@ interface StorageAdapter {
   saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
   updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
   updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean>
+  upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule>
+  claimDueSchedule(workflowNames: readonly string[], now: number): Promise<WorkflowSchedule | null>
+  deleteSchedule(key: string): Promise<boolean>
+  listSchedules(): Promise<WorkflowSchedule[]>
   close(): void
 }
 ```
@@ -84,4 +88,8 @@ interface StorageAdapter {
 | `saveStepResult` | Persist a step result. With a `leaseId`, must fail (return `false`) if the lease is no longer held. |
 | `updateRunStatus` | Update status without a lease check (used for cancellation). |
 | `updateClaimedRunStatus` | Update status only if the caller still holds the lease. |
+| `upsertSchedule` | Register or update a schedule by `key`. Must **preserve `nextRunAt`** when the interval is unchanged, so a redeploy rejoins the existing cadence instead of pushing the next firing out each time. |
+| `claimDueSchedule` | **Atomically** claim the next schedule due at or before `now` whose workflow is in `workflowNames`, advancing its `nextRunAt` past `now` in the same transaction. Return the schedule carrying the occurrence it was claimed *for*. This atomicity is what stops N instances firing one occurrence N times. |
+| `deleteSchedule` | Remove a schedule by key. Return `false` if it did not exist. |
+| `listSchedules` | All schedules, ordered by key. |
 | `close` | Release resources. |

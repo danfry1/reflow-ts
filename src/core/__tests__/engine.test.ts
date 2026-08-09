@@ -568,6 +568,10 @@ describe('Engine', () => {
         updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
         updateClaimedRunStatus: (runId, leaseId, status) =>
           delegate.updateClaimedRunStatus(runId, leaseId, status),
+        upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
+        claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
+        deleteSchedule: (key) => delegate.deleteSchedule(key),
+        listSchedules: () => delegate.listSchedules(),
         close: () => delegate.close(),
       }
 
@@ -1786,145 +1790,6 @@ describe('Engine', () => {
       await engine.tick()
 
       expect(handler).toHaveBeenCalledTimes(1)
-    })
-  })
-
-  describe('schedule / unschedule', () => {
-    beforeEach(() => {
-      vi.useFakeTimers()
-    })
-
-    afterEach(() => {
-      vi.useRealTimers()
-    })
-
-    it('enqueues runs on an interval', async () => {
-      const wf = createWorkflow({
-        name: 'test',
-        input: z.object({ x: z.number() }),
-      }).step('a', async ({ input }) => input)
-
-      const engine = createEngine({ storage, workflows: [wf] })
-      engine.schedule('test', { x: 1 }, 1000)
-
-      await vi.advanceTimersByTimeAsync(3500)
-
-      // Should have enqueued 3 runs (at 1s, 2s, 3s)
-      const info1 = await storage.claimNextRun(['test'])
-      const info2 = await storage.claimNextRun(['test'])
-      const info3 = await storage.claimNextRun(['test'])
-      const info4 = await storage.claimNextRun(['test'])
-
-      expect(info1).not.toBeNull()
-      expect(info2).not.toBeNull()
-      expect(info3).not.toBeNull()
-      expect(info4).toBeNull()
-
-      engine.stop()
-    })
-
-    it('returns a schedule id', () => {
-      const wf = createWorkflow({
-        name: 'test',
-        input: z.object({}),
-      }).step('a', async () => ({}))
-
-      const engine = createEngine({ storage, workflows: [wf] })
-      const id = engine.schedule('test', {}, 5000)
-
-      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
-      expect(typeof id).toBe('string')
-
-      engine.stop()
-    })
-
-    it('unschedule stops the interval', async () => {
-      const wf = createWorkflow({
-        name: 'test',
-        input: z.object({}),
-      }).step('a', async () => ({}))
-
-      const engine = createEngine({ storage, workflows: [wf] })
-      const id = engine.schedule('test', {}, 1000)
-
-      await vi.advanceTimersByTimeAsync(1500)
-      engine.unschedule(id)
-      await vi.advanceTimersByTimeAsync(3000)
-
-      // Only 1 run should have been enqueued (at 1s, then unscheduled at 1.5s)
-      const r1 = await storage.claimNextRun(['test'])
-      const r2 = await storage.claimNextRun(['test'])
-      expect(r1).not.toBeNull()
-      expect(r2).toBeNull()
-
-      engine.stop()
-    })
-
-    it('unschedule returns false for unknown id', () => {
-      const wf = createWorkflow({
-        name: 'test',
-        input: z.object({}),
-      }).step('a', async () => ({}))
-
-      const engine = createEngine({ storage, workflows: [wf] })
-      expect(engine.unschedule('nonexistent')).toBe(false)
-    })
-
-    it('throws for unknown workflow name', () => {
-      const wf = createWorkflow({
-        name: 'test',
-        input: z.object({}),
-      }).step('a', async () => ({}))
-
-      const engine = createEngine({ storage, workflows: [wf] })
-      expect(() => engine.schedule('unknown' as any, {}, 1000)).toThrow('Workflow "unknown" not found')
-    })
-
-    it('throws for non-positive interval', () => {
-      const wf = createWorkflow({
-        name: 'test',
-        input: z.object({}),
-      }).step('a', async () => ({}))
-
-      const engine = createEngine({ storage, workflows: [wf] })
-      expect(() => engine.schedule('test', {}, 0)).toThrow(/positive number/)
-      expect(() => engine.schedule('test', {}, -1)).toThrow(/positive number/)
-    })
-
-    it('schedule swallows enqueue errors instead of crashing the process', async () => {
-      const wf = createWorkflow({
-        name: 'test',
-        input: z.object({}),
-      }).step('a', async () => ({}))
-
-      // Use a storage that fails on createRun to trigger an async error inside the interval
-      const failStorage = new MemoryStorage()
-      await failStorage.initialize()
-      failStorage.createRun = async () => { throw new Error('db down') }
-
-      const engine = createEngine({ storage: failStorage, workflows: [wf] })
-      engine.schedule('test', {}, 1000)
-
-      // Should not cause an unhandled rejection
-      await vi.advanceTimersByTimeAsync(1500)
-      engine.stop()
-    })
-
-    it('stop() clears all schedules', async () => {
-      const wf = createWorkflow({
-        name: 'test',
-        input: z.object({}),
-      }).step('a', async () => ({}))
-
-      const engine = createEngine({ storage, workflows: [wf] })
-      engine.schedule('test', {}, 1000)
-      engine.schedule('test', {}, 2000)
-
-      engine.stop()
-      await vi.advanceTimersByTimeAsync(5000)
-
-      const r = await storage.claimNextRun(['test'])
-      expect(r).toBeNull()
     })
   })
 

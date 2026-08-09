@@ -868,6 +868,10 @@ describe('Parallel engine execution', () => {
         updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
         updateClaimedRunStatus: (runId, leaseId, status) =>
           delegate.updateClaimedRunStatus(runId, leaseId, status),
+        upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
+        claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
+        deleteSchedule: (key) => delegate.deleteSchedule(key),
+        listSchedules: () => delegate.listSchedules(),
         close: () => delegate.close(),
       }
 
@@ -918,6 +922,10 @@ describe('Parallel engine execution', () => {
         updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
         updateClaimedRunStatus: (runId, leaseId, status) =>
           delegate.updateClaimedRunStatus(runId, leaseId, status),
+        upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
+        claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
+        deleteSchedule: (key) => delegate.deleteSchedule(key),
+        listSchedules: () => delegate.listSchedules(),
         close: () => delegate.close(),
       }
 

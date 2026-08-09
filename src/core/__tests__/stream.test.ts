@@ -67,6 +67,10 @@ function delaySecondClaim(
     updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
     updateClaimedRunStatus: (runId, leaseId, status) =>
       delegate.updateClaimedRunStatus(runId, leaseId, status),
+    upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
+    claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
+    deleteSchedule: (key) => delegate.deleteSchedule(key),
+    listSchedules: () => delegate.listSchedules(),
     close: () => delegate.close(),
   }
 }
@@ -270,6 +274,10 @@ describe('async hooks', () => {
       updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
       updateClaimedRunStatus: (runId, leaseId, status) =>
         delegate.updateClaimedRunStatus(runId, leaseId, status),
+      upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
+      claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
+      deleteSchedule: (key) => delegate.deleteSchedule(key),
+      listSchedules: () => delegate.listSchedules(),
       close: () => delegate.close(),
     }
     const failureHookStarted = deferred()
@@ -646,6 +654,10 @@ describe('engine.stream()', () => {
       updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
       updateClaimedRunStatus: (runId, leaseId, status) =>
         delegate.updateClaimedRunStatus(runId, leaseId, status),
+      upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
+      claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
+      deleteSchedule: (key) => delegate.deleteSchedule(key),
+      listSchedules: () => delegate.listSchedules(),
       close: () => delegate.close(),
     }
     const wf = createWorkflow({ name: 'lease-backpressure', input: z.object({}) })

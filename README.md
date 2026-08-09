@@ -527,19 +527,20 @@ Enqueue workflows on a recurring interval:
 
 ```typescript
 // Enqueue a cleanup workflow every hour
-const scheduleId = engine.schedule('cleanup', { olderThanDays: 30 }, 60 * 60 * 1000)
+const key = await engine.schedule('cleanup', { olderThanDays: 30 }, 60 * 60 * 1000)
 
-// Stop the schedule
-engine.unschedule(scheduleId)
-
-// await engine.stop() also clears all schedules
+// Stop it, for the whole fleet
+await engine.unschedule(key)
 ```
 
-Ticks are aligned to wall-clock slots and enqueued with an idempotency key derived from the
-schedule's identity and slot, so registering the same schedule on several engine instances
-still produces **one run per interval**, not one per instance. Pass `options.key` to control
-that identity. The timers themselves are in-memory and do not survive a restart — only the
-deduplication is durable.
+Schedules are **stored, not held in memory**, so they survive a restart or a deploy — any
+engine instance running that workflow picks up the next firing. Registering the same key
+again updates that schedule in place (preserving its cadence unless the interval changed),
+so calling this unconditionally at startup on every worker is the intended usage.
+
+Each due firing is claimed atomically, so a schedule shared by N instances still produces
+**one run per interval**, not N. A worker only claims schedules for workflows it has
+registered. Occurrences missed while the fleet was down are skipped, not backfilled.
 
 ### Crash Recovery
 
@@ -872,9 +873,17 @@ Delivers an external event to a run waiting on `waitForEvent(name)`. Returns `fa
 
 ### `engine.schedule(name, input, intervalMs, options?)`
 
-Enqueues a workflow run on a recurring interval. Returns a `scheduleId` for later cancellation with `engine.unschedule(scheduleId)`.
+Registers a durable recurring schedule. Returns a `Promise<string>` resolving to the schedule's key, for later removal with `engine.unschedule(key)`.
 
-Ticks are aligned to wall-clock slots of `intervalMs`, and each enqueue carries an idempotency key derived from the schedule's identity and its slot — so the same schedule registered on N engine instances yields one run per interval rather than N. `options.key` overrides the identity, which otherwise defaults to a hash of the workflow name, interval, and input.
+The schedule is persisted, so it survives restarts and deploys. Registering the same key again updates it in place and preserves the existing cadence unless the interval changed. Due firings are claimed atomically, so N instances sharing a schedule still produce one run per interval. `options.key` overrides the identity, which otherwise defaults to a hash of the workflow name, interval, and input. Missed occurrences are skipped rather than backfilled.
+
+### `engine.unschedule(key)`
+
+Removes a durable schedule. Returns `Promise<boolean>` — `false` if no such schedule existed. Because schedules are shared, this stops it for every instance.
+
+### `engine.listSchedules()`
+
+Returns `Promise<readonly WorkflowSchedule[]>` — every registered schedule, ordered by key, each with its `nextRunAt`.
 
 ### `engine.getRunStatus(runId)`
 

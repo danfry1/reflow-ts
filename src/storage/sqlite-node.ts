@@ -8,8 +8,10 @@ import type {
   StepResult,
   StorageAdapter,
   WorkflowRun,
+  WorkflowSchedule,
 } from '../core/types'
 import { deserializePersistedValue, serializePersistedValue } from './codec'
+import { nextOccurrence } from '../core/schedule-timing'
 
 interface WorkflowRunRow {
   id: string
@@ -30,6 +32,16 @@ interface WorkflowStepRow {
   output: string | null
   error: string | null
   attempts: number
+  created_at: number
+  updated_at: number
+}
+
+interface WorkflowScheduleRow {
+  key: string
+  workflow: string
+  input: string
+  interval_ms: number
+  next_run_at: number
   created_at: number
   updated_at: number
 }
@@ -87,6 +99,16 @@ export class SQLiteStorage implements StorageAdapter {
         payload     TEXT,
         created_at  INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS workflow_schedules (
+        key          TEXT PRIMARY KEY,
+        workflow     TEXT NOT NULL,
+        input        TEXT NOT NULL,
+        interval_ms  INTEGER NOT NULL,
+        next_run_at  INTEGER NOT NULL,
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      );
     `)
 
     // Migrate databases created before the wake_at column existed.
@@ -100,6 +122,7 @@ export class SQLiteStorage implements StorageAdapter {
       CREATE INDEX IF NOT EXISTS idx_runs_wake ON workflow_runs(status, wake_at);
       CREATE INDEX IF NOT EXISTS idx_steps_run_id ON workflow_steps(run_id);
       CREATE INDEX IF NOT EXISTS idx_events_run_name ON workflow_events(run_id, event_name, created_at);
+      CREATE INDEX IF NOT EXISTS idx_schedules_due ON workflow_schedules(next_run_at);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_workflow_idempotency
       ON workflow_runs(workflow, idempotency_key)
       WHERE idempotency_key IS NOT NULL;
@@ -408,6 +431,92 @@ export class SQLiteStorage implements StorageAdapter {
     return result.changes > 0
   }
 
+  /**
+   * Re-registering preserves `next_run_at` unless the interval changed, so a
+   * redeploy rejoins the existing cadence instead of pushing the next firing
+   * out by a full interval each time.
+   */
+  async upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule> {
+    const upsert = this.db.transaction(() => {
+      this.db.prepare(`INSERT INTO workflow_schedules (key, workflow, input, interval_ms, next_run_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           workflow    = excluded.workflow,
+           input       = excluded.input,
+           interval_ms = excluded.interval_ms,
+           next_run_at = CASE WHEN workflow_schedules.interval_ms = excluded.interval_ms
+                              THEN workflow_schedules.next_run_at
+                              ELSE excluded.next_run_at END,
+           updated_at  = excluded.updated_at`).run(
+        schedule.key,
+        schedule.workflow,
+        serializePersistedValue(schedule.input, 'Schedule input'),
+        schedule.intervalMs,
+        schedule.nextRunAt,
+        schedule.createdAt,
+        schedule.updatedAt,
+      )
+
+      return this.db
+        .prepare(`SELECT * FROM workflow_schedules WHERE key = ?`)
+        .get(schedule.key) as WorkflowScheduleRow
+    })
+
+    return mapWorkflowScheduleRow(upsert())
+  }
+
+  /**
+   * Selecting and advancing inside one transaction is what makes a claim
+   * exclusive: a second instance reaching this concurrently either blocks on
+   * the write lock and then sees the advanced `next_run_at`, or loses the
+   * guarded UPDATE and reports nothing due.
+   */
+  async claimDueSchedule(
+    workflowNames: readonly string[],
+    now: number,
+  ): Promise<WorkflowSchedule | null> {
+    if (workflowNames.length === 0) {
+      return null
+    }
+
+    const placeholders = workflowNames.map(() => '?').join(', ')
+    const claim = this.db.transaction(() => {
+      const row = this.db.prepare(`SELECT * FROM workflow_schedules
+         WHERE next_run_at <= ? AND workflow IN (${placeholders})
+         ORDER BY next_run_at ASC, key ASC LIMIT 1`).get(now, ...workflowNames) as WorkflowScheduleRow | undefined
+      if (!row) {
+        return null
+      }
+
+      const result = this.db
+        .prepare(`UPDATE workflow_schedules SET next_run_at = ?, updated_at = ? WHERE key = ? AND next_run_at = ?`)
+        .run(nextOccurrence(row.next_run_at, row.interval_ms, now), now, row.key, row.next_run_at)
+
+      // Guarded on the slot we read, so a racing claim cannot fire it twice.
+      if (result.changes === 0) {
+        return null
+      }
+
+      return row
+    })
+
+    const claimed = claim()
+    return claimed ? mapWorkflowScheduleRow(claimed) : null
+  }
+
+  async deleteSchedule(key: string): Promise<boolean> {
+    const result = this.db.prepare(`DELETE FROM workflow_schedules WHERE key = ?`).run(key)
+    return result.changes > 0
+  }
+
+  async listSchedules(): Promise<WorkflowSchedule[]> {
+    const rows = this.db
+      .prepare(`SELECT * FROM workflow_schedules ORDER BY key ASC`)
+      .all() as WorkflowScheduleRow[]
+
+    return rows.map(mapWorkflowScheduleRow)
+  }
+
   close(): void {
     this.db.close()
   }
@@ -433,4 +542,16 @@ function isUniqueConstraintError(error: unknown): boolean {
 
   return (error as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
     || error.message.includes('UNIQUE constraint failed')
+}
+
+function mapWorkflowScheduleRow(row: WorkflowScheduleRow): WorkflowSchedule {
+  return {
+    key: row.key,
+    workflow: row.workflow,
+    input: deserializePersistedValue(row.input),
+    intervalMs: row.interval_ms,
+    nextRunAt: row.next_run_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
 }
