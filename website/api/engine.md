@@ -62,6 +62,6 @@ Returns `{ run, steps }` â€” the run's current status and all its step results â
 
 ```typescript
 const info = await engine.getRunStatus(run.id)
-info?.run.status // 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+info?.run.status // 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
 info?.steps      // StepResult[]
 ```

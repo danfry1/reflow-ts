@@ -1,6 +1,6 @@
 # Reflow
 
-Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery via stale-run reclamation — powered by SQLite, no external services required.
+Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery via stale-run reclamation. Pause for days with `.sleep()` or wait on a webhook with `.waitForEvent()` — the process doesn't need to stay alive. Powered by SQLite, no external services required.
 
 ```typescript
 import { createWorkflow, createEngine } from 'reflow-ts'
@@ -316,6 +316,60 @@ Branches accept the same `{ retry, timeoutMs, handler }` config form as `.step()
 - **Each branch must be idempotent.** Like sequential steps, a branch may run multiple times across crash recoveries before its result is persisted.
 - **`steps` is a frozen snapshot.** All sibling branches see the same `steps` view taken before the group started; they cannot observe each other's outputs mid-flight.
 
+### Durable Sleep
+
+Pause a workflow between steps for a duration that survives process exit, deploy, or crash:
+
+```typescript
+const trial = createWorkflow({ name: 'trial', input: z.object({ userId: z.string() }) })
+  .step('start', async ({ input }) => activate(input.userId))
+  .sleep('wait-two-weeks', '14d')
+  .step('convert', async ({ input }) => chargeOrExpire(input.userId))
+```
+
+The run is persisted as `sleeping` with its lease released, so **the process does not need to stay alive** — any engine instance reclaims and resumes it once the time elapses. `prev` passes through unchanged. Durations are milliseconds or a unit-suffixed string (`'500ms'`, `'30s'`, `'24h'`, `'7d'`).
+
+The wake target is stored the first time the sleep is reached, so a run that crashes and is reclaimed ten times still waits the duration you asked for — not ten times it.
+
+### Waiting for External Events
+
+Suspend a workflow until something outside it happens — a webhook, an approval, a human action:
+
+```typescript
+const refund = createWorkflow({ name: 'refund', input: z.object({ orderId: z.string() }) })
+  .step('request', async ({ input }) => notifyReviewer(input.orderId))
+  .waitForEvent('approval', {
+    schema: z.object({ approved: z.boolean(), reviewer: z.string() }),
+    timeoutMs: 48 * 60 * 60 * 1000,
+  })
+  .step('settle', async ({ prev }) => (prev.approved ? issueRefund() : close()))
+
+// From your webhook handler, possibly in a different process:
+await engine.sendEvent(runId, 'approval', { approved: true, reviewer: 'alice' })
+```
+
+Like sleep, the run is persisted (as `waiting`) with its lease released and resumes on any instance. The payload — validated against `schema`, if given — becomes the next step's `prev`.
+
+Delivery is **order-independent**: an event sent before the run reaches the wait is buffered durably and consumed when it gets there, so you don't have to race your webhook against your workflow. With `timeoutMs`, the run fails with `WaitTimeoutError` if nothing arrives in time.
+
+### Conditional Steps
+
+Skip a step based on the run's state with a `when` predicate:
+
+```typescript
+const checkout = createWorkflow({ name: 'checkout', input: z.object({ premium: z.boolean() }) })
+  .step('base', async () => ({ tier: 'base' as const }))
+  .step('upgrade', {
+    when: ({ input }) => input.premium,
+    handler: async () => ({ tier: 'premium' as const }),
+  })
+  .step('finalize', async ({ prev }) => prev.tier)
+```
+
+When the predicate returns `false` the step is skipped, `prev` passes through unchanged, and the skip is persisted — so it is never re-evaluated on a crash-recovery replay against state that may have changed since.
+
+The types follow the skip rather than assuming the step ran: `prev` widens to a union including the passed-through value, and the step's entry in `steps` becomes optional. Reading `steps.upgrade.tier` is a compile error, not a runtime surprise.
+
 ### Run Status
 
 Query the status of any run and its step results:
@@ -326,7 +380,7 @@ const run = await engine.enqueue('order-fulfillment', { orderId: 'ORD_1', amount
 // Later...
 const info = await engine.getRunStatus(run.id)
 if (info) {
-  info.run.status    // 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  info.run.status    // 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
   info.steps         // StepResult[] — each step's output, error, and attempt count
 }
 ```
@@ -606,7 +660,22 @@ workflow.step('x', async ({ prev }) => {
 
 ## Error Handling
 
-Every error Reflow throws extends `ReflowError`, so you can catch all Reflow errors with a single `instanceof` check. More specific subclasses carry structured context — no message parsing needed.
+Every error Reflow throws extends `ReflowError`, so a single `instanceof` check catches them all, and carries a stable literal `code`. Subclasses carry structured context in typed fields — no message parsing needed.
+
+**Prefer `code` over `instanceof` for branching.** It's a closed union, so a `switch` over it can be checked for exhaustiveness, and it keeps working across bundling, duplicate copies of the package in a dependency tree, and realm boundaries — all cases where `instanceof` silently fails.
+
+```typescript
+if (error instanceof ReflowError) {
+  switch (error.code) {
+    case 'STEP_TIMEOUT': return retryLater(error.timeoutMs)
+    case 'WAIT_TIMEOUT': return escalate(error.eventName)
+    case 'VALIDATION':   return badRequest(error.issues)
+    default:             return report(error)
+  }
+}
+```
+
+Errors also implement `toJSON()`, so `JSON.stringify(error)` emits the discriminant, the structured context, and a flattened `cause` chain — no custom log serializer needed.
 
 ```typescript
 import {
@@ -646,19 +715,25 @@ hooks: {
 
 **Available error classes:**
 
-| Error | Thrown when | Structured properties |
-|---|---|---|
-| `ReflowError` | Base class for all errors | — |
-| `ConfigError` | Invalid engine, retry, or schedule config | — |
-| `WorkflowNotFoundError` | `enqueue()` / `schedule()` with unknown name | `workflowName` |
-| `DuplicateWorkflowError` | Same workflow registered twice | `workflowName` |
-| `DuplicateStepError` | `.step()` reuses an existing name | `workflowName`, `stepName` |
-| `ValidationError` | Input fails schema validation | `issues` |
-| `IdempotencyConflictError` | Same idempotency key with different input | `workflowName`, `idempotencyKey` |
-| `SerializationError` | Step output contains non-JSON data (NaN, functions, etc.) | `path` |
-| `StepTimeoutError` | Step exceeds `timeoutMs` | `timeoutMs` |
-| `RunCancelledError` | Run cancelled via `engine.cancel()` | `runId` |
-| `LeaseExpiredError` | Worker lost its lease on a run | `runId` |
+| Error | `code` | Thrown when | Structured properties |
+|---|---|---|---|
+| `ReflowError` | — | Base class for all errors | `code` |
+| `ConfigError` | `CONFIG` | Invalid engine, retry, or schedule config | — |
+| `WorkflowNotFoundError` | `WORKFLOW_NOT_FOUND` | `enqueue()` / `schedule()` with unknown name | `workflowName` |
+| `DuplicateWorkflowError` | `DUPLICATE_WORKFLOW` | Same workflow registered twice | `workflowName` |
+| `DuplicateStepError` | `DUPLICATE_STEP` | `.step()` reuses an existing name | `workflowName`, `stepName` |
+| `ValidationError` | `VALIDATION` | Input fails schema validation | `issues` |
+| `IdempotencyConflictError` | `IDEMPOTENCY_CONFLICT` | Same idempotency key with different input | `workflowName`, `idempotencyKey` |
+| `SerializationError` | `SERIALIZATION` | Step output contains non-JSON data (NaN, functions, etc.) | `path` |
+| `StepTimeoutError` | `STEP_TIMEOUT` | Step exceeds `timeoutMs` | `timeoutMs` |
+| `RunCancelledError` | `RUN_CANCELLED` | Run cancelled via `engine.cancel()` | `runId` |
+| `LeaseExpiredError` | `LEASE_EXPIRED` | Worker lost its lease on a run | `runId` |
+| `WaitTimeoutError` | `WAIT_TIMEOUT` | A `waitForEvent` step's `timeoutMs` elapsed | `eventName`, `timeoutMs` |
+| `ParallelCompleteError` | `PARALLEL_COMPLETE` | `complete()` called inside a parallel branch | `stepName` |
+| `StepFailedError` | `STEP_FAILED` | A step exhausted its retries with no error of its own | `stepName`, `attempts` |
+| `HookError` | `HOOK` | A hook, stream consumer, or `onFailure` threw. Delivered to `onError`, never into a run | `source`, `cause` |
+| `ThrownValueError` | `THROWN_VALUE` | User code threw a non-`Error` value | `value`, `cause` |
+| `InternalError` | `INTERNAL` | An invariant was violated — a bug in reflow-ts | — |
 
 ## API Reference
 
@@ -711,6 +786,14 @@ Adds a step to the workflow. Accepts either a handler function or a config objec
 | `backoff` | `'linear' \| 'exponential'` | Backoff strategy between retries |
 | `initialDelayMs` | `number` | Base delay in milliseconds (default: 1000) |
 | `timeoutMs` | `number` | Timeout per attempt. Step-level `timeoutMs` takes precedence |
+
+### `workflow.sleep(name, duration)`
+
+Durably pauses the workflow for `duration` (milliseconds, or `'500ms'` / `'30s'` / `'24h'` / `'7d'`). The run is persisted as `sleeping` with its lease released and resumes on any engine instance once the time elapses. `prev` passes through unchanged. `name` must be unique within the workflow.
+
+### `workflow.waitForEvent(name, options?)`
+
+Durably suspends the workflow until `engine.sendEvent(runId, name, payload)` delivers a matching event. `options.schema` validates the payload on delivery; `options.timeoutMs` fails the run with `WaitTimeoutError` if nothing arrives in time. The payload becomes the next step's `prev`. Events delivered before the run reaches the wait are buffered and consumed when it gets there.
 
 ### `workflow.parallel(branches)`
 
@@ -781,6 +864,10 @@ Submits a workflow run. Type-safe - only accepts registered workflow names with 
 ### `engine.cancel(runId)`
 
 Cancels a pending or running workflow. Returns `true` if cancelled, `false` if already completed/failed/cancelled. Aborts the current step's `AbortSignal` immediately.
+
+### `engine.sendEvent(runId, name, payload)`
+
+Delivers an external event to a run waiting on `waitForEvent(name)`. Returns `false` if the run does not exist or has already finished; throws if the workflow has no such event step or the payload fails validation.
 
 ### `engine.schedule(name, input, intervalMs, options?)`
 
