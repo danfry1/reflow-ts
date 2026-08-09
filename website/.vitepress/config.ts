@@ -60,6 +60,7 @@ export default defineConfig({
             { text: 'Failure Handling', link: '/guide/failure-handling' },
             { text: 'Parallel Steps', link: '/guide/parallel' },
             { text: 'Early Completion', link: '/guide/early-completion' },
+            { text: 'Durable Sleep', link: '/guide/sleep' },
             { text: 'Hooks', link: '/guide/hooks' },
             { text: 'Streaming Results', link: '/guide/streaming' },
             { text: 'Cancellation', link: '/guide/cancellation' },

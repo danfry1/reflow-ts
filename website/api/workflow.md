@@ -60,6 +60,18 @@ Adds a group of concurrent steps. `branches` is a record of `{ branchName: handl
 
 Each branch accepts the same handler/config form as `.step()`. Branch names share the step namespace — duplicates throw [`DuplicateStepError`](/api/errors). At least one branch is required. Calling `complete()` inside a branch throws [`ParallelCompleteError`](/api/errors). See [Parallel Steps](/guide/parallel).
 
+## `.sleep(name, duration)`
+
+Durably pauses the workflow for `duration` before the next step. The run is persisted as `sleeping` and its lease released, so the process can exit during the wait; any engine instance resumes it once the time elapses. `prev` passes through unchanged.
+
+```typescript
+.step('start-trial', async ({ input }) => provisionTrial(input.userId))
+.sleep('trial-period', '14d')
+.step('charge', async ({ input }) => convertOrExpire(input.userId))
+```
+
+`duration` is a number of milliseconds or a string with a unit suffix (`'500ms'`, `'30s'`, `'15m'`, `'24h'`, `'7d'`); an invalid value throws [`ConfigError`](/api/errors). `name` shares the step namespace — duplicates throw [`DuplicateStepError`](/api/errors). See [Durable Sleep](/guide/sleep).
+
 ## `.onFailure(handler)`
 
 Attaches a compensation handler, called when a step fails after exhausting its retries.

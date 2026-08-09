@@ -78,6 +78,7 @@ export class SQLiteStorage implements StorageAdapter {
         idempotency_key  TEXT,
         lease_id         TEXT,
         status           TEXT NOT NULL,
+        wake_at          INTEGER,
         created_at       INTEGER NOT NULL,
         updated_at       INTEGER NOT NULL
       );
@@ -95,8 +96,15 @@ export class SQLiteStorage implements StorageAdapter {
       );
     `)
 
+    // Migrate databases created before the wake_at column existed.
+    const columns = this.all<{ name: string }>(`PRAGMA table_info(workflow_runs)`)
+    if (!columns.some((column) => column.name === 'wake_at')) {
+      this.db.exec(`ALTER TABLE workflow_runs ADD COLUMN wake_at INTEGER`)
+    }
+
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_runs_status ON workflow_runs(status, workflow);
+      CREATE INDEX IF NOT EXISTS idx_runs_wake ON workflow_runs(status, wake_at);
       CREATE INDEX IF NOT EXISTS idx_steps_run_id ON workflow_steps(run_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_workflow_idempotency
       ON workflow_runs(workflow, idempotency_key)
@@ -177,39 +185,40 @@ export class SQLiteStorage implements StorageAdapter {
     const placeholders = workflowNames.map(() => '?').join(', ')
 
     return this.transaction(() => {
-      const reclaimClause = staleBefore === undefined
-        ? `status = 'pending'`
-        : `(status = 'pending' OR (status = 'running' AND updated_at <= ?))`
-      const queryArgs = staleBefore === undefined
-        ? [...workflowNames]
-        : [...workflowNames, staleBefore]
+      const now = Date.now()
+      const conditions = [
+        `status = 'pending'`,
+        `(status = 'sleeping' AND wake_at IS NOT NULL AND wake_at <= ?)`,
+      ]
+      const clauseParams: number[] = [now]
+      if (staleBefore !== undefined) {
+        conditions.push(`(status = 'running' AND updated_at <= ?)`)
+        clauseParams.push(staleBefore)
+      }
+      const reclaimClause = `(${conditions.join(' OR ')})`
 
       const row = this.get<WorkflowRunRow>(
         `SELECT * FROM workflow_runs
          WHERE workflow IN (${placeholders}) AND ${reclaimClause}
          ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END ASC, created_at ASC, rowid ASC
          LIMIT 1`,
-        ...queryArgs,
+        ...workflowNames,
+        ...clauseParams,
       )
 
       if (!row) {
         return null
       }
 
-      const now = Date.now()
       const leaseId = randomUUID()
-      const updateWhere = staleBefore === undefined
-        ? `id = ? AND status = 'pending'`
-        : `id = ? AND (status = 'pending' OR (status = 'running' AND updated_at <= ?))`
-      const updateArgs = staleBefore === undefined
-        ? [leaseId, now, row.id]
-        : [leaseId, now, row.id, staleBefore]
-
       const changes = this.run(
         `UPDATE workflow_runs
-         SET status = 'running', lease_id = ?, updated_at = ?
-         WHERE ${updateWhere}`,
-        ...updateArgs,
+         SET status = 'running', lease_id = ?, wake_at = NULL, updated_at = ?
+         WHERE id = ? AND ${reclaimClause}`,
+        leaseId,
+        now,
+        row.id,
+        ...clauseParams,
       )
 
       if (changes === 0) {
@@ -230,6 +239,20 @@ export class SQLiteStorage implements StorageAdapter {
       `UPDATE workflow_runs
        SET updated_at = ?
        WHERE id = ? AND status = 'running' AND lease_id = ?`,
+      Date.now(),
+      runId,
+      leaseId,
+    )
+
+    return changes > 0
+  }
+
+  async sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean> {
+    const changes = this.run(
+      `UPDATE workflow_runs
+       SET status = 'sleeping', lease_id = NULL, wake_at = ?, updated_at = ?
+       WHERE id = ? AND status = 'running' AND lease_id = ?`,
+      wakeAt,
       Date.now(),
       runId,
       leaseId,
@@ -298,7 +321,7 @@ export class SQLiteStorage implements StorageAdapter {
   async updateRunStatus(runId: string, status: RunStatus): Promise<boolean> {
     const changes = this.run(
       `UPDATE workflow_runs
-       SET status = ?, lease_id = ?, updated_at = ?
+       SET status = ?, lease_id = ?, wake_at = NULL, updated_at = ?
        WHERE id = ?`,
       status,
       null,
@@ -312,7 +335,7 @@ export class SQLiteStorage implements StorageAdapter {
   async updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean> {
     const changes = this.run(
       `UPDATE workflow_runs
-       SET status = ?, lease_id = ?, updated_at = ?
+       SET status = ?, lease_id = ?, wake_at = NULL, updated_at = ?
        WHERE id = ? AND status = 'running' AND lease_id = ?`,
       status,
       status === 'running' ? leaseId : null,
@@ -349,7 +372,11 @@ export class SQLiteStorage implements StorageAdapter {
   }
 
   private transaction<T>(fn: () => T): T {
-    this.db.exec('BEGIN')
+    // BEGIN IMMEDIATE takes the write lock up front. A deferred BEGIN that does
+    // a SELECT then an UPDATE (e.g. claimNextRun) can hit SQLITE_BUSY_SNAPSHOT
+    // under concurrent writers in WAL mode — which busy_timeout does NOT retry.
+    // The better-sqlite3 and bun adapters get this via their native helpers.
+    this.db.exec('BEGIN IMMEDIATE')
     try {
       const result = fn()
       this.db.exec('COMMIT')

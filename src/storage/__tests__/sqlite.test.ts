@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import Database from 'better-sqlite3'
 import { SQLiteStorage } from '../sqlite-node'
 import { unlinkSync, existsSync } from 'node:fs'
 import type { WorkflowRun, StepResult } from '../../core/types'
@@ -419,6 +420,94 @@ describe('SQLiteStorage', () => {
       // Re-assign for afterEach cleanup
       storage = new SQLiteStorage(DB_PATH)
       await storage.initialize()
+    })
+  })
+
+  describe('sleepRun / wake', () => {
+    it('suspends a claimed run; a non-matching lease cannot', async () => {
+      await storage.createRun(makeRun({ id: 'run_1' }))
+      const claimed = expectPresent(await storage.claimNextRun(['test']))
+
+      expect(await storage.sleepRun('run_1', 'wrong-lease', Date.now() + 60_000)).toBe(false)
+      expect(await storage.sleepRun('run_1', claimed.leaseId, Date.now() + 60_000)).toBe(true)
+      expect(expectPresent(await storage.getRun('run_1')).status).toBe('sleeping')
+
+      expect(await storage.claimNextRun(['test'])).toBeNull()
+    })
+
+    it('reclaims a sleeping run after its wake time with a fresh lease', async () => {
+      await storage.createRun(makeRun({ id: 'run_1' }))
+      const claimed = expectPresent(await storage.claimNextRun(['test']))
+      expect(await storage.sleepRun('run_1', claimed.leaseId, Date.now() - 1)).toBe(true)
+
+      const woken = expectPresent(await storage.claimNextRun(['test']))
+      expect(woken.id).toBe('run_1')
+      expect(woken.status).toBe('running')
+      expect(woken.leaseId).not.toBe(claimed.leaseId)
+    })
+
+    it('persists the sleeping state across separate storage instances', async () => {
+      await storage.createRun(makeRun({ id: 'run_1' }))
+      const claimed = expectPresent(await storage.claimNextRun(['test']))
+      await storage.sleepRun('run_1', claimed.leaseId, Date.now() - 1)
+      storage.close()
+
+      const storage2 = new SQLiteStorage(DB_PATH)
+      await storage2.initialize()
+      const woken = expectPresent(await storage2.claimNextRun(['test']))
+      expect(woken.id).toBe('run_1')
+      storage2.close()
+
+      storage = new SQLiteStorage(DB_PATH)
+      await storage.initialize()
+    })
+  })
+
+  describe('wake_at migration', () => {
+    it('adds wake_at to a pre-existing database that lacks it, then sleeps/wakes', async () => {
+      // Close the beforeEach storage and recreate the DB with the *old* schema
+      // (no wake_at column), as a database created before durable sleep would be.
+      storage.close()
+      if (existsSync(DB_PATH)) unlinkSync(DB_PATH)
+
+      const legacy = new Database(DB_PATH)
+      legacy.exec(`
+        CREATE TABLE workflow_runs (
+          id TEXT PRIMARY KEY, workflow TEXT NOT NULL, input TEXT NOT NULL,
+          idempotency_key TEXT, lease_id TEXT, status TEXT NOT NULL,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE workflow_steps (
+          id TEXT PRIMARY KEY, run_id TEXT NOT NULL, name TEXT NOT NULL,
+          status TEXT NOT NULL, output TEXT, error TEXT, attempts INTEGER DEFAULT 0,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        );
+      `)
+      legacy.prepare(
+        `INSERT INTO workflow_runs (id, workflow, input, idempotency_key, lease_id, status, created_at, updated_at)
+         VALUES ('legacy', 'test', '{}', NULL, NULL, 'pending', 1, 1)`,
+      ).run()
+      legacy.close()
+
+      // initialize() must migrate the column in without dropping the existing row.
+      storage = new SQLiteStorage(DB_PATH)
+      await storage.initialize()
+
+      const claimed = expectPresent(await storage.claimNextRun(['test']))
+      expect(claimed.id).toBe('legacy')
+
+      // The migrated column is usable for sleep/wake.
+      expect(await storage.sleepRun('legacy', claimed.leaseId, Date.now() - 1)).toBe(true)
+      const woken = expectPresent(await storage.claimNextRun(['test']))
+      expect(woken.id).toBe('legacy')
+    })
+
+    it('is idempotent — initialize on an already-migrated database is a no-op', async () => {
+      await storage.initialize()
+      await storage.initialize()
+      // Still functional.
+      await storage.createRun(makeRun({ id: 'ok' }))
+      expect(expectPresent(await storage.claimNextRun(['test'])).id).toBe('ok')
     })
   })
 })

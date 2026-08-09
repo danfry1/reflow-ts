@@ -1,8 +1,8 @@
 /** Lifecycle state of a workflow run. */
-export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type RunStatus = 'pending' | 'running' | 'sleeping' | 'completed' | 'failed' | 'cancelled'
 
 /** Lifecycle state of a single step within a run. */
-export type StepStatus = 'pending' | 'running' | 'completed' | 'completed-early' | 'failed'
+export type StepStatus = 'pending' | 'running' | 'completed' | 'completed-early' | 'sleeping' | 'failed'
 
 /** Primitive values that can be persisted to storage. */
 export type PersistedPrimitive = string | number | boolean | null | undefined | Date
@@ -81,10 +81,20 @@ export interface StorageAdapter {
   initialize(): Promise<void>
   /** Persist a new run. Must handle idempotency key conflicts. */
   createRun(run: WorkflowRun): Promise<CreateRunResult>
-  /** Atomically claim the next pending (or stale) run for execution. */
+  /**
+   * Atomically claim the next runnable run for execution: a `pending` run, a
+   * stale `running` run (older than `staleBefore`), or a `sleeping` run whose
+   * wake time has passed.
+   */
   claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
   /** Renew the lease on a running run. Returns false if the lease was lost. */
   heartbeatRun(runId: string, leaseId: string): Promise<boolean>
+  /**
+   * Suspend a running run until `wakeAt` (epoch ms), releasing its lease so it
+   * can be reclaimed by `claimNextRun` once that time passes. Only succeeds if
+   * the caller still holds the lease; returns false otherwise.
+   */
+  sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean>
   /** Fetch a run by ID, or null if not found. */
   getRun(runId: string): Promise<WorkflowRun | null>
   /** Fetch all step results for a run, ordered by creation time. */

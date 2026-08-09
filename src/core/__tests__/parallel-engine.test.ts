@@ -852,6 +852,7 @@ describe('Parallel engine execution', () => {
         claimNextRun: (workflowNames, staleBefore) =>
           delegate.claimNextRun(workflowNames, staleBefore),
         heartbeatRun: (runId, leaseId) => delegate.heartbeatRun(runId, leaseId),
+        sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
         getRun: (runId) => delegate.getRun(runId),
         getStepResults: (runId) => delegate.getStepResults(runId),
         saveStepResult: async (result, leaseId) => {
@@ -903,6 +904,7 @@ describe('Parallel engine execution', () => {
           if (heartbeatCalls === 1) throw new Error('heartbeat exploded')
           return delegate.heartbeatRun(runId, leaseId)
         },
+        sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
         getRun: (runId) => delegate.getRun(runId),
         getStepResults: (runId) => delegate.getStepResults(runId),
         saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),

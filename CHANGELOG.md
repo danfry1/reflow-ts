@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Durable sleep** — `.sleep(name, duration)` pauses a workflow between steps for a duration that survives process exit, deploy, or crash. The run is persisted as `sleeping` with its lease released (so the process need not stay alive), and any engine instance reclaims and resumes it once the time elapses. `duration` is a number of milliseconds or a unit-suffixed string (`'500ms'`, `'30s'`, `'24h'`, `'7d'`). `prev` passes through unchanged, and the sleep is observable as a step (`sleeping` → `completed`).
+
+### Changed
+
+- `StorageAdapter` gains `sleepRun(runId, leaseId, wakeAt)`, and `claimNextRun` now also reclaims `sleeping` runs whose wake time has passed. Both are implemented across all built-in adapters; the SQLite adapters add a `wake_at` column with an automatic, backward-compatible migration for existing databases. Custom adapters must implement `sleepRun` and wake due `sleeping` runs in `claimNextRun`.
+- `RunStatus` gains `sleeping`; `StepStatus` gains `sleeping`.
+- The `node:sqlite` adapter now opens transactions with `BEGIN IMMEDIATE` so concurrent claims under WAL take the write lock up front instead of risking a non-retryable `SQLITE_BUSY_SNAPSHOT`.
+
 ### Fixed
 
 - **`reflow-ts/sqlite-bun` change detection** — `bun:sqlite` reports affected-row counts on the `run()` result, not on `Database.changes` (which is `undefined`). The adapter read the latter, so `heartbeatRun`, `updateRunStatus`, `updateClaimedRunStatus`, and the `claimNextRun` double-claim guard never reflected real row counts — heartbeats always reported the lease lost and the claim guard never engaged. The adapter now reads the count from the statement result. Adds a Bun-native smoke test (`bun run test:bun`) wired into CI so the Bun adapter — which the Node-based Vitest suite cannot load — has real coverage.

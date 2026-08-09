@@ -23,6 +23,8 @@ type EngineEvent =
 | `runComplete` | A run finishes successfully; `output` is the final result |
 | `runFailed` | A run fails; `stepName` is the offending step, `error` the cause |
 
+A [`.sleep()`](/api/workflow) reuses the step events: `stepStart` fires when the sleep begins and `stepComplete` (with `output: null`) fires when it elapses. While suspended in between, the run's status is `sleeping` (observable via [`getRunStatus()`](/api/engine)).
+
 Checking `event.type` narrows the rest of the fields:
 
 ```typescript
