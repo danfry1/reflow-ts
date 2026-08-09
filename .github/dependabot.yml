@@ -30,3 +30,11 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    groups:
+      # `github/codeql-action/*` sub-actions must all run the same version — the
+      # analyze step fails outright if init and analyze disagree. Ungrouped,
+      # Dependabot opens one PR per sub-action, and each is individually
+      # unmergeable because it moves only one half of the pair.
+      codeql-action:
+        patterns:
+          - github/codeql-action*
