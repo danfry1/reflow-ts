@@ -27,7 +27,7 @@ describe('codec', () => {
     it('roundtrips nested objects and arrays', () => {
       const value = { a: [1, 'two', null, { nested: true }], b: undefined }
       const result = deserializePersistedValue(serializePersistedValue(value, 'test'))
-      expect(result).toEqual(value)
+      expect(result).toStrictEqual(value)
     })
 
     it('rejects NaN', () => {
@@ -83,7 +83,7 @@ describe('codec', () => {
       const value = { createdAt: new Date('2025-01-01'), tags: ['a'] }
       const result = deserializePersistedValue(serializePersistedValue(value, 'test'))
       expect((result as Record<string, unknown>).createdAt).toBeInstanceOf(Date)
-      expect((result as Record<string, unknown>).tags).toEqual(['a'])
+      expect((result as Record<string, unknown>).tags).toStrictEqual(['a'])
     })
 
     it('roundtrips Date inside arrays', () => {
@@ -106,7 +106,7 @@ describe('codec', () => {
     it('creates a deep clone', () => {
       const original = { a: [1, 2], b: { c: 3 } }
       const clone = clonePersistedValue(original, 'test')
-      expect(clone).toEqual(original)
+      expect(clone).toStrictEqual(original)
       expect(clone).not.toBe(original)
     })
   })
@@ -169,7 +169,7 @@ describe('codec', () => {
       const nullProto = Object.create(null)
       nullProto.key = 'value'
       const result = deserializePersistedValue(serializePersistedValue(nullProto, 'test'))
-      expect(result).toEqual({ key: 'value' })
+      expect(result).toStrictEqual({ key: 'value' })
     })
   })
 })

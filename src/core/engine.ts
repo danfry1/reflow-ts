@@ -6,8 +6,10 @@ import {
   type AbortableSubscriber,
 } from './async-iterator'
 import {
+  assertNever,
   ConfigError,
   DuplicateWorkflowError,
+  HookError,
   IdempotencyConflictError,
   LeaseExpiredError,
   RunCancelledError,
@@ -254,11 +256,13 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         () => Promise.resolve(dispatchHook(event)).then(noop),
         signal,
       )
-    } catch {
+    } catch (error) {
       if (signal.aborted) {
         throw toError(signal.reason)
       }
-      // Hooks are observers and must not affect engine state.
+      // Hooks are observers and must not affect engine state — but the failure
+      // is still reported, so a throwing hook is diagnosable rather than silent.
+      reportError(new HookError(`${event.type} hook`, { cause: toError(error) }))
     }
 
     if (subscribers.size === 0) {
@@ -275,11 +279,12 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         () => Promise.allSettled(deliveries).then(noop),
         signal,
       )
-    } catch {
+    } catch (error) {
       if (signal.aborted) {
         throw toError(signal.reason)
       }
       // Stream delivery is observational and must not affect engine state.
+      reportError(new HookError(`${event.type} stream delivery`, { cause: toError(error) }))
     }
   }
 
@@ -298,16 +303,27 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         return hooks?.onRunComplete?.(copy)
       case 'runFailed':
         return hooks?.onRunFailed?.(copy)
+      default:
+        return assertNever(copy, 'engine event')
     }
   }
 
-  /** Report a background error to `onError`, swallowing any error it raises. */
+  /**
+   * Report a background error to `onError`.
+   *
+   * This is the terminal error handler: there is no caller left to propagate to,
+   * so an `onError` that itself throws has nowhere to go and is dropped. Keeping
+   * that failure contained here is deliberate — the alternative is an unhandled
+   * rejection that takes down the host process.
+   */
   function reportError(error: unknown): void {
     const err = toError(error)
     void (async () => {
       try {
         await hooks?.onError?.(err)
-      } catch { /* onError must not throw */ }
+      } catch {
+        // Deliberate terminal swallow — see above.
+      }
     })()
   }
 
@@ -403,6 +419,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         return sleepExecutor.execute(unit, ctx, prev)
       case 'waitForEvent':
         return waitForEventExecutor.execute(unit, ctx, prev)
+      default:
+        return assertNever(unit, 'execution unit')
     }
   }
 
@@ -508,7 +526,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     if (wf.failureHandler) {
       try {
         await wf.failureHandler({ error, stepName, input: run.input })
-      } catch { /* onFailure must not affect engine state */ }
+      } catch (failureError) {
+        // Compensation logic must not change the run's outcome — it is already
+        // failed — but a broken `onFailure` is reported rather than lost.
+        reportError(new HookError('onFailure handler', { cause: toError(failureError) }))
+      }
     }
   }
 

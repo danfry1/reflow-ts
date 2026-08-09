@@ -1,4 +1,10 @@
-import { ConfigError, EarlyCompleteError, RunControlError } from '../errors'
+import {
+  ConfigError,
+  EarlyCompleteError,
+  InternalError,
+  RunControlError,
+  StepFailedError,
+} from '../errors'
 import type { PersistedValue } from '../types'
 import type { StepDefinition } from '../workflow'
 import { createAttemptSignal, delayWithSignal, runWithSignal, toError } from './signals'
@@ -100,8 +106,13 @@ export async function runStepHandler(
   }
 
   // RunControlError is rethrown inside the loop, so reaching here means a plain
-  // failure — or a null `lastError` when the signal aborted before any attempt.
-  return { kind: 'failed', error: lastError ?? new Error('Unknown error'), attempts: maxAttempts }
+  // failure — or a null `lastError` when the signal aborted before any attempt
+  // could run, which needs an error of its own to report.
+  return {
+    kind: 'failed',
+    error: lastError ?? new StepFailedError(stepDef.name, maxAttempts),
+    attempts: maxAttempts,
+  }
 }
 
 /** Executes a sequential `.step()`. */
@@ -220,7 +231,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
       const err = toError(error)
 
       if (err instanceof EarlyCompleteError) {
-        throw new Error(`EarlyCompleteError escaped runStepHandler for step "${stepDef.name}"`)
+        throw new InternalError(`EarlyCompleteError escaped runStepHandler for step "${stepDef.name}"`)
       }
 
       // Cancellation, engine stop, lease loss (including a failed lease-checked

@@ -1,14 +1,27 @@
 import { ConfigError } from './errors'
 
-const UNIT_MS: Record<string, number> = {
+const UNIT_MS = {
   ms: 1,
   s: 1000,
   m: 60_000,
   h: 3_600_000,
   d: 86_400_000,
-}
+} as const satisfies Record<string, number>
 
-const DURATION_PATTERN = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)$/
+/** A supported duration suffix. Derived from {@link UNIT_MS} — the units are declared once. */
+export type DurationUnit = keyof typeof UNIT_MS
+
+// Built from the unit table so the accepted suffixes cannot drift from the ones
+// that have a conversion. Longest-first, so `ms` is matched before `m`.
+const UNIT_ALTERNATION = Object.keys(UNIT_MS)
+  .sort((left, right) => right.length - left.length)
+  .join('|')
+
+const DURATION_PATTERN = new RegExp(`^(\\d+(?:\\.\\d+)?)\\s*(${UNIT_ALTERNATION})$`)
+
+function isDurationUnit(value: string): value is DurationUnit {
+  return value in UNIT_MS
+}
 
 /**
  * Normalize a duration to milliseconds.
@@ -27,13 +40,16 @@ export function parseDuration(value: number | string): number {
   }
 
   const match = DURATION_PATTERN.exec(value.trim())
-  if (!match) {
+  const rawAmount = match?.[1]
+  const rawUnit = match?.[2]
+
+  // The pattern guarantees both groups when it matches; narrowing them here
+  // proves it to the compiler instead of asserting it.
+  if (rawAmount === undefined || rawUnit === undefined || !isDurationUnit(rawUnit)) {
     throw new ConfigError(
       `Invalid duration string "${value}". Use a number of milliseconds or a value with a unit suffix, e.g. "500ms", "30s", "24h", "7d".`,
     )
   }
 
-  const amount = Number(match[1])
-  const unit = match[2]
-  return amount * UNIT_MS[unit]
+  return Number(rawAmount) * UNIT_MS[rawUnit]
 }

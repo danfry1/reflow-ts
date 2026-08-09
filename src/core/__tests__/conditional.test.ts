@@ -2,6 +2,7 @@ import { describe, it, expect, expectTypeOf, vi } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow, createEngine, ConfigError } from '../../index'
 import { MemoryStorage } from '../../storage/memory'
+import { at } from '../../__tests__/helpers'
 
 describe('conditional steps (when)', () => {
   it('skips the step and passes prev through unchanged when the condition is false', async () => {
@@ -32,7 +33,7 @@ describe('conditional steps (when)', () => {
     // `upgrade` never ran...
     expect(upgrade).not.toHaveBeenCalled()
     // ...and `finalize` saw `base`'s output as prev.
-    expect(info?.steps.find((s) => s.name === 'finalize')?.output).toEqual({ finalTier: 'base' })
+    expect(info?.steps.find((s) => s.name === 'finalize')?.output).toStrictEqual({ finalTier: 'base' })
     // The skip is persisted.
     expect(info?.steps.find((s) => s.name === 'upgrade')?.status).toBe('skipped')
   })
@@ -57,7 +58,7 @@ describe('conditional steps (when)', () => {
 
     const info = await engine.getRunStatus(run.id)
     expect(info?.steps.find((s) => s.name === 'upgrade')?.status).toBe('completed')
-    expect(info?.steps.find((s) => s.name === 'finalize')?.output).toEqual({ finalTier: 'premium' })
+    expect(info?.steps.find((s) => s.name === 'finalize')?.output).toStrictEqual({ finalTier: 'premium' })
   })
 
   it('supports an async condition', async () => {
@@ -98,7 +99,7 @@ describe('conditional steps (when)', () => {
     const run = await engine.enqueue('steps-map', {})
     await engine.tick()
 
-    expect((await engine.getRunStatus(run.id))?.steps.find((s) => s.name === 'c')?.output).toEqual({
+    expect((await engine.getRunStatus(run.id))?.steps.find((s) => s.name === 'c')?.output).toStrictEqual({
       seenMaybe: true,
     })
   })
@@ -127,8 +128,8 @@ describe('conditional steps (when)', () => {
     await collector
 
     expect(onStepSkipped).toHaveBeenCalledTimes(1)
-    expect(onStepSkipped.mock.calls[0][0]).toMatchObject({ type: 'stepSkipped', stepName: 'b', workflow: 'evt' })
-    expect(seen).toEqual(['b'])
+    expect(at(at(onStepSkipped.mock.calls, 0), 0)).toMatchObject({ type: 'stepSkipped', stepName: 'b', workflow: 'evt' })
+    expect(seen).toStrictEqual(['b'])
   })
 
   it('evaluates the condition exactly once — the decision is persisted, not recomputed on replay', async () => {
@@ -204,7 +205,7 @@ describe('conditional steps (when)', () => {
     await collector
 
     // 'b' was skipped — only 'a' started.
-    expect(starts).toEqual(['a'])
+    expect(starts).toStrictEqual(['a'])
   })
 })
 

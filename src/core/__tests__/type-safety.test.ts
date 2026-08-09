@@ -168,7 +168,7 @@ describe('type safety', () => {
     }
 
     expect(result.status).toBe('completed')
-    expect(result.steps.double.output).toEqual({ doubled: 10 })
+    expect(result.steps.double.output).toStrictEqual({ doubled: 10 })
   })
 
   it('Workflow type params are accessible via InferInput and InferSteps', () => {

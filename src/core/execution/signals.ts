@@ -1,9 +1,6 @@
-import { StepTimeoutError } from '../errors'
+import { StepTimeoutError, toError } from '../errors'
 
-/** Coerce an unknown throwable (or abort reason) into an `Error`. */
-export function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error))
-}
+export { toError }
 
 /**
  * Race a promise against an abort signal.

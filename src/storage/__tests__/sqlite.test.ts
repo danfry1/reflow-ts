@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import { SQLiteStorage } from '../sqlite-node'
 import { unlinkSync, existsSync } from 'node:fs'
 import type { WorkflowRun, StepResult } from '../../core/types'
+import { at } from '../../__tests__/helpers'
 
 const DB_PATH = '/tmp/reflow-test.db'
 
@@ -126,7 +127,7 @@ describe('SQLiteStorage', () => {
 
       expect(claimed.id).toBe('run_1')
       expect(claimed.status).toBe('running')
-      expect(claimed.input).toEqual({ x: 1 })
+      expect(claimed.input).toStrictEqual({ x: 1 })
     })
 
     it('returns null when no workflow names are provided', async () => {
@@ -161,7 +162,7 @@ describe('SQLiteStorage', () => {
 
         const claims = [claim1, claim2].filter((claim): claim is NonNullable<typeof claim> => claim !== null)
         expect(claims).toHaveLength(1)
-        expect(claims[0].id).toBe('run_1')
+        expect(at(claims, 0).id).toBe('run_1')
       } finally {
         storage2.close()
       }
@@ -174,7 +175,7 @@ describe('SQLiteStorage', () => {
 
       expect(claimed.id).toBe('stale')
       expect(claimed.status).toBe('running')
-      expect(claimed.leaseId).toBeTruthy()
+      expect(claimed.leaseId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
     })
 
     it('claims in FIFO order (oldest first)', async () => {
@@ -212,7 +213,7 @@ describe('SQLiteStorage', () => {
 
       await storage.createRun(makeRun({ id: 'run_1', input: complexInput }))
       const claimed = expectPresent(await storage.claimNextRun(['test']))
-      expect(claimed.input).toEqual(complexInput)
+      expect(claimed.input).toStrictEqual(complexInput)
     })
   })
 
@@ -233,13 +234,13 @@ describe('SQLiteStorage', () => {
 
       const results = await storage.getStepResults('run_1')
       expect(results).toHaveLength(1)
-      expect(results[0].output).toEqual({ chargeId: 'ch_123' })
-      expect(results[0].error).toBeNull()
+      expect(at(results, 0).output).toStrictEqual({ chargeId: 'ch_123' })
+      expect(at(results, 0).error).toBeNull()
     })
 
     it('returns an empty array for a run with no steps', async () => {
       const results = await storage.getStepResults('nonexistent')
-      expect(results).toEqual([])
+      expect(results).toStrictEqual([])
     })
 
     it('preserves step order by creation time', async () => {
@@ -248,7 +249,7 @@ describe('SQLiteStorage', () => {
       await storage.saveStepResult(makeStep({ id: 's3', name: 'third', createdAt: 3000 }))
 
       const results = await storage.getStepResults('run_1')
-      expect(results.map((s) => s.name)).toEqual(['first', 'second', 'third'])
+      expect(results.map((s) => s.name)).toStrictEqual(['first', 'second', 'third'])
     })
 
     it('roundtrips null output (failed step)', async () => {
@@ -260,8 +261,8 @@ describe('SQLiteStorage', () => {
       }))
 
       const results = await storage.getStepResults('run_1')
-      expect(results[0].output).toBeNull()
-      expect(results[0].error).toBe('something went wrong')
+      expect(at(results, 0).output).toBeNull()
+      expect(at(results, 0).error).toBe('something went wrong')
     })
 
     it('roundtrips null error (successful step)', async () => {
@@ -273,8 +274,8 @@ describe('SQLiteStorage', () => {
       }))
 
       const results = await storage.getStepResults('run_1')
-      expect(results[0].error).toBeNull()
-      expect(results[0].output).toEqual({ ok: true })
+      expect(at(results, 0).error).toBeNull()
+      expect(at(results, 0).output).toStrictEqual({ ok: true })
     })
 
     it('roundtrips falsy outputs without collapsing them to null', async () => {
@@ -284,16 +285,16 @@ describe('SQLiteStorage', () => {
 
       const results = await storage.getStepResults('run_1')
 
-      expect(results[0].output).toBe(false)
-      expect(results[1].output).toBe(0)
-      expect(results[2].output).toBe('')
+      expect(at(results, 0).output).toBe(false)
+      expect(at(results, 1).output).toBe(0)
+      expect(at(results, 2).output).toBe('')
     })
 
     it('roundtrips undefined outputs through the persistence codec', async () => {
       await storage.saveStepResult(makeStep({ id: 'step_undefined', output: undefined }))
 
       const results = await storage.getStepResults('run_1')
-      expect(results[0].output).toBeUndefined()
+      expect(at(results, 0).output).toBeUndefined()
     })
 
     it('upserts — INSERT OR REPLACE updates existing step', async () => {
@@ -302,7 +303,7 @@ describe('SQLiteStorage', () => {
 
       const results = await storage.getStepResults('run_1')
       expect(results).toHaveLength(1)
-      expect(results[0].status).toBe('completed')
+      expect(at(results, 0).status).toBe('completed')
     })
 
     it('isolates step results by run id', async () => {
@@ -321,7 +322,7 @@ describe('SQLiteStorage', () => {
 
       expect(run.id).toBe('run_1')
       expect(run.workflow).toBe('test')
-      expect(run.input).toEqual({ x: 1 })
+      expect(run.input).toStrictEqual({ x: 1 })
       expect(run.status).toBe('pending')
     })
 
@@ -343,7 +344,7 @@ describe('SQLiteStorage', () => {
       await storage.createRun(makeRun({ id: 'run_1', input }))
 
       const run = expectPresent(await storage.getRun('run_1'))
-      expect(run.input).toEqual(input)
+      expect(run.input).toStrictEqual(input)
     })
   })
 
@@ -410,7 +411,7 @@ describe('SQLiteStorage', () => {
       await storage2.initialize()
 
       const claimed = expectPresent(await storage2.claimNextRun(['test']))
-      expect(claimed.input).toEqual({ hello: 'world' })
+      expect(claimed.input).toStrictEqual({ hello: 'world' })
 
       const steps = await storage2.getStepResults('run_1')
       expect(steps).toHaveLength(1)
@@ -518,8 +519,8 @@ describe('SQLiteStorage', () => {
       expect(await storage.deliverEvent('run_1', 'e', { n: 1 })).toBe(true)
       expect(await storage.deliverEvent('run_1', 'e', { n: 2 })).toBe(true)
 
-      expect(await storage.takeEvent('run_1', 'e')).toEqual({ payload: { n: 1 } })
-      expect(await storage.takeEvent('run_1', 'e')).toEqual({ payload: { n: 2 } })
+      expect(await storage.takeEvent('run_1', 'e')).toStrictEqual({ payload: { n: 1 } })
+      expect(await storage.takeEvent('run_1', 'e')).toStrictEqual({ payload: { n: 2 } })
       expect(await storage.takeEvent('run_1', 'e')).toBeNull()
     })
 

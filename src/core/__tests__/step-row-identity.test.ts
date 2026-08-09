@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow, createEngine } from '../../index'
 import { MemoryStorage } from '../../storage/memory'
+import { at } from '../../__tests__/helpers'
 
 /**
  * `saveStepResult` upserts by row `id`, so a re-executed step must reuse the
@@ -63,9 +64,9 @@ describe('step row identity across re-execution', () => {
     const rowsForA = info?.steps.filter((step) => step.name === 'a') ?? []
 
     expect(rowsForA).toHaveLength(1)
-    expect(rowsForA[0].id).toBe('step-row-1')
-    expect(rowsForA[0].status).toBe('completed')
-    expect(rowsForA[0].createdAt).toBe(now)
+    expect(at(rowsForA, 0).id).toBe('step-row-1')
+    expect(at(rowsForA, 0).status).toBe('completed')
+    expect(at(rowsForA, 0).createdAt).toBe(now)
     expect(info?.run.status).toBe('completed')
   })
 })

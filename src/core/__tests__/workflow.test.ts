@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow } from '../workflow'
 import type { ExecutionUnit, StepDefinition } from '../workflow'
+import { at } from '../../__tests__/helpers'
+import { ValidationError } from '../errors'
 
 function getStepDef(wf: { executionUnits: readonly ExecutionUnit[] }, index: number): StepDefinition {
-  const unit = wf.executionUnits[index]
-  if (unit.kind !== 'step') throw new Error(`Expected step at index ${index}`)
+  const unit = at(wf.executionUnits, index)
+  if (unit.kind !== 'step') throw new Error(`Expected step at index ${index}, got ${unit.kind}`)
   return unit.definition
 }
 
@@ -75,7 +77,7 @@ describe('createWorkflow', () => {
       expect(wf.executionUnits.map((u) => {
         if (u.kind !== 'step') throw new Error('expected step')
         return u.definition.name
-      })).toEqual(['s1', 's2', 's3', 's4', 's5'])
+      })).toStrictEqual(['s1', 's2', 's3', 's4', 's5'])
     })
 
     it('preserves the workflow name through chaining', () => {
@@ -122,7 +124,7 @@ describe('createWorkflow', () => {
       })
 
       expect(getStepDef(wf, 0).name).toBe('retryable')
-      expect(getStepDef(wf, 0).retry).toEqual({
+      expect(getStepDef(wf, 0).retry).toStrictEqual({
         maxAttempts: 3,
         backoff: 'exponential',
       })
@@ -137,7 +139,7 @@ describe('createWorkflow', () => {
         handler: async () => ({}),
       })
 
-      expect(getStepDef(wf, 0).retry).toEqual({
+      expect(getStepDef(wf, 0).retry).toStrictEqual({
         maxAttempts: 5,
         backoff: 'linear',
         initialDelayMs: 500,
@@ -153,7 +155,7 @@ describe('createWorkflow', () => {
       })
 
       const result = wf.parseInput({ x: 42 })
-      expect(result).toEqual({ x: 42 })
+      expect(result).toStrictEqual({ x: 42 })
     })
 
     it('parseInput throws for invalid input', () => {
@@ -162,7 +164,7 @@ describe('createWorkflow', () => {
         input: z.object({ x: z.number() }),
       })
 
-      expect(() => wf.parseInput({ x: 'not a number' })).toThrow()
+      expect(() => wf.parseInput({ x: 'not a number' })).toThrow(ValidationError)
     })
 
     it('parseInput applies default values from the schema', () => {
@@ -172,7 +174,7 @@ describe('createWorkflow', () => {
       })
 
       const result = wf.parseInput({})
-      expect(result).toEqual({ x: 10 })
+      expect(result).toStrictEqual({ x: 10 })
     })
 
     it('parseInput works with complex nested schemas', () => {
@@ -185,7 +187,7 @@ describe('createWorkflow', () => {
       })
 
       const input = { user: { name: 'Alice', age: 30 }, tags: ['admin'] }
-      expect(wf.parseInput(input)).toEqual(input)
+      expect(wf.parseInput(input)).toStrictEqual(input)
     })
   })
 

@@ -2,10 +2,11 @@ import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow } from '../workflow'
 import type { ExecutionUnit, StepDefinition } from '../workflow'
+import { at } from '../../__tests__/helpers'
 
 function getParallelBranches(wf: { executionUnits: readonly ExecutionUnit[] }, index: number): readonly StepDefinition[] {
-  const unit = wf.executionUnits[index]
-  if (unit.kind !== 'parallel') throw new Error(`Expected parallel at index ${index}`)
+  const unit = at(wf.executionUnits, index)
+  if (unit.kind !== 'parallel') throw new Error(`Expected parallel at index ${index}, got ${unit.kind}`)
   return unit.branches
 }
 
@@ -25,7 +26,7 @@ describe('.parallel()', () => {
       expect(wf.executionUnits).toHaveLength(2)
       const branches = getParallelBranches(wf, 1)
       expect(branches).toHaveLength(2)
-      expect(branches.map((b) => b.name)).toEqual(['a', 'b'])
+      expect(branches.map((b) => b.name)).toStrictEqual(['a', 'b'])
     })
 
     it('is immutable — returns a new workflow instance', () => {
@@ -56,7 +57,7 @@ describe('.parallel()', () => {
         .step('merge', async ({ prev }) => ({ sum: prev.a.fromA + prev.b.fromB }))
 
       expect(wf.executionUnits).toHaveLength(3)
-      expect(wf.executionUnits[2].kind).toBe('step')
+      expect(at(wf.executionUnits, 2).kind).toBe('step')
     })
 
     it('allows chaining .parallel() after .parallel()', () => {
@@ -74,8 +75,8 @@ describe('.parallel()', () => {
         })
 
       expect(wf.executionUnits).toHaveLength(2)
-      expect(wf.executionUnits[0].kind).toBe('parallel')
-      expect(wf.executionUnits[1].kind).toBe('parallel')
+      expect(at(wf.executionUnits, 0).kind).toBe('parallel')
+      expect(at(wf.executionUnits, 1).kind).toBe('parallel')
     })
 
     it('preserves onFailure through parallel chaining', () => {
@@ -103,8 +104,8 @@ describe('.parallel()', () => {
       })
 
       const branches = getParallelBranches(wf, 0)
-      expect(branches[0].retry).toBeUndefined()
-      expect(branches[0].timeoutMs).toBeUndefined()
+      expect(at(branches, 0).retry).toBeUndefined()
+      expect(at(branches, 0).timeoutMs).toBeUndefined()
     })
 
     it('accepts config objects with retry and timeout', () => {
@@ -120,11 +121,11 @@ describe('.parallel()', () => {
       })
 
       const branches = getParallelBranches(wf, 0)
-      expect(branches[0].retry).toEqual({
+      expect(at(branches, 0).retry).toStrictEqual({
         maxAttempts: 3,
         backoff: 'exponential',
       })
-      expect(branches[0].timeoutMs).toBe(5000)
+      expect(at(branches, 0).timeoutMs).toBe(5000)
     })
 
     it('accepts a mix of bare handlers and config objects', () => {
@@ -140,8 +141,8 @@ describe('.parallel()', () => {
       })
 
       const branches = getParallelBranches(wf, 0)
-      expect(branches[0].retry).toBeUndefined()
-      expect(branches[1].retry).toEqual({
+      expect(at(branches, 0).retry).toBeUndefined()
+      expect(at(branches, 1).retry).toStrictEqual({
         maxAttempts: 2,
         backoff: 'linear',
       })

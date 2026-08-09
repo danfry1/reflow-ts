@@ -33,26 +33,26 @@ describe('durable sleep', () => {
 
     // First tick runs `a`, hits the sleep, and suspends.
     await engine.tick()
-    expect(ran).toEqual(['a'])
+    expect(ran).toStrictEqual(['a'])
     let info = await engine.getRunStatus(run.id)
     expect(info?.run.status).toBe('sleeping')
     expect(info?.steps.find((s) => s.name === 'cooldown')?.status).toBe('sleeping')
 
     // Before the wake time, the run is not claimable.
     await engine.tick()
-    expect(ran).toEqual(['a'])
+    expect(ran).toStrictEqual(['a'])
     expect((await engine.getRunStatus(run.id))?.run.status).toBe('sleeping')
 
     // Advance past the wake time; the next tick resumes and completes.
     vi.setSystemTime(Date.now() + 3_600_001)
     await engine.tick()
 
-    expect(ran).toEqual(['a', 'b'])
+    expect(ran).toStrictEqual(['a', 'b'])
     info = await engine.getRunStatus(run.id)
     expect(info?.run.status).toBe('completed')
     expect(info?.steps.find((s) => s.name === 'cooldown')?.status).toBe('completed')
     // `prev` passed through the sleep unchanged.
-    expect(info?.steps.find((s) => s.name === 'b')?.output).toEqual({ prev: { from: 'a' } })
+    expect(info?.steps.find((s) => s.name === 'b')?.output).toStrictEqual({ prev: { from: 'a' } })
   })
 
   it('completes a zero-length sleep in a single tick without suspending', async () => {
@@ -75,7 +75,7 @@ describe('durable sleep', () => {
 
     await engine.tick()
 
-    expect(ran).toEqual(['a', 'b'])
+    expect(ran).toStrictEqual(['a', 'b'])
     expect((await engine.getRunStatus(run.id))?.run.status).toBe('completed')
   })
 
@@ -105,7 +105,7 @@ describe('durable sleep', () => {
     const engine2 = createEngine({ storage, workflows: [makeWf()] })
     await engine2.tick()
 
-    expect(ran).toEqual(['a', 'b'])
+    expect(ran).toStrictEqual(['a', 'b'])
     expect((await engine2.getRunStatus(run.id))?.run.status).toBe('completed')
   })
 
@@ -158,7 +158,7 @@ describe('durable sleep', () => {
     // Even after the wake time, a cancelled run never resumes.
     vi.setSystemTime(Date.now() + 3_600_001)
     await engine.tick()
-    expect(ran).toEqual(['a'])
+    expect(ran).toStrictEqual(['a'])
     expect((await engine.getRunStatus(run.id))?.run.status).toBe('cancelled')
   })
 

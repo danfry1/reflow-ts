@@ -1,26 +1,9 @@
-import { ParallelCompleteError, ReflowError, RunControlError } from '../errors'
+import { BranchFailedError, ParallelCompleteError, RunControlError } from '../errors'
 import type { PersistedValue } from '../types'
 import type { StepDefinition } from '../workflow'
 import { toError } from './signals'
 import { runStepHandler } from './step'
 import type { ExecutionContext, UnitExecutor, UnitOutcome } from './types'
-
-/**
- * Carries branch metadata (name, original error, attempts) out through a
- * rejected branch promise, so the group can report *which* branch failed.
- *
- * @internal Not exported from the public API.
- */
-class BranchFailedError extends ReflowError {
-  constructor(
-    public readonly branchName: string,
-    public readonly branchError: Error,
-    public readonly attempts: number,
-  ) {
-    super(branchError.message)
-    this.name = 'BranchFailedError'
-  }
-}
 
 /**
  * Executes a `.parallel()` group.
@@ -48,7 +31,8 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
       }
     }
 
-    if (pendingBranches.length === 0) {
+    const [firstPending] = pendingBranches
+    if (firstPending === undefined) {
       return { kind: 'advance', output: merged }
     }
 
@@ -130,7 +114,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
         return { kind: 'halt' }
       }
 
-      const firstFailure = causeBranch ?? findFirstFailure(settled, pendingBranches)
+      const firstFailure = causeBranch ?? findFirstFailure(settled, firstPending)
       if (firstFailure === 'halt') {
         return { kind: 'halt' }
       }
@@ -184,7 +168,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
         return { kind: 'halt' }
       }
 
-      return { kind: 'failed', stepName: pendingBranches[0].name, error: err }
+      return { kind: 'failed', stepName: firstPending.name, error: err }
     } finally {
       runSignal.removeEventListener('abort', onRunAbort)
     }
@@ -198,7 +182,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
  */
 function findFirstFailure(
   settled: readonly PromiseSettledResult<{ name: string; output: PersistedValue; attempts: number }>[],
-  pendingBranches: readonly StepDefinition[],
+  firstPending: StepDefinition,
 ): BranchFailedError | 'halt' | null {
   for (const result of settled) {
     if (result.status !== 'rejected') continue
@@ -212,7 +196,7 @@ function findFirstFailure(
     }
 
     // Defensive: attribute an unrecognised rejection to the first pending branch.
-    return new BranchFailedError(pendingBranches[0].name, err, 1)
+    return new BranchFailedError(firstPending.name, err, 1)
   }
 
   return null

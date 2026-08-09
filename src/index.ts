@@ -12,10 +12,17 @@ export {
   SerializationError,
   StepTimeoutError,
   WaitTimeoutError,
+  StepFailedError,
+  HookError,
+  ThrownValueError,
+  TestRunIncompleteError,
+  InternalError,
   RunCancelledError,
   LeaseExpiredError,
+  assertNever,
+  toError,
 } from './core/errors'
-export type { ValidationIssue } from './core/errors'
+export type { ValidationIssue, ReflowErrorCode, SerializedReflowError } from './core/errors'
 export type {
   Workflow,
   AnyWorkflow,
