@@ -3,6 +3,7 @@ import { existsSync, unlinkSync } from 'node:fs'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import type { StepResult, WorkflowRun } from '../../core/types'
 import { SQLiteStorage } from '../sqlite-node-builtin'
+import { at } from '../../__tests__/helpers'
 
 // node:sqlite was added in Node 22.5 and is unavailable on Bun / older Node.
 // Skip the whole suite where it can't load so the default (Bun) test run is green;
@@ -108,7 +109,7 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
     const claimed = expectPresent(await storage.claimNextRun(['test']))
     expect(claimed.id).toBe('run_1')
     expect(claimed.status).toBe('running')
-    expect(claimed.leaseId).toBeTruthy()
+    expect(claimed.leaseId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
 
     // A second claim finds nothing — the run is no longer pending.
     expect(await storage.claimNextRun(['test'])).toBeNull()
@@ -146,15 +147,15 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
     await storage.saveStepResult(makeStep({ id: 's2', name: 'b', createdAt: 2 }))
 
     const steps = await storage.getStepResults('run_1')
-    expect(steps.map((s) => s.name)).toEqual(['a', 'b'])
-    expect(steps[0].output).toEqual({ result: true })
+    expect(steps.map((s) => s.name)).toStrictEqual(['a', 'b'])
+    expect(at(steps, 0).output).toStrictEqual({ result: true })
   })
 
   it('persists an undefined step output', async () => {
     await storage.createRun(makeRun())
     await storage.saveStepResult(makeStep({ output: undefined }))
     const steps = await storage.getStepResults('run_1')
-    expect(steps[0].output).toBeUndefined()
+    expect(at(steps, 0).output).toBeUndefined()
   })
 
   it('upserts a step result on the same id', async () => {
@@ -164,8 +165,8 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
 
     const steps = await storage.getStepResults('run_1')
     expect(steps).toHaveLength(1)
-    expect(steps[0].status).toBe('completed')
-    expect(steps[0].output).toEqual({ ok: 1 })
+    expect(at(steps, 0).status).toBe('completed')
+    expect(at(steps, 0).output).toStrictEqual({ ok: 1 })
   })
 
   it('saveStepResult honors the lease check', async () => {
@@ -176,7 +177,7 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
     expect(await storage.saveStepResult(makeStep({ id: 's2' }), 'wrong-lease')).toBe(false)
 
     const steps = await storage.getStepResults('run_1')
-    expect(steps.map((s) => s.id)).toEqual(['s1'])
+    expect(steps.map((s) => s.id)).toStrictEqual(['s1'])
   })
 
   it('updateRunStatus updates status and clears the lease', async () => {
@@ -229,8 +230,8 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
     expect(await storage.deliverEvent('nope', 'e', {})).toBe(false)
     expect(await storage.deliverEvent('run_1', 'e', { n: 1 })).toBe(true)
     expect(await storage.deliverEvent('run_1', 'e', { n: 2 })).toBe(true)
-    expect(await storage.takeEvent('run_1', 'e')).toEqual({ payload: { n: 1 } })
-    expect(await storage.takeEvent('run_1', 'e')).toEqual({ payload: { n: 2 } })
+    expect(await storage.takeEvent('run_1', 'e')).toStrictEqual({ payload: { n: 1 } })
+    expect(await storage.takeEvent('run_1', 'e')).toStrictEqual({ payload: { n: 2 } })
     expect(await storage.takeEvent('run_1', 'e')).toBeNull()
 
     const claimed = expectPresent(await storage.claimNextRun(['test']))

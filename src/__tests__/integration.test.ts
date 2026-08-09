@@ -30,7 +30,7 @@ describe('integration: real-world scenarios', () => {
       await engine.enqueue('order', { orderId: 'ORD_1', amount: 5000 })
       await engine.tick()
 
-      expect(log).toEqual([
+      expect(log).toStrictEqual([
         'charging 5000',
         'fulfilling ch_ORD_1',
         'notifying ORD_1: TRK_001',
@@ -110,7 +110,7 @@ describe('integration: real-world scenarios', () => {
       await engine2.tick()
 
       // step-a should NOT have re-executed
-      expect(log).toEqual(['b', 'c'])
+      expect(log).toStrictEqual(['b', 'c'])
     })
   })
 
@@ -197,7 +197,7 @@ describe('integration: real-world scenarios', () => {
         await engine.tick()
       }
 
-      expect(processed).toEqual([1, 2, 3, 4, 5])
+      expect(processed).toStrictEqual([1, 2, 3, 4, 5])
     })
   })
 
@@ -299,7 +299,7 @@ describe('integration: real-world scenarios', () => {
 
       const storeStep = steps.find((s) => s.name === 'store')
       expect(storeStep?.status).toBe('completed')
-      expect(storeStep?.output).toEqual({
+      expect(storeStep?.output).toStrictEqual({
         url: 'https://example.com/article',
         summary: 'summary of: page content from https://example.com/article',
         entities: ['TypeScript', 'SQLite'],
@@ -342,7 +342,7 @@ describe('integration: real-world scenarios', () => {
       // Verify the store step recorded 3 attempts
       const storeStep = status?.steps.find((s) => s.name === 'store')
       expect(storeStep?.attempts).toBe(3)
-      expect(storeStep?.output).toEqual({
+      expect(storeStep?.output).toStrictEqual({
         stored: true,
         summary: 'summary: scraped https://example.com',
       })

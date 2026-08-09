@@ -1,3 +1,5 @@
+import { toError } from './errors'
+
 export interface AbortableSubscriber<T> {
   push(value: T, signal: AbortSignal): Promise<void>
   close(): void
@@ -172,8 +174,4 @@ export function createBoundedAsyncIterator<T>(
   }
 
   return { iterator, subscriber }
-}
-
-function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error))
 }

@@ -46,7 +46,7 @@ describe('core types', () => {
       updatedAt: Date.now(),
     }
     expect(step.name).toBe('charge')
-    expect(step.output).toEqual({ chargeId: 'ch_123' })
+    expect(step.output).toStrictEqual({ chargeId: 'ch_123' })
   })
 
   it('RetryConfig has expected shape', () => {

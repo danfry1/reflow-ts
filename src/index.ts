@@ -12,10 +12,18 @@ export {
   SerializationError,
   StepTimeoutError,
   WaitTimeoutError,
+  StepFailedError,
+  HookError,
+  StorageError,
+  ThrownValueError,
+  TestRunIncompleteError,
+  InternalError,
   RunCancelledError,
   LeaseExpiredError,
+  assertNever,
+  toError,
 } from './core/errors'
-export type { ValidationIssue } from './core/errors'
+export type { ValidationIssue, ReflowErrorCode, SerializedReflowError } from './core/errors'
 export type {
   Workflow,
   AnyWorkflow,
@@ -23,6 +31,9 @@ export type {
   StepContext,
   StepDefinition,
   StepConfig,
+  ConditionalStepConfig,
+  StepCondition,
+  StepConditionContext,
   ParallelBranch,
   InferBranchOutput,
   FailureContext,
@@ -38,6 +49,7 @@ export type {
   EngineEvent,
   EngineEventOf,
   EnqueueOptions,
+  ScheduleOptions,
   StreamOptions,
   ResultStream,
 } from './core/engine'

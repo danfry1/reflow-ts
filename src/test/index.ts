@@ -1,4 +1,5 @@
 import { createEngine } from '../core/engine'
+import { InternalError, TestRunIncompleteError } from '../core/errors'
 import type { PersistedValue } from '../core/types'
 import { MemoryStorage } from '../storage/memory'
 import type {
@@ -61,11 +62,11 @@ export function testEngine<const TWorkflows extends readonly AnyWorkflow[]>(conf
 
       const runInfo = await storage.getRun(run.id)
       if (!runInfo) {
-        throw new Error(`Run "${run.id}" not found after tick()`)
+        throw new InternalError(`Run "${run.id}" not found immediately after being enqueued`)
       }
 
       if (runInfo.status !== 'completed' && runInfo.status !== 'failed') {
-        throw new Error(`Run "${run.id}" ended with unexpected status "${runInfo.status}"`)
+        throw new TestRunIncompleteError(run.id, runInfo.status)
       }
 
       const stepResults = await storage.getStepResults(run.id)

@@ -21,12 +21,38 @@ export interface StepContext<
   steps: TStepsSoFar
 }
 
+/**
+ * Context passed to a step's `when` predicate. A subset of {@link StepContext}:
+ * the inputs needed to decide whether the step should run, with no `signal` or
+ * `complete` — the predicate makes a routing decision, it does not execute.
+ */
+export interface StepConditionContext<
+  TInput extends PersistedValue,
+  TPrev extends PersistedValue,
+  TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
+> {
+  /** The validated workflow input. */
+  input: TInput
+  /** The output of the previous step. */
+  prev: TPrev
+  /** Results of all previously completed steps, keyed by step name. */
+  steps: TStepsSoFar
+}
+
+/** A predicate deciding whether a step runs. Evaluated once; the decision is persisted and not re-evaluated on replay. */
+export type StepCondition<
+  TInput extends PersistedValue,
+  TPrev extends PersistedValue,
+  TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
+> = (ctx: StepConditionContext<TInput, TPrev, TStepsSoFar>) => boolean | Promise<boolean>
+
 /** Internal representation of a step used by the engine. */
 export interface StepDefinition {
   name: string
   handler: (ctx: StepContext<PersistedValue, PersistedValue, Record<string, PersistedValue>>) => Promise<PersistedValue | void>
   retry?: RetryConfig
   timeoutMs?: number
+  when?: (ctx: StepConditionContext<PersistedValue, PersistedValue, Record<string, PersistedValue>>) => boolean | Promise<boolean>
 }
 
 /** A single execution unit: a sequential step, a parallel group, a durable sleep, or a wait for an external event. */
@@ -52,6 +78,33 @@ export interface StepConfig<
   /** Timeout per attempt in milliseconds. Takes precedence over `retry.timeoutMs`. */
   timeoutMs?: number
   handler: (ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>
+}
+
+/**
+ * Configuration form for a step guarded by a `when` predicate.
+ *
+ * Carried as its own type rather than an optional field on {@link StepConfig}
+ * so the builder can reflect the skip in the types it produces: after a
+ * conditional step, `prev` widens to include the value that passes through when
+ * the step is skipped, and the step's own entry in `steps` becomes optional.
+ */
+export interface ConditionalStepConfig<
+  TInput extends PersistedValue,
+  TPrev extends PersistedValue,
+  TOutput extends PersistedValue | void,
+  TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
+> extends StepConfig<TInput, TPrev, TOutput, TStepsSoFar> {
+  /**
+   * Predicate deciding whether this step runs. Evaluated once with the current
+   * `input`, `prev`, and `steps`; when it returns `false` the step is skipped,
+   * `prev` passes through unchanged, and the skip is persisted so it is not
+   * re-evaluated on replay.
+   *
+   * `when` is not given the abort `signal` — a slow async predicate is not
+   * interrupted by cancellation, which is observed once it resolves. Supported
+   * on sequential `.step()` only; a `.parallel()` branch throws `ConfigError`.
+   */
+  when: StepCondition<TInput, TPrev, TStepsSoFar>
 }
 
 /** A parallel branch: either a bare handler or a StepConfig with retry/timeout. */
@@ -103,6 +156,24 @@ export interface Workflow<
     name: TStepName,
     handler: (ctx: StepContext<TInput, TPrev, TSteps>) => Promise<TOutput>,
   ): Workflow<TName, TInput, NormalizeOutput<TOutput>, TSteps & Record<TStepName, NormalizeOutput<TOutput>>>
+
+  /**
+   * Add a step guarded by a `when` predicate.
+   *
+   * The return type reflects that the step may not run: `prev` for the next
+   * step widens to `TOutput | TPrev` (the value that passes through on a skip),
+   * and this step's entry in `steps` becomes optional. Both force callers to
+   * handle the skipped case rather than trusting a type that lies at runtime.
+   */
+  step<TStepName extends string, TOutput extends PersistedValue | void>(
+    name: TStepName,
+    config: ConditionalStepConfig<TInput, TPrev, TOutput, TSteps>,
+  ): Workflow<
+    TName,
+    TInput,
+    NormalizeOutput<TOutput> | TPrev,
+    Prettify<TSteps & Partial<Record<TStepName, NormalizeOutput<TOutput>>>>
+  >
 
   step<TStepName extends string, TOutput extends PersistedValue | void>(
     name: TStepName,
@@ -259,12 +330,14 @@ function buildWorkflow<
       const handler = isConfig ? handlerOrConfig.handler : handlerOrConfig
       const retry = isConfig ? handlerOrConfig.retry : undefined
       const timeoutMs = isConfig ? handlerOrConfig.timeoutMs : undefined
+      const when = isConfig && 'when' in handlerOrConfig ? handlerOrConfig.when : undefined
 
       const newStep: StepDefinition = {
         name: stepName,
         handler: handler as unknown as StepDefinition['handler'],
         retry,
         timeoutMs,
+        when: when as unknown as StepDefinition['when'],
       }
       return buildWorkflow<
         TName,
@@ -301,6 +374,14 @@ function buildWorkflow<
 
       const branchDefs: StepDefinition[] = branchEntries.map(([branchName, handlerOrConfig]) => {
         if (typeof handlerOrConfig === 'object' && handlerOrConfig !== null && 'handler' in handlerOrConfig) {
+          if ('when' in handlerOrConfig && handlerOrConfig.when !== undefined) {
+            // `when` skips a step by passing `prev` through to the next one.
+            // There is no well-defined passthrough for one branch of a
+            // concurrent group, so reject it rather than silently ignoring it.
+            throw new ConfigError(
+              `Conditional "when" is not supported on parallel branch "${branchName}" in workflow "${name}"`,
+            )
+          }
           return {
             name: branchName,
             handler: handlerOrConfig.handler as unknown as StepDefinition['handler'],

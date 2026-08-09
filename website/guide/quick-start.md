@@ -61,7 +61,7 @@ console.log(run.id) // a unique id you can use to check status later
 ```typescript
 const info = await engine.getRunStatus(run.id)
 if (info) {
-  info.run.status // 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  info.run.status // 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
   info.steps      // each step's output, error, and attempt count
 }
 ```

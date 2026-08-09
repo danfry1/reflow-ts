@@ -57,7 +57,7 @@ describe('public API', () => {
     expect(idempErr.idempotencyKey).toBe('key-1')
 
     const valErr = new ValidationError('bad input', [{ message: 'required' }])
-    expect(valErr.issues).toEqual([{ message: 'required' }])
+    expect(valErr.issues).toStrictEqual([{ message: 'required' }])
 
     const timeoutErr = new StepTimeoutError(5000)
     expect(timeoutErr.timeoutMs).toBe(5000)

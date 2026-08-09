@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { MemoryStorage } from '../memory'
 import type { WorkflowRun, StepResult } from '../../core/types'
+import { at } from '../../__tests__/helpers'
 
 function expectPresent<T>(value: T | null | undefined): T {
   expect(value).not.toBeNull()
@@ -72,7 +73,7 @@ describe('MemoryStorage', () => {
 
       expect(claimed.id).toBe('run_1')
       expect(claimed.status).toBe('running')
-      expect(claimed.input).toEqual({ x: 1 })
+      expect(claimed.input).toStrictEqual({ x: 1 })
     })
 
     it('returns null when no runs exist', async () => {
@@ -123,7 +124,7 @@ describe('MemoryStorage', () => {
       const claimed = expectPresent(await storage.claimNextRun(['test'], 10))
 
       expect(claimed.status).toBe('running')
-      expect(claimed.leaseId).toBeTruthy()
+      expect(claimed.leaseId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
     })
 
     it('returns a copy — mutating the result does not affect storage', async () => {
@@ -137,7 +138,7 @@ describe('MemoryStorage', () => {
       // verify via a new run that storage is intact
       await storage.createRun(makeRun({ id: 'run_2', input: { x: 2 } }))
       const claimed2 = expectPresent(await storage.claimNextRun(['test']))
-      expect(claimed2.input).toEqual({ x: 2 })
+      expect(claimed2.input).toStrictEqual({ x: 2 })
     })
   })
 
@@ -158,8 +159,8 @@ describe('MemoryStorage', () => {
 
       const results = await storage.getStepResults('run_1')
       expect(results).toHaveLength(1)
-      expect(results[0].name).toBe('charge')
-      expect(results[0].output).toEqual({ chargeId: 'ch_123' })
+      expect(at(results, 0).name).toBe('charge')
+      expect(at(results, 0).output).toStrictEqual({ chargeId: 'ch_123' })
     })
 
     it('returns steps in insertion order', async () => {
@@ -168,12 +169,12 @@ describe('MemoryStorage', () => {
       await storage.saveStepResult(makeStep({ id: 'step_3', name: 'third' }))
 
       const results = await storage.getStepResults('run_1')
-      expect(results.map((s) => s.name)).toEqual(['first', 'second', 'third'])
+      expect(results.map((s) => s.name)).toStrictEqual(['first', 'second', 'third'])
     })
 
     it('returns an empty array when no steps exist for a run', async () => {
       const results = await storage.getStepResults('nonexistent')
-      expect(results).toEqual([])
+      expect(results).toStrictEqual([])
     })
 
     it('isolates step results by run id', async () => {
@@ -184,9 +185,9 @@ describe('MemoryStorage', () => {
       const run2Steps = await storage.getStepResults('run_2')
 
       expect(run1Steps).toHaveLength(1)
-      expect(run1Steps[0].name).toBe('a')
+      expect(at(run1Steps, 0).name).toBe('a')
       expect(run2Steps).toHaveLength(1)
-      expect(run2Steps[0].name).toBe('b')
+      expect(at(run2Steps, 0).name).toBe('b')
     })
 
     it('upserts — updating an existing step result by id', async () => {
@@ -195,8 +196,8 @@ describe('MemoryStorage', () => {
 
       const results = await storage.getStepResults('run_1')
       expect(results).toHaveLength(1)
-      expect(results[0].status).toBe('completed')
-      expect(results[0].output).toEqual({ ok: true })
+      expect(at(results, 0).status).toBe('completed')
+      expect(at(results, 0).output).toStrictEqual({ ok: true })
     })
 
     it('returns copies — mutating results does not affect storage', async () => {
@@ -206,7 +207,7 @@ describe('MemoryStorage', () => {
       ;(results[0] as any).output = { x: 999 }
 
       const fresh = await storage.getStepResults('run_1')
-      expect(fresh[0].output).toEqual({ x: 1 })
+      expect(at(fresh, 0).output).toStrictEqual({ x: 1 })
     })
   })
 
@@ -217,7 +218,7 @@ describe('MemoryStorage', () => {
 
       expect(run.id).toBe('run_1')
       expect(run.workflow).toBe('test')
-      expect(run.input).toEqual({ x: 1 })
+      expect(run.input).toStrictEqual({ x: 1 })
       expect(run.status).toBe('pending')
     })
 
@@ -240,7 +241,7 @@ describe('MemoryStorage', () => {
       ;(run as any).input = { x: 999 }
 
       const fresh = expectPresent(await storage.getRun('run_1'))
-      expect(fresh.input).toEqual({ x: 1 })
+      expect(fresh.input).toStrictEqual({ x: 1 })
     })
   })
 
@@ -301,10 +302,10 @@ describe('MemoryStorage', () => {
       expect(await storage.deliverEvent('run_1', 'e', { n: 2 })).toBe(true)
       expect(await storage.deliverEvent('run_1', 'other', { x: 9 })).toBe(true)
 
-      expect(await storage.takeEvent('run_1', 'e')).toEqual({ payload: { n: 1 } })
-      expect(await storage.takeEvent('run_1', 'e')).toEqual({ payload: { n: 2 } })
+      expect(await storage.takeEvent('run_1', 'e')).toStrictEqual({ payload: { n: 1 } })
+      expect(await storage.takeEvent('run_1', 'e')).toStrictEqual({ payload: { n: 2 } })
       expect(await storage.takeEvent('run_1', 'e')).toBeNull()
-      expect(await storage.takeEvent('run_1', 'other')).toEqual({ payload: { x: 9 } })
+      expect(await storage.takeEvent('run_1', 'other')).toStrictEqual({ payload: { x: 9 } })
     })
 
     it('deliverEvent returns false for a missing run', async () => {

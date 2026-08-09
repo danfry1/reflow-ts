@@ -6,6 +6,7 @@ import { createEngine } from '../engine'
 import { MemoryStorage } from '../../storage/memory'
 import { ParallelCompleteError } from '../errors'
 import type { PersistedValue, StorageAdapter } from '../types'
+import { at } from '../../__tests__/helpers'
 
 function expectPresent<T>(value: T | null | undefined): T {
   expect(value).not.toBeNull()
@@ -44,8 +45,8 @@ describe('Parallel engine execution', () => {
 
       const stepA = info.steps.find((s) => s.name === 'a')
       const stepB = info.steps.find((s) => s.name === 'b')
-      expect(stepA?.output).toEqual({ doubled: 10 })
-      expect(stepB?.output).toEqual({ tripled: 15 })
+      expect(stepA?.output).toStrictEqual({ doubled: 10 })
+      expect(stepB?.output).toStrictEqual({ tripled: 15 })
     })
 
     it('passes correct prev from preceding step to all branches', async () => {
@@ -70,7 +71,7 @@ describe('Parallel engine execution', () => {
 
       expect(capturedPrevs).toHaveLength(2)
       for (const p of capturedPrevs) {
-        expect(p).toEqual({ value: 42 })
+        expect(p).toStrictEqual({ value: 42 })
       }
     })
 
@@ -116,9 +117,9 @@ describe('Parallel engine execution', () => {
       const stepA = steps.find((s) => s.name === 'a')
       const stepB = steps.find((s) => s.name === 'b')
       expect(stepA?.status).toBe('completed')
-      expect(stepA?.output).toEqual({ fromA: 1 })
+      expect(stepA?.output).toStrictEqual({ fromA: 1 })
       expect(stepB?.status).toBe('completed')
-      expect(stepB?.output).toEqual({ fromB: 2 })
+      expect(stepB?.output).toStrictEqual({ fromB: 2 })
     })
 
     it('sets prev to merged record for the step after a parallel group', async () => {
@@ -138,7 +139,7 @@ describe('Parallel engine execution', () => {
       await engine.enqueue('merged-prev', {})
       await engine.tick()
 
-      expect(capturedPrev).toEqual({ a: { fromA: 10 }, b: { fromB: 20 } })
+      expect(capturedPrev).toStrictEqual({ a: { fromA: 10 }, b: { fromB: 20 } })
     })
   })
 
@@ -268,8 +269,8 @@ describe('Parallel engine execution', () => {
 
       const failedRows = info.steps.filter((s) => s.status === 'failed')
       expect(failedRows).toHaveLength(1)
-      expect(failedRows[0].name).toBe('cause')
-      expect(failedRows[0].error).toBe('real failure')
+      expect(at(failedRows, 0).name).toBe('cause')
+      expect(at(failedRows, 0).error).toBe('real failure')
     })
 
     it('does not surface unhandled rejections when multiple branches fail concurrently', async () => {
@@ -445,7 +446,7 @@ describe('Parallel engine execution', () => {
       expect(attempts).toBe(3)
 
       const flakyStep = info.steps.find((s) => s.name === 'flaky')
-      expect(flakyStep?.output).toEqual({ recovered: true })
+      expect(flakyStep?.output).toStrictEqual({ recovered: true })
       expect(flakyStep?.attempts).toBe(3)
     })
   })
@@ -586,8 +587,8 @@ describe('Parallel engine execution', () => {
       const rowsB = info.steps.filter((s) => s.name === 'b')
       expect(rowsA).toHaveLength(1)
       expect(rowsB).toHaveLength(1)
-      expect(rowsA[0].output).toEqual({ fromA: 'cached' })
-      expect(rowsB[0].output).toEqual({ fromB: 'fresh' })
+      expect(at(rowsA, 0).output).toStrictEqual({ fromA: 'cached' })
+      expect(at(rowsB, 0).output).toStrictEqual({ fromB: 'fresh' })
     })
 
     it('merges cached and fresh branch outputs for the next step', async () => {
@@ -621,7 +622,7 @@ describe('Parallel engine execution', () => {
 
       await engine.tick()
 
-      expect(capturedPrev).toEqual({ a: { fromA: 'cached' }, b: { fromB: 'fresh' } })
+      expect(capturedPrev).toStrictEqual({ a: { fromA: 'cached' }, b: { fromB: 'fresh' } })
     })
 
     it('skips an already-failed branch from a prior run and lets fresh ones complete', async () => {
@@ -662,7 +663,7 @@ describe('Parallel engine execution', () => {
       expect(info.run.status).toBe('completed')
 
       const completedA = info.steps.find((s) => s.name === 'a' && s.status === 'completed')
-      expect(completedA?.output).toEqual({ fromA: 'recovered' })
+      expect(completedA?.output).toStrictEqual({ fromA: 'recovered' })
     })
 
     it('does not fire onStepStart or onStepComplete for already-completed branches on resume', async () => {
@@ -762,7 +763,7 @@ describe('Parallel engine execution', () => {
 
       // The step after parallel should have received the cached merged output
       const afterStep = info.steps.find((s) => s.name === 'after')
-      expect(afterStep?.output).toEqual({ a: { fromA: 'cached' }, b: { fromB: 'cached' } })
+      expect(afterStep?.output).toStrictEqual({ a: { fromA: 'cached' }, b: { fromB: 'cached' } })
     })
   })
 
@@ -785,7 +786,7 @@ describe('Parallel engine execution', () => {
       expect(info.run.status).toBe('completed')
 
       const afterStep = info.steps.find((s) => s.name === 'after')
-      expect(afterStep?.output).toEqual({ received: 42 })
+      expect(afterStep?.output).toStrictEqual({ received: 42 })
     })
   })
 
@@ -832,7 +833,7 @@ describe('Parallel engine execution', () => {
 
       const info = expectPresent(await engine.getRunStatus(run.id))
       expect(info.run.status).toBe('cancelled')
-      expect(aborted.sort()).toEqual(['slow', 'slower'])
+      expect(aborted.sort()).toStrictEqual(['slow', 'slower'])
     })
   })
 
@@ -1009,7 +1010,7 @@ describe('Parallel engine execution', () => {
       expect(info.run.status).toBe('completed')
 
       const finalStep = info.steps.find((s) => s.name === 'final')
-      expect(finalStep?.output).toEqual({
+      expect(finalStep?.output).toStrictEqual({
         cResult: 30,
         allSteps: { a: 10, b: 20, c: 30 },
       })

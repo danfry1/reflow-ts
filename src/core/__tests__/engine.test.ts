@@ -7,6 +7,8 @@ import { createEngine } from '../engine'
 import type { StorageAdapter } from '../types'
 import { MemoryStorage } from '../../storage/memory'
 import { SQLiteStorage } from '../../storage/sqlite-node'
+import { at } from '../../__tests__/helpers'
+import { ValidationError } from '../../index'
 
 function expectPresent<T>(value: T | null | undefined): T {
   expect(value).not.toBeNull()
@@ -96,10 +98,10 @@ describe('Engine', () => {
       const engine = createEngine({ storage, workflows: [wf] })
       const run = await engine.enqueue('test', { x: 1 })
 
-      expect(run.id).toBeTruthy()
+      expect(run.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
       expect(run.workflow).toBe('test')
       expect(run.status).toBe('pending')
-      expect(run.input).toEqual({ x: 1 })
+      expect(run.input).toStrictEqual({ x: 1 })
     })
 
     it('returns the existing run when the same idempotency key is reused', async () => {
@@ -201,7 +203,7 @@ describe('Engine', () => {
 
       await expect(
         engine.enqueue('strict', { email: 'not-an-email' } as any),
-      ).rejects.toThrow()
+      ).rejects.toThrow(ValidationError)
     })
 
     it('throws for an unknown workflow name', async () => {
@@ -274,7 +276,7 @@ describe('Engine', () => {
       await engine.enqueue('chain', { x: 10 })
       await engine.tick()
 
-      expect(results).toEqual([{ a: 11 }, { b: 22 }])
+      expect(results).toStrictEqual([{ a: 11 }, { b: 22 }])
     })
 
     it('marks a successful run as completed', async () => {
@@ -306,11 +308,11 @@ describe('Engine', () => {
 
       const steps = await storage.getStepResults(run.id)
       expect(steps).toHaveLength(2)
-      expect(steps[0].name).toBe('a')
-      expect(steps[0].output).toEqual({ x: 1 })
-      expect(steps[0].status).toBe('completed')
-      expect(steps[1].name).toBe('b')
-      expect(steps[1].output).toEqual({ y: 2 })
+      expect(at(steps, 0).name).toBe('a')
+      expect(at(steps, 0).output).toStrictEqual({ x: 1 })
+      expect(at(steps, 0).status).toBe('completed')
+      expect(at(steps, 1).name).toBe('b')
+      expect(at(steps, 1).output).toStrictEqual({ y: 2 })
     })
 
     it('completes a workflow with zero steps', async () => {
@@ -344,7 +346,7 @@ describe('Engine', () => {
 
       const steps = await storage.getStepResults(run.id)
       expect(steps).toHaveLength(2)
-      expect(steps[1].output).toEqual({ received: undefined })
+      expect(at(steps, 1).output).toStrictEqual({ received: undefined })
     })
 
     it('handles a step that returns null', async () => {
@@ -358,7 +360,7 @@ describe('Engine', () => {
       await engine.tick()
 
       const steps = await storage.getStepResults(run.id)
-      expect(steps[0].output).toBeNull()
+      expect(at(steps, 0).output).toBeNull()
     })
 
     it('does nothing when tick finds no pending runs', async () => {
@@ -594,9 +596,9 @@ describe('Engine', () => {
       const info = expectPresent(await engine.getRunStatus(run.id))
       expect(info.run.status).toBe('failed')
       expect(info.steps).toHaveLength(1)
-      expect(info.steps[0].name).toBe('slow')
-      expect(info.steps[0].status).toBe('failed')
-      expect(info.steps[0].error).toContain('heartbeat exploded')
+      expect(at(info.steps, 0).name).toBe('slow')
+      expect(at(info.steps, 0).status).toBe('failed')
+      expect(at(info.steps, 0).error).toContain('heartbeat exploded')
       expect(afterStep).not.toHaveBeenCalled()
     })
   })
@@ -642,8 +644,8 @@ describe('Engine', () => {
       await engine.tick()
 
       const steps = await storage.getStepResults(run.id)
-      expect(steps[0].attempts).toBe(2)
-      expect(steps[0].status).toBe('completed')
+      expect(at(steps, 0).attempts).toBe(2)
+      expect(at(steps, 0).status).toBe('completed')
     })
 
     it('defaults to 1 attempt when no retry config is set', async () => {
@@ -659,8 +661,8 @@ describe('Engine', () => {
       await engine.tick()
 
       const steps = await storage.getStepResults(run.id)
-      expect(steps[0].attempts).toBe(1)
-      expect(steps[0].status).toBe('failed')
+      expect(at(steps, 0).attempts).toBe(1)
+      expect(at(steps, 0).status).toBe('failed')
     })
 
     it('uses exponential backoff when configured', async () => {
@@ -689,7 +691,7 @@ describe('Engine', () => {
       await engine.tick()
 
       // Exponential: 100 * 2^0, 100 * 2^1, 100 * 2^2
-      expect(delays).toEqual([100, 200, 400])
+      expect(delays).toStrictEqual([100, 200, 400])
 
       vi.restoreAllMocks()
     })
@@ -720,7 +722,7 @@ describe('Engine', () => {
       await engine.tick()
 
       // Linear: 50 * 1, 50 * 2, 50 * 3
-      expect(delays).toEqual([50, 100, 150])
+      expect(delays).toStrictEqual([50, 100, 150])
 
       vi.restoreAllMocks()
     })
@@ -785,9 +787,9 @@ describe('Engine', () => {
       await engine.tick()
 
       const steps = await storage.getStepResults(run.id)
-      expect(steps[0].error).toBe('specific error message')
-      expect(steps[0].status).toBe('failed')
-      expect(steps[0].output).toBeNull()
+      expect(at(steps, 0).error).toBe('specific error message')
+      expect(at(steps, 0).status).toBe('failed')
+      expect(at(steps, 0).output).toBeNull()
     })
 
     it('calls the onFailure handler with error context', async () => {
@@ -838,7 +840,7 @@ describe('Engine', () => {
       )
 
       const steps = await storage.getStepResults(run.id)
-      expect(steps[0].error).toBe('raw string error')
+      expect(at(steps, 0).error).toBe('raw string error')
     })
 
     it('still marks run as failed even without an onFailure handler', async () => {
@@ -1036,10 +1038,10 @@ describe('Engine', () => {
       expect(info.run.status).toBe('completed')
       expect(info.run.workflow).toBe('status-test')
       expect(info.steps).toHaveLength(2)
-      expect(info.steps[0].name).toBe('a')
-      expect(info.steps[0].output).toEqual({ doubled: 10 })
-      expect(info.steps[1].name).toBe('b')
-      expect(info.steps[1].output).toEqual({ result: 11 })
+      expect(at(info.steps, 0).name).toBe('a')
+      expect(at(info.steps, 0).output).toStrictEqual({ doubled: 10 })
+      expect(at(info.steps, 1).name).toBe('b')
+      expect(at(info.steps, 1).output).toStrictEqual({ result: 11 })
     })
 
     it('returns run with pending status before execution', async () => {
@@ -1079,8 +1081,8 @@ describe('Engine', () => {
       const info = expectPresent(await engine.getRunStatus(run.id))
 
       expect(info.run.status).toBe('failed')
-      expect(info.steps[0].status).toBe('failed')
-      expect(info.steps[0].error).toBe('oops')
+      expect(at(info.steps, 0).status).toBe('failed')
+      expect(at(info.steps, 0).error).toBe('oops')
     })
   })
 
@@ -1187,8 +1189,8 @@ describe('Engine', () => {
       const info = expectPresent(await engine.getRunStatus(run.id))
       expect(info.run.status).toBe('completed')
       expect(info.steps).toHaveLength(2)
-      expect(info.steps[0].status).toBe('completed')
-      expect(info.steps[1].status).toBe('completed')
+      expect(at(info.steps, 0).status).toBe('completed')
+      expect(at(info.steps, 1).status).toBe('completed')
     })
 
     it('a throwing onRunComplete does not reject tick()', async () => {
@@ -1323,7 +1325,7 @@ describe('Engine', () => {
       await engine.enqueue('start-order', {})
       await engine.tick()
 
-      expect(order).toEqual(['onRunStart', 'onStepStart', 'onStepComplete', 'onRunComplete'])
+      expect(order).toStrictEqual(['onRunStart', 'onStepStart', 'onStepComplete', 'onRunComplete'])
     })
 
     it('calls onStepStart before each step executes', async () => {
@@ -1443,8 +1445,8 @@ describe('Engine', () => {
       const info = expectPresent(await engine.getRunStatus(run.id))
       expect(info.run.status).toBe('completed')
       expect(info.steps).toHaveLength(2)
-      expect(info.steps[0].status).toBe('completed')
-      expect(info.steps[1].status).toBe('completed')
+      expect(at(info.steps, 0).status).toBe('completed')
+      expect(at(info.steps, 1).status).toBe('completed')
     })
   })
 
@@ -1466,8 +1468,8 @@ describe('Engine', () => {
       await engine.tick()
 
       const steps = await storage.getStepResults(run.id)
-      expect(steps[0].status).toBe('failed')
-      expect(steps[0].error).toContain('timed out')
+      expect(at(steps, 0).status).toBe('failed')
+      expect(at(steps, 0).error).toContain('timed out')
     })
 
     it('does not timeout a fast step', async () => {
@@ -1486,8 +1488,8 @@ describe('Engine', () => {
       await engine.tick()
 
       const steps = await storage.getStepResults(run.id)
-      expect(steps[0].status).toBe('completed')
-      expect(steps[0].output).toEqual({ fast: true })
+      expect(at(steps, 0).status).toBe('completed')
+      expect(at(steps, 0).output).toStrictEqual({ fast: true })
     })
 
     it('retries after timeout when retry is configured', async () => {
@@ -1514,7 +1516,7 @@ describe('Engine', () => {
 
       expect(attempts).toBe(3)
       const steps = await storage.getStepResults(run.id)
-      expect(steps[0].status).toBe('completed')
+      expect(at(steps, 0).status).toBe('completed')
     })
 
     it('stops retry backoff promptly when a timed-out run is cancelled', async () => {
@@ -1574,8 +1576,8 @@ describe('Engine', () => {
       await engine.tick()
 
       const steps = await storage.getStepResults(run.id)
-      expect(steps[0].status).toBe('failed')
-      expect(steps[0].error).toContain('timed out')
+      expect(at(steps, 0).status).toBe('failed')
+      expect(at(steps, 0).error).toContain('timed out')
     })
 
     it('steps without timeout run without time limit', async () => {
@@ -1591,7 +1593,7 @@ describe('Engine', () => {
       await engine.tick()
 
       const steps = await storage.getStepResults(run.id)
-      expect(steps[0].status).toBe('completed')
+      expect(at(steps, 0).status).toBe('completed')
     })
   })
 
@@ -1830,7 +1832,7 @@ describe('Engine', () => {
       const engine = createEngine({ storage, workflows: [wf] })
       const id = engine.schedule('test', {}, 5000)
 
-      expect(id).toBeTruthy()
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
       expect(typeof id).toBe('string')
 
       engine.stop()
@@ -1947,9 +1949,9 @@ describe('Engine', () => {
       await engine.enqueue('steps-ctx', { x: 0 })
       await engine.tick()
 
-      expect(captured[0]).toEqual({})
-      expect(captured[1]).toEqual({ a: { fromA: 1 } })
-      expect(captured[2]).toEqual({ a: { fromA: 1 }, b: { fromB: 2 } })
+      expect(captured[0]).toStrictEqual({})
+      expect(captured[1]).toStrictEqual({ a: { fromA: 1 } })
+      expect(captured[2]).toStrictEqual({ a: { fromA: 1 }, b: { fromB: 2 } })
     })
 
     it('steps accumulator is populated from persisted results on crash recovery', async () => {
@@ -1975,7 +1977,7 @@ describe('Engine', () => {
       await engine.enqueue('steps-resume', {})
       await engine.tick()
 
-      expect(captured[0]).toEqual({ a: { fromA: 'hello' } })
+      expect(captured[0]).toStrictEqual({ a: { fromA: 'hello' } })
     })
 
     it('freezing steps does not freeze prev', async () => {
@@ -2001,7 +2003,7 @@ describe('Engine', () => {
         .step('a', async () => ({ nested: { val: 1 } }))
         .step('b', async ({ steps }) => {
           outerFrozen = Object.isFrozen(steps)
-          innerFrozen = Object.isFrozen((steps as Record<string, Record<string, unknown>>).a.nested)
+          innerFrozen = Object.isFrozen(steps.a?.nested)
           return {}
         })
 
@@ -2033,7 +2035,7 @@ describe('Engine', () => {
 
       const info = expectPresent(await engine.getRunStatus(run.id))
       expect(info.run.status).toBe('completed')
-      expect(steps).toEqual(['check'])
+      expect(steps).toStrictEqual(['check'])
     })
 
     it('complete(value) persists the value as step result', async () => {
@@ -2050,7 +2052,7 @@ describe('Engine', () => {
       const info = expectPresent(await engine.getRunStatus(run.id))
       expect(info.run.status).toBe('completed')
       expect(info.steps).toHaveLength(1)
-      expect(info.steps[0].output).toEqual({ reason: 'ineligible' })
+      expect(at(info.steps, 0).output).toStrictEqual({ reason: 'ineligible' })
     })
 
     it('complete() does not trigger onFailure', async () => {
@@ -2122,7 +2124,7 @@ describe('Engine', () => {
       const run = await engine.enqueue('early-steps', {})
       await engine.tick()
 
-      expect(capturedSteps).toEqual({ a: { fromA: 42 } })
+      expect(capturedSteps).toStrictEqual({ a: { fromA: 42 } })
       const info = expectPresent(await engine.getRunStatus(run.id))
       expect(info.run.status).toBe('completed')
       expect(info.steps).toHaveLength(2)
@@ -2140,7 +2142,7 @@ describe('Engine', () => {
       const info = expectPresent(await engine.getRunStatus(run.id))
       expect(info.run.status).toBe('completed')
       expect(info.steps).toHaveLength(2)
-      expect(info.steps[1].output).toEqual({ final: true })
+      expect(at(info.steps, 1).output).toStrictEqual({ final: true })
     })
 
     it('complete() without value persists step with undefined output', async () => {
@@ -2154,7 +2156,7 @@ describe('Engine', () => {
 
       const info = expectPresent(await engine.getRunStatus(run.id))
       expect(info.steps).toHaveLength(1)
-      expect(info.steps[0].status).toBe('completed-early')
+      expect(at(info.steps, 0).status).toBe('completed-early')
     })
 
     it('completed-early step is detected on crash recovery', async () => {

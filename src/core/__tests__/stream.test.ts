@@ -107,7 +107,7 @@ describe('async hooks', () => {
     await engine.tick()
 
     // The async onStepComplete for 'a' must settle before 'b' begins.
-    expect(order).toEqual(['a-run', 'hook-a', 'b-run', 'hook-b'])
+    expect(order).toStrictEqual(['a-run', 'hook-a', 'b-run', 'hook-b'])
   })
 
   it('a rejecting async hook does not fail the run', async () => {
@@ -153,7 +153,7 @@ describe('async hooks', () => {
     await engine.enqueue('final-output', {})
     await engine.tick()
 
-    expect(captured).toEqual({
+    expect(captured).toStrictEqual({
       type: 'runComplete',
       runId: expect.any(String),
       workflow: 'final-output',
@@ -191,7 +191,7 @@ describe('async hooks', () => {
     await engine.enqueue('hook-order', {})
     await engine.tick()
 
-    expect(order).toEqual(['run-start', 'step-start', 'handler', 'run-failed'])
+    expect(order).toStrictEqual(['run-start', 'step-start', 'handler', 'run-failed'])
   })
 
   it('cancelling a run interrupts a pending async hook', async () => {
@@ -425,7 +425,7 @@ describe('engine.stream()', () => {
     }
 
     await tickPromise
-    expect(remaining).toEqual(['stepComplete', 'runComplete'])
+    expect(remaining).toStrictEqual(['stepComplete', 'runComplete'])
   })
 
   it('never buffers more than the configured capacity', async () => {
@@ -458,7 +458,7 @@ describe('engine.stream()', () => {
       buffered.push(result.value.type)
     }
 
-    expect(buffered).toEqual(['runStart'])
+    expect(buffered).toStrictEqual(['runStart'])
   })
 
   it('yields lifecycle events in order for a single run', async () => {
@@ -478,7 +478,7 @@ describe('engine.stream()', () => {
       if (event.type === 'runComplete') break
     }
 
-    expect(types).toEqual([
+    expect(types).toStrictEqual([
       'runStart',
       'stepStart',
       'stepComplete',
@@ -506,7 +506,7 @@ describe('engine.stream()', () => {
       }
     }
 
-    expect(output).toEqual({ done: true, value: 7 })
+    expect(output).toStrictEqual({ done: true, value: 7 })
   })
 
   it('tags every event with its workflow name across multiple workflows', async () => {
@@ -528,7 +528,7 @@ describe('engine.stream()', () => {
       }
     }
 
-    expect(completions).toEqual(new Set(['wf-a', 'wf-b']))
+    expect(completions).toStrictEqual(new Set(['wf-a', 'wf-b']))
   })
 
   it('preserves per-run ordering with concurrent producers and a bounded buffer', async () => {
@@ -559,7 +559,7 @@ describe('engine.stream()', () => {
     await Promise.all([engine.tick(), consumer])
 
     for (const run of runs) {
-      expect(eventsByRun.get(run.id)).toEqual([
+      expect(eventsByRun.get(run.id)).toStrictEqual([
         'runStart',
         'stepStart',
         'stepComplete',
@@ -685,7 +685,7 @@ describe('engine.stream()', () => {
     }
 
     await tickPromise
-    expect(observed).toEqual(['runStart', 'stepStart', 'stepComplete', 'runComplete'])
+    expect(observed).toStrictEqual(['runStart', 'stepStart', 'stepComplete', 'runComplete'])
   })
 
   it('unsubscribes when the consumer breaks out of the loop', async () => {
@@ -735,7 +735,7 @@ describe('engine.stream()', () => {
       }
     }
 
-    expect(hookEvents).toEqual(['hook'])
+    expect(hookEvents).toStrictEqual(['hook'])
     expect(streamSawComplete).toBe(true)
   })
 
@@ -862,7 +862,7 @@ describe('engine.stream()', () => {
       }
     }
 
-    expect(types).toEqual(['runStart', 'stepStart', 'runFailed'])
+    expect(types).toStrictEqual(['runStart', 'stepStart', 'runFailed'])
     expect(observedError).toBeInstanceOf(Error)
     expect(observedError).not.toBe(failure)
     expect(observedError?.message).toBe(failure.message)
@@ -886,14 +886,14 @@ describe('engine.stream()', () => {
       if (event.type === 'runComplete') break
     }
 
-    expect(events.map((event) => event.type)).toEqual([
+    expect(events.map((event) => event.type)).toStrictEqual([
       'runStart',
       'stepStart',
       'stepComplete',
       'runComplete',
     ])
-    expect(events.find((event) => event.type === 'stepComplete')?.output).toEqual({ done: true })
-    expect(events.find((event) => event.type === 'runComplete')?.output).toEqual({ done: true })
+    expect(events.find((event) => event.type === 'stepComplete')?.output).toStrictEqual({ done: true })
+    expect(events.find((event) => event.type === 'runComplete')?.output).toStrictEqual({ done: true })
     expect(neverRuns).not.toHaveBeenCalled()
   })
 
@@ -921,7 +921,7 @@ describe('engine.stream()', () => {
     expect(lastStart).toBeLessThan(firstCompletion)
     expect(events.filter((event) => event.type === 'stepStart')).toHaveLength(2)
     expect(events.filter((event) => event.type === 'stepComplete')).toHaveLength(2)
-    expect(events.find((event) => event.type === 'runComplete')?.output).toEqual({
+    expect(events.find((event) => event.type === 'runComplete')?.output).toStrictEqual({
       a: { value: 'a' },
       b: { value: 'b' },
     })
@@ -999,7 +999,7 @@ describe('engine.stream()', () => {
     const pending = stream.next()
     await stream.return?.()
 
-    await expect(pending).resolves.toEqual({ value: undefined, done: true })
+    await expect(pending).resolves.toStrictEqual({ value: undefined, done: true })
   })
 
   it('resolves concurrent next() calls in event order', async () => {
@@ -1032,8 +1032,8 @@ describe('engine.stream()', () => {
     await engine.tick()
     await stream.return?.()
 
-    await expect(stream.next()).resolves.toEqual({ value: undefined, done: true })
-    await expect(stream.next()).resolves.toEqual({ value: undefined, done: true })
+    await expect(stream.next()).resolves.toStrictEqual({ value: undefined, done: true })
+    await expect(stream.next()).resolves.toStrictEqual({ value: undefined, done: true })
   })
 
   it('throw() is terminal, preserves the thrown value, and unblocks producers', async () => {
@@ -1049,7 +1049,7 @@ describe('engine.stream()', () => {
 
     await expect(stream.throw?.(thrown)).rejects.toBe(thrown)
     await settlesWithin(tickPromise)
-    await expect(stream.next()).resolves.toEqual({ value: undefined, done: true })
+    await expect(stream.next()).resolves.toStrictEqual({ value: undefined, done: true })
   })
 
   it('disposal is idempotent', async () => {
@@ -1062,7 +1062,7 @@ describe('engine.stream()', () => {
     await stream.return?.()
     await stream[Symbol.asyncDispose]()
 
-    await expect(stream.next()).resolves.toEqual({ value: undefined, done: true })
+    await expect(stream.next()).resolves.toStrictEqual({ value: undefined, done: true })
   })
 
   it('allows a new stream after stop() closed previous subscriptions', async () => {
@@ -1072,7 +1072,7 @@ describe('engine.stream()', () => {
     const oldStream = engine.stream()
 
     await engine.stop()
-    await expect(oldStream.next()).resolves.toEqual({ value: undefined, done: true })
+    await expect(oldStream.next()).resolves.toStrictEqual({ value: undefined, done: true })
 
     const newStream = engine.stream()
     await engine.enqueue('stream-after-stop', {})
@@ -1083,7 +1083,7 @@ describe('engine.stream()', () => {
       types.push(event.type)
       if (event.type === 'runComplete') break
     }
-    expect(types).toEqual(['runStart', 'stepStart', 'stepComplete', 'runComplete'])
+    expect(types).toStrictEqual(['runStart', 'stepStart', 'stepComplete', 'runComplete'])
   })
 
   it('supports await using for disposal', async () => {

@@ -15,7 +15,9 @@ Everything stored as workflow input or step output must be a `PersistedValue`. S
 
 ```typescript
 type RunStatus = 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
-type StepStatus = 'pending' | 'running' | 'completed' | 'completed-early' | 'sleeping' | 'waiting' | 'failed'
+type StepStatus =
+  | 'pending' | 'running' | 'completed' | 'completed-early'
+  | 'skipped' | 'sleeping' | 'waiting' | 'failed'
 ```
 
 | Type | Shape |

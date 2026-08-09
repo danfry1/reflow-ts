@@ -33,7 +33,7 @@ describe('waitForEvent', () => {
 
     // First tick runs `begin`, reaches the wait, and suspends.
     await engine.tick()
-    expect(ran).toEqual(['begin'])
+    expect(ran).toStrictEqual(['begin'])
     let info = await engine.getRunStatus(run.id)
     expect(info?.run.status).toBe('waiting')
     expect(info?.steps.find((s) => s.name === 'approval')?.status).toBe('waiting')
@@ -46,11 +46,11 @@ describe('waitForEvent', () => {
     expect(await engine.sendEvent(run.id, 'approval', { approvedBy: 'alice' })).toBe(true)
     await engine.tick()
 
-    expect(ran).toEqual(['begin', 'finish'])
+    expect(ran).toStrictEqual(['begin', 'finish'])
     info = await engine.getRunStatus(run.id)
     expect(info?.run.status).toBe('completed')
-    expect(info?.steps.find((s) => s.name === 'approval')?.output).toEqual({ approvedBy: 'alice' })
-    expect(info?.steps.find((s) => s.name === 'finish')?.output).toEqual({ approver: 'alice' })
+    expect(info?.steps.find((s) => s.name === 'approval')?.output).toStrictEqual({ approvedBy: 'alice' })
+    expect(info?.steps.find((s) => s.name === 'finish')?.output).toStrictEqual({ approver: 'alice' })
   })
 
   it('buffers an event delivered before the run reaches the wait', async () => {
@@ -71,7 +71,7 @@ describe('waitForEvent', () => {
 
     const info = await engine.getRunStatus(run.id)
     expect(info?.run.status).toBe('completed')
-    expect(info?.steps.find((s) => s.name === 'b')?.output).toEqual({ payload: { value: 42 } })
+    expect(info?.steps.find((s) => s.name === 'b')?.output).toStrictEqual({ payload: { value: 42 } })
   })
 
   it('fails with WaitTimeoutError when the event does not arrive in time', async () => {
@@ -116,7 +116,7 @@ describe('waitForEvent', () => {
 
     const info = await engine.getRunStatus(run.id)
     expect(info?.run.status).toBe('completed')
-    expect(info?.steps.find((s) => s.name === 'done')?.output).toEqual({ got: { ok: true } })
+    expect(info?.steps.find((s) => s.name === 'done')?.output).toStrictEqual({ got: { ok: true } })
   })
 
   it('validates the payload against the schema on delivery', async () => {
@@ -177,7 +177,7 @@ describe('waitForEvent', () => {
     await engine2.sendEvent(run.id, 'signal', {})
     await engine2.tick()
 
-    expect(ran).toEqual(['a', 'b'])
+    expect(ran).toStrictEqual(['a', 'b'])
     expect((await engine2.getRunStatus(run.id))?.run.status).toBe('completed')
   })
 
@@ -202,7 +202,7 @@ describe('waitForEvent', () => {
 
     const info = await engine.getRunStatus(run.id)
     expect(info?.run.status).toBe('completed')
-    expect(info?.steps.find((s) => s.name === 'end')?.output).toEqual({
+    expect(info?.steps.find((s) => s.name === 'end')?.output).toStrictEqual({
       first: { n: 1 },
       second: { n: 2 },
     })
@@ -247,7 +247,7 @@ describe('waitForEvent', () => {
 
     const info = await engine.getRunStatus(run.id)
     expect(info?.run.status).toBe('completed')
-    expect(info?.steps.find((s) => s.name === 'done')?.output).toEqual({ length: 5 })
+    expect(info?.steps.find((s) => s.name === 'done')?.output).toStrictEqual({ length: 5 })
   })
 
   it('sendEvent returns false once the run has finished', async () => {
@@ -299,7 +299,7 @@ describe('waitForEvent', () => {
     const info = await engine.getRunStatus(run.id)
     expect(info?.steps.find((s) => s.name === 'e')?.status).not.toBe('completed')
     // ...and the event is back in storage for the reclaiming engine to consume.
-    expect(await storage.takeEvent(run.id, 'e')).toEqual({ payload: { value: 7 } })
+    expect(await storage.takeEvent(run.id, 'e')).toStrictEqual({ payload: { value: 7 } })
   })
 
   it('rejects a waitForEvent whose name collides with another step', () => {

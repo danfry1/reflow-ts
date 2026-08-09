@@ -5,7 +5,7 @@ const UNDEFINED_SENTINEL_KEY = '__reflowUndefined__'
 const DATE_SENTINEL_KEY = '__reflowDate__'
 
 export function serializePersistedValue(value: PersistedValue, context: string): string {
-  return JSON.stringify(encodePersistedValue(value, context, '$'))
+  return JSON.stringify(encodePersistedValue(value, context, '$', false))
 }
 
 export function deserializePersistedValue(serialized: string | null): PersistedValue {
@@ -14,6 +14,17 @@ export function deserializePersistedValue(serialized: string | null): PersistedV
   }
 
   return decodePersistedValue(JSON.parse(serialized))
+}
+
+/**
+ * A stable string form of a value, independent of object key insertion order.
+ *
+ * Used to derive identifiers that must agree across processes: two engines
+ * constructing the same logical input must produce the same string even if
+ * their object literals happen to list the keys in a different order.
+ */
+export function canonicalizePersistedValue(value: PersistedValue, context: string): string {
+  return JSON.stringify(encodePersistedValue(value, context, '$', true))
 }
 
 export function clonePersistedValue(value: PersistedValue, context: string): PersistedValue {
@@ -41,7 +52,12 @@ export function persistedValuesEqual(left: PersistedValue, right: PersistedValue
   return leftKeys.every((key) => persistedValuesEqual(leftObj[key], rightObj[key]))
 }
 
-function encodePersistedValue(value: PersistedValue, context: string, path: string): unknown {
+function encodePersistedValue(
+  value: PersistedValue,
+  context: string,
+  path: string,
+  sortKeys: boolean,
+): unknown {
   if (value === undefined) {
     return { [UNDEFINED_SENTINEL_KEY]: true }
   }
@@ -69,7 +85,7 @@ function encodePersistedValue(value: PersistedValue, context: string, path: stri
   }
 
   if (Array.isArray(value)) {
-    return value.map((entry, index) => encodePersistedValue(entry, context, `${path}[${index}]`))
+    return value.map((entry, index) => encodePersistedValue(entry, context, `${path}[${index}]`, sortKeys))
   }
 
   if (isPlainObject(value)) {
@@ -88,8 +104,12 @@ function encodePersistedValue(value: PersistedValue, context: string, path: stri
     }
 
     const encoded: Record<string, unknown> = {}
-    for (const [key, entry] of Object.entries(value)) {
-      encoded[key] = encodePersistedValue(entry, context, `${path}.${key}`)
+    const entries = Object.entries(value)
+    if (sortKeys) {
+      entries.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    }
+    for (const [key, entry] of entries) {
+      encoded[key] = encodePersistedValue(entry, context, `${path}.${key}`, sortKeys)
     }
     return encoded
   }

@@ -10,6 +10,7 @@ A discriminated union on `type`. Every variant carries `runId` and `workflow`.
 type EngineEvent =
   | { type: 'runStart';     runId: string; workflow: string }
   | { type: 'stepStart';    runId: string; workflow: string; stepName: string }
+  | { type: 'stepSkipped';  runId: string; workflow: string; stepName: string }
   | { type: 'stepComplete'; runId: string; workflow: string; stepName: string; output: PersistedValue; attempts: number }
   | { type: 'runComplete';  runId: string; workflow: string; output: PersistedValue }
   | { type: 'runFailed';    runId: string; workflow: string; stepName: string; error: Error }
@@ -19,6 +20,7 @@ type EngineEvent =
 |---|---|
 | `runStart` | A run begins executing (also on crash-recovery resume) |
 | `stepStart` | Before each step (or parallel branch) runs |
+| `stepSkipped` | A step's [`when`](/api/workflow) predicate returned false and the step was skipped |
 | `stepComplete` | After a step's result is persisted |
 | `runComplete` | A run finishes successfully; `output` is the final result |
 | `runFailed` | A run fails; `stepName` is the offending step, `error` the cause |

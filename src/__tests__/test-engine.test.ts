@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow } from '../core/workflow'
 import { testEngine } from '../test/index'
+import { ValidationError } from '../index'
 
 describe('testEngine', () => {
   describe('successful workflows', () => {
@@ -18,8 +19,8 @@ describe('testEngine', () => {
 
       expect(result.status).toBe('completed')
       expect(result.steps.double.status).toBe('completed')
-      expect(result.steps.double.output).toEqual({ doubled: 10 })
-      expect(result.steps['add-ten'].output).toEqual({ result: 20 })
+      expect(result.steps.double.output).toStrictEqual({ doubled: 10 })
+      expect(result.steps['add-ten'].output).toStrictEqual({ result: 20 })
     })
 
     it('handles a single-step workflow', async () => {
@@ -32,7 +33,7 @@ describe('testEngine', () => {
       const result = await engine.run('one', { msg: 'hello' })
 
       expect(result.status).toBe('completed')
-      expect(result.steps.echo.output).toEqual({ echoed: 'hello' })
+      expect(result.steps.echo.output).toStrictEqual({ echoed: 'hello' })
     })
   })
 
@@ -68,7 +69,7 @@ describe('testEngine', () => {
 
       expect(result.status).toBe('failed')
       expect(result.steps.ok.status).toBe('completed')
-      expect(result.steps.ok.output).toEqual({ x: 1 })
+      expect(result.steps.ok.output).toStrictEqual({ x: 1 })
       expect(result.steps.bad.status).toBe('failed')
     })
   })
@@ -92,7 +93,7 @@ describe('testEngine', () => {
       const result = await engine.run('retry', {})
 
       expect(result.status).toBe('completed')
-      expect(result.steps.flaky.output).toEqual({ success: true })
+      expect(result.steps.flaky.output).toStrictEqual({ success: true })
       expect(attempts).toBe(3)
     })
   })
@@ -106,7 +107,7 @@ describe('testEngine', () => {
 
       const engine = testEngine({ workflows: [wf] })
 
-      await expect(engine.run('typed', { name: 123 } as any)).rejects.toThrow()
+      await expect(engine.run('typed', { name: 123 } as any)).rejects.toThrow(ValidationError)
     })
   })
 
@@ -120,7 +121,7 @@ describe('testEngine', () => {
       const result = await engine.run('early', {})
 
       expect(result.status).toBe('completed')
-      expect(result.steps.check).toEqual({
+      expect(result.steps.check).toStrictEqual({
         status: 'completed', output: { done: true }, error: null,
       })
       expect(result.steps.never).toBeUndefined()
@@ -144,8 +145,8 @@ describe('testEngine', () => {
       const resultA = await engine.run('alpha', { a: 'hello' })
       const resultB = await engine.run('beta', { b: 42 })
 
-      expect(resultA.steps.go.output).toEqual({ result: 'alpha-hello' })
-      expect(resultB.steps.go.output).toEqual({ result: 'beta-42' })
+      expect(resultA.steps.go.output).toStrictEqual({ result: 'alpha-hello' })
+      expect(resultB.steps.go.output).toStrictEqual({ result: 'beta-42' })
     })
   })
 
@@ -168,10 +169,10 @@ describe('testEngine', () => {
       const result = await te.run('parallel-test', { x: 5 })
 
       expect(result.status).toBe('completed')
-      expect(result.steps.fetch.output).toEqual({ data: 5 })
-      expect(result.steps.doubled.output).toEqual({ result: 10 })
-      expect(result.steps.tripled.output).toEqual({ result: 15 })
-      expect(result.steps.merge.output).toEqual({ sum: 25 })
+      expect(result.steps.fetch.output).toStrictEqual({ data: 5 })
+      expect(result.steps.doubled.output).toStrictEqual({ result: 10 })
+      expect(result.steps.tripled.output).toStrictEqual({ result: 15 })
+      expect(result.steps.merge.output).toStrictEqual({ sum: 25 })
     })
   })
 })

@@ -8,6 +8,7 @@ import type {
   StorageAdapter,
   WorkflowRun,
 } from '../core/types'
+import { InternalError } from '../core/errors'
 import { clonePersistedValue } from './codec'
 
 interface StoredRun extends WorkflowRun {
@@ -176,6 +177,9 @@ export class MemoryStorage implements StorageAdapter {
       return null
     }
     const [taken] = list.splice(index, 1)
+    if (taken === undefined) {
+      throw new InternalError(`Event "${eventName}" vanished from the buffer during take`)
+    }
     return { payload: clonePersistedValue(taken.payload, 'Event payload') }
   }
 
@@ -261,7 +265,7 @@ function cloneWorkflowRun(run: StoredRun): WorkflowRun {
 
 function cloneClaimedRun(run: StoredRun): ClaimedRun {
   if (!run.leaseId) {
-    throw new Error('Claimed run is missing a lease id')
+    throw new InternalError('Claimed run is missing a lease id')
   }
 
   return {

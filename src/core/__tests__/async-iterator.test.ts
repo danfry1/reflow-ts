@@ -8,7 +8,7 @@ describe('createBoundedAsyncIterator', () => {
 
     await subscriber.push(undefined, controller.signal)
 
-    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: false })
+    await expect(iterator.next()).resolves.toStrictEqual({ value: undefined, done: false })
     await iterator.return?.()
   })
 
@@ -22,7 +22,7 @@ describe('createBoundedAsyncIterator', () => {
 
     await Promise.resolve()
     expect(pushSettled).toBe(false)
-    await expect(iterator.next()).resolves.toEqual({ value: 'event', done: false })
+    await expect(iterator.next()).resolves.toStrictEqual({ value: 'event', done: false })
     await pushPromise
   })
 
@@ -38,9 +38,9 @@ describe('createBoundedAsyncIterator', () => {
     aborted.abort(new Error('cancelled'))
 
     await expect(abortedPush).rejects.toThrow('cancelled')
-    await expect(iterator.next()).resolves.toEqual({ value: 'buffered', done: false })
+    await expect(iterator.next()).resolves.toStrictEqual({ value: 'buffered', done: false })
     await laterPush
-    await expect(iterator.next()).resolves.toEqual({ value: 'later', done: false })
+    await expect(iterator.next()).resolves.toStrictEqual({ value: 'later', done: false })
   })
 
   it('close() preserves accepted buffered values and drops blocked producers', async () => {
@@ -52,8 +52,8 @@ describe('createBoundedAsyncIterator', () => {
     subscriber.close()
 
     await blockedPush
-    await expect(iterator.next()).resolves.toEqual({ value: 'buffered', done: false })
-    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true })
+    await expect(iterator.next()).resolves.toStrictEqual({ value: 'buffered', done: false })
+    await expect(iterator.next()).resolves.toStrictEqual({ value: undefined, done: true })
     await expect(subscriber.push('late', controller.signal)).resolves.toBeUndefined()
   })
 
@@ -69,7 +69,7 @@ describe('createBoundedAsyncIterator', () => {
     await iterator[Symbol.asyncDispose]()
 
     expect(onDispose).toHaveBeenCalledOnce()
-    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true })
+    await expect(iterator.next()).resolves.toStrictEqual({ value: undefined, done: true })
   })
 
   it('rejects immediately when the producer signal is already aborted', async () => {
