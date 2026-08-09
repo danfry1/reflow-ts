@@ -43,6 +43,35 @@ interface Result {
   stepsPerSec: number
 }
 
+/**
+ * Best of several timed passes, plus how far the worst pass fell behind.
+ *
+ * A single pass is not reportable: a GC pause, a thermal dip, or anything else
+ * sharing the machine only ever makes a pass slower, and one bad pass would be
+ * published as though it were the library's throughput. Taking the best
+ * approaches the machine's actual ceiling, and printing the spread means a
+ * noisy run announces itself instead of quietly producing a wrong number.
+ */
+function bestOf(passes: readonly Result[]): Result & { spread: number } {
+  const best = (pick: (r: Result) => number) => Math.max(...passes.map(pick))
+  const worstRuns = Math.min(...passes.map((pass) => pass.runsPerSec))
+  const bestRuns = best((pass) => pass.runsPerSec)
+
+  const first = passes[0]
+  if (!first) {
+    throw new Error('bestOf requires at least one pass')
+  }
+
+  return {
+    storage: first.storage,
+    steps: first.steps,
+    enqueuePerSec: best((pass) => pass.enqueuePerSec),
+    runsPerSec: bestRuns,
+    stepsPerSec: best((pass) => pass.stepsPerSec),
+    spread: bestRuns > 0 ? 1 - worstRuns / bestRuns : 0,
+  }
+}
+
 async function measure(
   storageLabel: string,
   makeStorage: () => StorageAdapter,
@@ -106,6 +135,7 @@ function fmt(n: number): string {
 async function main(): Promise<void> {
   const RUNS = 2000
   const CONCURRENCY = 25
+  const REPEATS = 3
   const dbPath = '/tmp/reflow-bench.db'
   const memory = (): StorageAdapter => new MemoryStorage()
 
@@ -113,10 +143,18 @@ async function main(): Promise<void> {
   await measure('warmup', memory, 5, 500, CONCURRENCY)
   await measure('warmup', sqliteStorage(dbPath), 5, 500, CONCURRENCY)
 
-  const results: Result[] = []
+  const results: Array<Result & { spread: number }> = []
   for (const steps of [1, 5]) {
-    results.push(await measure('memory', memory, steps, RUNS, CONCURRENCY))
-    results.push(await measure('sqlite-bun', sqliteStorage(dbPath), steps, RUNS, CONCURRENCY))
+    for (const [label, makeStorage] of [
+      ['memory', memory],
+      ['sqlite-bun', sqliteStorage(dbPath)],
+    ] as const) {
+      const passes: Result[] = []
+      for (let pass = 0; pass < REPEATS; pass++) {
+        passes.push(await measure(label, makeStorage, steps, RUNS, CONCURRENCY))
+      }
+      results.push(bestOf(passes))
+    }
   }
 
   for (const suffix of ['', '-wal', '-shm']) {
@@ -124,12 +162,25 @@ async function main(): Promise<void> {
   }
 
   const runtime = typeof Bun !== 'undefined' ? `Bun ${Bun.version}` : `Node ${process.version}`
-  console.log(`\nReflow benchmarks — ${runtime}, ${RUNS.toLocaleString('en-US')} runs/scenario, concurrency ${CONCURRENCY}\n`)
-  console.log('| Storage     | Steps | Enqueue/s | Runs/s  | Steps/s |')
-  console.log('|-------------|-------|-----------|---------|---------|')
+  console.log(
+    `\nReflow benchmarks — ${runtime}, ${RUNS.toLocaleString('en-US')} runs/scenario, ` +
+      `concurrency ${CONCURRENCY}, best of ${REPEATS}\n`,
+  )
+  console.log('| Storage     | Steps | Enqueue/s | Runs/s  | Steps/s | Spread |')
+  console.log('|-------------|-------|-----------|---------|---------|--------|')
   for (const r of results) {
     console.log(
-      `| ${r.storage.padEnd(11)} | ${String(r.steps).padEnd(5)} | ${fmt(r.enqueuePerSec).padStart(9)} | ${fmt(r.runsPerSec).padStart(7)} | ${fmt(r.stepsPerSec).padStart(7)} |`,
+      `| ${r.storage.padEnd(11)} | ${String(r.steps).padEnd(5)} | ${fmt(r.enqueuePerSec).padStart(9)} ` +
+        `| ${fmt(r.runsPerSec).padStart(7)} | ${fmt(r.stepsPerSec).padStart(7)} ` +
+        `| ${`${Math.round(r.spread * 100)}%`.padStart(6)} |`,
+    )
+  }
+
+  const noisiest = Math.max(...results.map((r) => r.spread))
+  if (noisiest > 0.25) {
+    console.log(
+      `\n! Spread reached ${Math.round(noisiest * 100)}% between passes — this machine is too ` +
+        'busy for these numbers to mean much. Close other work and re-run before quoting them.',
     )
   }
   console.log('')
