@@ -48,9 +48,11 @@ await engine.sendEvent(run.id, 'approved', { approver: 'alice' })
 
 Delivery is durable and order-independent: an event sent before the run reaches the wait is buffered and consumed when it gets there. Returns `false` if the run does not exist or has already finished (completed / failed / cancelled); throws [`ConfigError`](/api/errors) if the workflow has no such event step, or [`ValidationError`](/api/errors) if the payload fails the wait's schema. See [Waiting for Events](/guide/wait-for-event).
 
-## `engine.schedule(name, input, intervalMs, options?)`
+## `engine.schedule(name, input, recurrence, options?)`
 
-Registers a durable recurring schedule. Returns `Promise<string>` resolving to its key. Validates `name` and `input` immediately.
+Registers a durable recurring schedule. Returns `Promise<string>` resolving to its key. Validates `name`, `input`, and the recurrence immediately.
+
+`recurrence` is a number of milliseconds, `{ every }` (milliseconds or a duration string like `'1h'`), or `{ cron }` (a five-field expression, evaluated in **UTC**). A malformed or unsatisfiable cron expression throws `ConfigError` here rather than on the first tick.
 
 The schedule is persisted rather than held as an in-process timer, so it survives restarts; registering the same key again updates it in place, preserving the cadence unless the interval changed. Due firings are claimed atomically, so N instances sharing a schedule produce one run per interval. `options.key` sets the identity explicitly (it otherwise defaults to a hash of the name, interval, and input). See [Scheduled Workflows](/guide/scheduling).
 

@@ -27,7 +27,9 @@ type StepStatus =
 | `StepResult` | `{ id, runId, name, status, output, error, attempts, createdAt, updatedAt }` |
 | `RunInfo` | `{ run: WorkflowRun; steps: StepResult[] }` — returned by `getRunStatus()` |
 | `CreateRunResult` | `{ run: WorkflowRun; created: boolean }` — returned by `storage.createRun()` |
-| `WorkflowSchedule` | `{ key, workflow, input, intervalMs, nextRunAt, createdAt, updatedAt }` — a registered [schedule](/guide/scheduling) |
+| `WorkflowSchedule` | `{ key, workflow, input, recurrence, nextRunAt, createdAt, updatedAt }` — a registered [schedule](/guide/scheduling) |
+| `ScheduleRecurrence` | `{ kind: 'interval'; intervalMs }` \| `{ kind: 'cron'; expression }` — how a schedule repeats |
+| `ScheduleSpec` | What `engine.schedule()` accepts: `number` \| `{ every }` \| `{ cron }` |
 | `RetryConfig` | `{ maxAttempts, backoff, initialDelayMs?, timeoutMs? }` |
 
 ## Workflow & engine types

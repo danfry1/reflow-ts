@@ -10,6 +10,7 @@ import type {
   StorageAdapter,
   WorkflowRun,
   WorkflowSchedule,
+  ScheduleRecurrence,
 } from '../core/types'
 import { deserializePersistedValue, serializePersistedValue } from './codec'
 import { nextOccurrence } from '../core/schedule-timing'
@@ -41,7 +42,8 @@ interface WorkflowScheduleRow {
   key: string
   workflow: string
   input: string
-  interval_ms: number
+  interval_ms: number | null
+  cron: string | null
   next_run_at: number
   created_at: number
   updated_at: number
@@ -105,7 +107,8 @@ export class SQLiteStorage implements StorageAdapter {
         key          TEXT PRIMARY KEY,
         workflow     TEXT NOT NULL,
         input        TEXT NOT NULL,
-        interval_ms  INTEGER NOT NULL,
+        interval_ms  INTEGER,
+        cron         TEXT,
         next_run_at  INTEGER NOT NULL,
         created_at   INTEGER NOT NULL,
         updated_at   INTEGER NOT NULL
@@ -116,6 +119,35 @@ export class SQLiteStorage implements StorageAdapter {
     const columns = this.db.prepare(`PRAGMA table_info(workflow_runs)`).all() as { name: string }[]
     if (!columns.some((column) => column.name === 'wake_at')) {
       this.db.exec(`ALTER TABLE workflow_runs ADD COLUMN wake_at INTEGER`)
+    }
+
+
+    // 0.6.0 shipped workflow_schedules with a NOT NULL interval_ms and no cron
+    // column. Adding cron alone is not enough: a cron schedule leaves
+    // interval_ms null, which that constraint rejects. SQLite cannot drop a NOT
+    // NULL in place, so the table is rebuilt — cheap, since schedules are few.
+    const scheduleColumns = this.db.prepare(`PRAGMA table_info(workflow_schedules)`).all() as { name: string }[]
+    if (scheduleColumns.length > 0 && !scheduleColumns.some((column) => column.name === 'cron')) {
+      this.db.exec(`
+        ALTER TABLE workflow_schedules RENAME TO workflow_schedules_old;
+
+        CREATE TABLE workflow_schedules (
+          key          TEXT PRIMARY KEY,
+          workflow     TEXT NOT NULL,
+          input        TEXT NOT NULL,
+          interval_ms  INTEGER,
+          cron         TEXT,
+          next_run_at  INTEGER NOT NULL,
+          created_at   INTEGER NOT NULL,
+          updated_at   INTEGER NOT NULL
+        );
+
+        INSERT INTO workflow_schedules (key, workflow, input, interval_ms, cron, next_run_at, created_at, updated_at)
+        SELECT key, workflow, input, interval_ms, NULL, next_run_at, created_at, updated_at
+        FROM workflow_schedules_old;
+
+        DROP TABLE workflow_schedules_old;
+      `)
     }
 
     this.db.exec(`
@@ -501,20 +533,26 @@ export class SQLiteStorage implements StorageAdapter {
    */
   async upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule> {
     const upsert = this.db.transaction(() => {
-      this.db.prepare(`INSERT INTO workflow_schedules (key, workflow, input, interval_ms, next_run_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+      this.db.prepare(`INSERT INTO workflow_schedules (key, workflow, input, interval_ms, cron, next_run_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET
            workflow    = excluded.workflow,
            input       = excluded.input,
            interval_ms = excluded.interval_ms,
-           next_run_at = CASE WHEN workflow_schedules.interval_ms = excluded.interval_ms
+           cron        = excluded.cron,
+           -- Keep the existing cadence unless the recurrence itself changed, so
+           -- a redeploy does not push the next firing out every time. IS rather
+           -- than = so a NULL on either side compares correctly.
+           next_run_at = CASE WHEN workflow_schedules.interval_ms IS excluded.interval_ms
+                               AND workflow_schedules.cron IS excluded.cron
                               THEN workflow_schedules.next_run_at
                               ELSE excluded.next_run_at END,
            updated_at  = excluded.updated_at`).run(
         schedule.key,
         schedule.workflow,
         serializePersistedValue(schedule.input, 'Schedule input'),
-        schedule.intervalMs,
+        schedule.recurrence.kind === 'interval' ? schedule.recurrence.intervalMs : null,
+        schedule.recurrence.kind === 'cron' ? schedule.recurrence.expression : null,
         schedule.nextRunAt,
         schedule.createdAt,
         schedule.updatedAt,
@@ -553,7 +591,7 @@ export class SQLiteStorage implements StorageAdapter {
 
       const result = this.db
         .prepare(`UPDATE workflow_schedules SET next_run_at = ?, updated_at = ? WHERE key = ? AND next_run_at = ?`)
-        .run(nextOccurrence(row.next_run_at, row.interval_ms, now), now, row.key, row.next_run_at)
+        .run(nextOccurrence(row.next_run_at, rowRecurrence(row), now), now, row.key, row.next_run_at)
 
       // Guarded on the slot we read, so a racing claim cannot fire it twice.
       if (result.changes === 0) {
@@ -607,12 +645,19 @@ function isUniqueConstraintError(error: unknown): boolean {
     || error.message.includes('UNIQUE constraint failed')
 }
 
+/** The recurrence a schedule row describes: `cron` when set, otherwise the interval. */
+function rowRecurrence(row: WorkflowScheduleRow): ScheduleRecurrence {
+  return row.cron !== null
+    ? { kind: 'cron', expression: row.cron }
+    : { kind: 'interval', intervalMs: row.interval_ms ?? 0 }
+}
+
 function mapWorkflowScheduleRow(row: WorkflowScheduleRow): WorkflowSchedule {
   return {
     key: row.key,
     workflow: row.workflow,
     input: deserializePersistedValue(row.input),
-    intervalMs: row.interval_ms,
+    recurrence: rowRecurrence(row),
     nextRunAt: row.next_run_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

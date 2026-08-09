@@ -74,6 +74,18 @@ export interface RunInfo {
 }
 
 /**
+ * How a schedule repeats.
+ *
+ * A tagged union rather than two optional fields, so a schedule cannot be
+ * stored with both an interval and a cron expression, or neither.
+ */
+export type ScheduleRecurrence =
+  /** A fixed gap between firings. */
+  | { readonly kind: 'interval'; readonly intervalMs: number }
+  /** A five-field cron expression, evaluated in UTC. */
+  | { readonly kind: 'cron'; readonly expression: string }
+
+/**
  * A durably registered recurring schedule.
  *
  * Unlike a run, a schedule is long-lived and shared: every engine instance
@@ -91,8 +103,8 @@ export interface WorkflowSchedule {
   workflow: string
   /** Validated input handed to each enqueued run. */
   input: PersistedValue
-  /** Gap between firings, in milliseconds. */
-  intervalMs: number
+  /** How the schedule repeats. */
+  recurrence: ScheduleRecurrence
   /** Epoch ms at which this schedule is next due to fire. */
   nextRunAt: number
   createdAt: number
@@ -198,10 +210,10 @@ export interface StorageAdapter {
    * Register a recurring schedule, or update the existing one with the same
    * `key`. Returns the stored schedule.
    *
-   * Re-registering must **preserve `nextRunAt`** when the interval is unchanged,
-   * so a restarting process rejoins the existing cadence instead of pushing the
-   * next firing out by a full interval every deploy. When the interval does
-   * change, the supplied `nextRunAt` takes effect.
+   * Re-registering must **preserve `nextRunAt`** when the recurrence is
+   * unchanged, so a restarting process rejoins the existing cadence instead of
+   * pushing the next firing out by a full interval every deploy. When the
+   * recurrence changes, the supplied `nextRunAt` takes effect.
    */
   upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule>
   /**

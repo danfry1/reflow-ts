@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Cron schedules** — `engine.schedule(name, input, { cron: '0 9 * * 1-5' })` fires on a cron expression rather than a fixed gap. Supports the standard five fields (`minute hour day-of-month month day-of-week`) with wildcards, ranges, lists, a `/step` suffix, three-letter month and day names, and the `@hourly` / `@daily` / `@weekly` / `@monthly` / `@yearly` aliases. The parser is written from scratch — the package still has one runtime dependency.
+
+  **Expressions are evaluated in UTC.** There is no time-zone option, because interpreting cron in a local zone means deciding what a schedule means during a DST gap (a wall-clock time that does not occur) and a DST overlap (one that occurs twice); guessing there produces a scheduler that silently skips or doubles a run twice a year.
+
+  Malformed expressions are rejected by `schedule()` rather than on the first tick, as is an expression that can never occur (`0 0 30 2 *` — the 30th of February). Registration is the last point a bad cadence can reach the caller, since after that the schedule fires unattended. Missed occurrences are skipped, not backfilled, exactly as for intervals.
+
+  `parseCron()` and `nextCronOccurrence()` are exported for validating an expression or previewing its occurrences without registering anything. New exported types: `CronExpression`, `ScheduleSpec`, `ScheduleRecurrence`.
+- **Duration strings for schedule intervals** — `engine.schedule(name, input, { every: '1h' })` accepts the same unit-suffixed form as `.sleep()`. A bare number is still milliseconds, so existing callers are unaffected.
+
+### Changed
+
+- **Breaking:** `WorkflowSchedule.intervalMs` is replaced by `recurrence`, a tagged union of `{ kind: 'interval'; intervalMs }` and `{ kind: 'cron'; expression }`. A union rather than two optional fields, so a schedule cannot be stored with both or neither. This affects code reading `engine.listSchedules()` and anyone implementing a custom `StorageAdapter`; the `StorageAdapter` method signatures themselves are unchanged.
+- The SQLite adapters store the recurrence in a nullable `interval_ms` plus a new `cron` column. 0.6.0 created that table with `interval_ms INTEGER NOT NULL`, which a cron schedule cannot satisfy, and SQLite cannot drop a `NOT NULL` in place — so `initialize()` rebuilds the table when it finds the old shape, preserving existing rows. Automatic and idempotent; **no manual migration is needed**.
+
 ## 0.6.0 — 2026-08-09
 
 Durability beyond the step. A workflow can now pause for days, wait on a

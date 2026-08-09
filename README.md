@@ -546,6 +546,13 @@ const key = await engine.schedule('cleanup', { olderThanDays: 30 }, 60 * 60 * 10
 await engine.unschedule(key)
 ```
 
+Fires on a fixed interval or a cron expression:
+
+```typescript
+await engine.schedule('cleanup', input, { every: '1h' })
+await engine.schedule('report',  input, { cron: '0 9 * * 1-5' })  // 09:00 weekdays, UTC
+```
+
 Schedules are **stored, not held in memory**, so they survive a restart or a deploy — any
 engine instance running that workflow picks up the next firing. Registering the same key
 again updates that schedule in place (preserving its cadence unless the interval changed),
@@ -888,7 +895,7 @@ Delivers an external event to a run waiting on `waitForEvent(name)`. Returns `fa
 
 Registers a durable recurring schedule. Returns a `Promise<string>` resolving to the schedule's key, for later removal with `engine.unschedule(key)`.
 
-The schedule is persisted, so it survives restarts and deploys. Registering the same key again updates it in place and preserves the existing cadence unless the interval changed. Due firings are claimed atomically, so N instances sharing a schedule still produce one run per interval. `options.key` overrides the identity, which otherwise defaults to a hash of the workflow name, interval, and input. Missed occurrences are skipped rather than backfilled.
+The recurrence is a number of milliseconds, `{ every }` (ms or a duration string), or `{ cron }` (five fields, evaluated in UTC; malformed or unsatisfiable expressions throw at registration). The schedule is persisted, so it survives restarts and deploys. Registering the same key again updates it in place and preserves the existing cadence unless the recurrence changed. Due firings are claimed atomically, so N instances sharing a schedule still produce one run per interval. `options.key` overrides the identity, which otherwise defaults to a hash of the workflow name, interval, and input. Missed occurrences are skipped rather than backfilled.
 
 ### `engine.unschedule(key)`
 

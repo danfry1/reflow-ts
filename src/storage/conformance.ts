@@ -85,7 +85,7 @@ function makeSchedule(overrides: Partial<WorkflowSchedule> = {}): WorkflowSchedu
     key: 'nightly',
     workflow: 'test',
     input: { olderThanDays: 30 },
-    intervalMs: 60_000,
+    recurrence: { kind: 'interval', intervalMs: 60_000 },
     nextRunAt: now + 60_000,
     createdAt: now,
     updatedAt: now,
@@ -507,17 +507,17 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     async run(storage) {
       await storage.upsertSchedule(makeSchedule({ nextRunAt: 5_000 }))
       const changed = await storage.upsertSchedule(
-        makeSchedule({ intervalMs: 120_000, nextRunAt: 900_000 }),
+        makeSchedule({ recurrence: { kind: 'interval', intervalMs: 120_000 }, nextRunAt: 900_000 }),
       )
 
       assertEqual(changed.nextRunAt, 900_000, 'cadence reset')
-      assertEqual(changed.intervalMs, 120_000, 'new interval stored')
+      assertEqual(changed.recurrence, { kind: 'interval', intervalMs: 120_000 }, 'new recurrence stored')
     },
   },
   {
     name: 'claimDueSchedule advances past now and reports the occurrence it fired for',
     async run(storage) {
-      await storage.upsertSchedule(makeSchedule({ nextRunAt: 1_000, intervalMs: 100 }))
+      await storage.upsertSchedule(makeSchedule({ nextRunAt: 1_000, recurrence: { kind: 'interval', intervalMs: 100 } }))
 
       const claimed = await storage.claimDueSchedule(['test'], 1_250)
       assertEqual(claimed?.nextRunAt, 1_000, 'reports the due occurrence')
@@ -528,7 +528,7 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     name: 'an occurrence can only be claimed once',
     async run(storage) {
       // The atomicity that stops N instances firing one occurrence N times.
-      await storage.upsertSchedule(makeSchedule({ nextRunAt: 1_000, intervalMs: 100_000 }))
+      await storage.upsertSchedule(makeSchedule({ nextRunAt: 1_000, recurrence: { kind: 'interval', intervalMs: 100_000 } }))
 
       assert(await storage.claimDueSchedule(['test'], 1_000), 'first claim succeeds')
       assertEqual(await storage.claimDueSchedule(['test'], 1_000), null, 'second finds nothing due')
@@ -555,6 +555,79 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     async run(storage) {
       await storage.upsertSchedule(makeSchedule({ nextRunAt: 1_000 }))
       assertEqual(await storage.claimDueSchedule([], 5_000), null, 'no names means nothing claimable')
+    },
+  },
+  {
+    name: 'upsertSchedule round-trips a cron recurrence',
+    async run(storage) {
+      await storage.upsertSchedule(makeSchedule({
+        recurrence: { kind: 'cron', expression: '0 9 * * 1-5' },
+        nextRunAt: 5_000,
+      }))
+
+      const stored = (await storage.listSchedules())[0]
+      assertEqual(stored?.recurrence, { kind: 'cron', expression: '0 9 * * 1-5' }, 'cron recurrence')
+    },
+  },
+  {
+    name: 'upsertSchedule preserves the cadence when the cron expression is unchanged',
+    async run(storage) {
+      const cron = { kind: 'cron', expression: '0 9 * * 1-5' } as const
+      const first = await storage.upsertSchedule(makeSchedule({ recurrence: cron, nextRunAt: 5_000 }))
+      const second = await storage.upsertSchedule(makeSchedule({ recurrence: cron, nextRunAt: 900_000 }))
+
+      assertEqual(second.nextRunAt, first.nextRunAt, 'cadence preserved')
+    },
+  },
+  {
+    name: 'upsertSchedule resets the cadence when the cron expression changes',
+    async run(storage) {
+      await storage.upsertSchedule(makeSchedule({
+        recurrence: { kind: 'cron', expression: '0 9 * * *' },
+        nextRunAt: 5_000,
+      }))
+      const changed = await storage.upsertSchedule(makeSchedule({
+        recurrence: { kind: 'cron', expression: '0 10 * * *' },
+        nextRunAt: 900_000,
+      }))
+
+      assertEqual(changed.nextRunAt, 900_000, 'cadence reset')
+    },
+  },
+  {
+    name: 'switching between interval and cron resets the cadence',
+    async run(storage) {
+      // The two recurrence kinds are distinct cadences even when the stored
+      // columns for the other kind happen to be null on both sides.
+      await storage.upsertSchedule(makeSchedule({
+        recurrence: { kind: 'interval', intervalMs: 60_000 },
+        nextRunAt: 5_000,
+      }))
+      const changed = await storage.upsertSchedule(makeSchedule({
+        recurrence: { kind: 'cron', expression: '0 9 * * *' },
+        nextRunAt: 900_000,
+      }))
+
+      assertEqual(changed.nextRunAt, 900_000, 'cadence reset')
+      assertEqual(changed.recurrence, { kind: 'cron', expression: '0 9 * * *' }, 'recurrence replaced')
+    },
+  },
+  {
+    name: 'claimDueSchedule advances a cron schedule to its next occurrence',
+    async run(storage) {
+      // 09:00 daily; due at 2026-03-10T09:00Z, claimed a minute later.
+      await storage.upsertSchedule(makeSchedule({
+        recurrence: { kind: 'cron', expression: '0 9 * * *' },
+        nextRunAt: Date.parse('2026-03-10T09:00:00Z'),
+      }))
+
+      const claimed = await storage.claimDueSchedule(['test'], Date.parse('2026-03-10T09:01:00Z'))
+      assertEqual(claimed?.nextRunAt, Date.parse('2026-03-10T09:00:00Z'), 'reports the due occurrence')
+      assertEqual(
+        (await storage.listSchedules())[0]?.nextRunAt,
+        Date.parse('2026-03-11T09:00:00Z'),
+        'advances to tomorrow, not by a fixed interval',
+      )
     },
   },
   {

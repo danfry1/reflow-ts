@@ -562,6 +562,73 @@ describe('SQLiteStorage', () => {
     })
   })
 
+  describe('cron migration from 0.6', () => {
+    it('rebuilds a 0.6-shaped schedules table so cron rows can be stored', async () => {
+      // 0.6.0 shipped workflow_schedules with `interval_ms INTEGER NOT NULL`
+      // and no cron column. Adding cron alone is not enough — a cron schedule
+      // leaves interval_ms null, which that constraint rejects — so the table
+      // is rebuilt. This is the published schema, so the path is real.
+      storage.close()
+      if (existsSync(DB_PATH)) unlinkSync(DB_PATH)
+
+      const legacy = new Database(DB_PATH)
+      legacy.exec(`
+        CREATE TABLE workflow_schedules (
+          key          TEXT PRIMARY KEY,
+          workflow     TEXT NOT NULL,
+          input        TEXT NOT NULL,
+          interval_ms  INTEGER NOT NULL,
+          next_run_at  INTEGER NOT NULL,
+          created_at   INTEGER NOT NULL,
+          updated_at   INTEGER NOT NULL
+        );
+      `)
+      legacy.prepare(
+        `INSERT INTO workflow_schedules (key, workflow, input, interval_ms, next_run_at, created_at, updated_at)
+         VALUES ('legacy', 'test', '{"olderThanDays":30}', 60000, 5000, 1, 1)`,
+      ).run()
+      legacy.close()
+
+      storage = new SQLiteStorage(DB_PATH)
+      await storage.initialize()
+
+      // The existing interval schedule survives the rebuild intact.
+      const migrated = at(await storage.listSchedules(), 0)
+      expect(migrated.key).toBe('legacy')
+      expect(migrated.recurrence).toStrictEqual({ kind: 'interval', intervalMs: 60_000 })
+      expect(migrated.nextRunAt).toBe(5_000)
+      expect(migrated.input).toStrictEqual({ olderThanDays: 30 })
+
+      // ...and a cron schedule, impossible under the old NOT NULL, now stores.
+      await storage.upsertSchedule({
+        key: 'nightly',
+        workflow: 'test',
+        input: {},
+        recurrence: { kind: 'cron', expression: '0 9 * * *' },
+        nextRunAt: 10_000,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+
+      const schedules = await storage.listSchedules()
+      expect(schedules).toHaveLength(2)
+      expect(at(schedules, 1).recurrence).toStrictEqual({ kind: 'cron', expression: '0 9 * * *' })
+    })
+
+    it('is idempotent — initializing twice does not rebuild again or lose rows', async () => {
+      await storage.upsertSchedule({
+        key: 'keep', workflow: 'test', input: {},
+        recurrence: { kind: 'cron', expression: '0 9 * * *' },
+        nextRunAt: 10_000, createdAt: 1, updatedAt: 1,
+      })
+
+      await storage.initialize()
+      await storage.initialize()
+
+      expect(await storage.listSchedules()).toHaveLength(1)
+    })
+  })
+
   describe('schedules', () => {
     const makeSchedule = (overrides: Partial<WorkflowSchedule> = {}): WorkflowSchedule => {
       const now = Date.now()
@@ -569,7 +636,7 @@ describe('SQLiteStorage', () => {
         key: 'nightly',
         workflow: 'test',
         input: { olderThanDays: 30 },
-        intervalMs: 60_000,
+        recurrence: { kind: 'interval', intervalMs: 60_000 },
         nextRunAt: now + 60_000,
         createdAt: now,
         updatedAt: now,
