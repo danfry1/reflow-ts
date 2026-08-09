@@ -48,6 +48,7 @@ export type {
   EngineEvent,
   EngineEventOf,
   EnqueueOptions,
+  ScheduleOptions,
   StreamOptions,
   ResultStream,
 } from './core/engine'

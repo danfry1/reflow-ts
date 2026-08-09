@@ -481,6 +481,12 @@ engine.unschedule(scheduleId)
 // await engine.stop() also clears all schedules
 ```
 
+Ticks are aligned to wall-clock slots and enqueued with an idempotency key derived from the
+schedule's identity and slot, so registering the same schedule on several engine instances
+still produces **one run per interval**, not one per instance. Pass `options.key` to control
+that identity. The timers themselves are in-memory and do not survive a restart — only the
+deduplication is durable.
+
 ### Crash Recovery
 
 Reflow automatically resumes workflows from the last completed step. If your process crashes after step 2 of 5, a later engine instance can reclaim the stale `running` run after `runLeaseDurationMs` and continue at step 3 — completed steps are never re-executed.
@@ -776,9 +782,11 @@ Submits a workflow run. Type-safe - only accepts registered workflow names with 
 
 Cancels a pending or running workflow. Returns `true` if cancelled, `false` if already completed/failed/cancelled. Aborts the current step's `AbortSignal` immediately.
 
-### `engine.schedule(name, input, intervalMs)`
+### `engine.schedule(name, input, intervalMs, options?)`
 
 Enqueues a workflow run on a recurring interval. Returns a `scheduleId` for later cancellation with `engine.unschedule(scheduleId)`.
+
+Ticks are aligned to wall-clock slots of `intervalMs`, and each enqueue carries an idempotency key derived from the schedule's identity and its slot — so the same schedule registered on N engine instances yields one run per interval rather than N. `options.key` overrides the identity, which otherwise defaults to a hash of the workflow name, interval, and input.
 
 ### `engine.getRunStatus(runId)`
 

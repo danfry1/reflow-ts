@@ -106,8 +106,3 @@ export type UnitOutcome =
 export interface UnitExecutor<U extends ExecutionUnit> {
   execute(unit: U, ctx: ExecutionContext, prev: PersistedValue): Promise<UnitOutcome>
 }
-
-/** Maps each execution-unit kind to the executor that handles it. */
-export type UnitExecutors = {
-  [K in ExecutionUnit['kind']]: UnitExecutor<Extract<ExecutionUnit, { kind: K }>>
-}

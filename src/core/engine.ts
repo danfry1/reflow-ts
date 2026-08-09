@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import { persistedValuesEqual } from '../storage/codec'
+import { canonicalizePersistedValue, persistedValuesEqual } from '../storage/codec'
 import {
   createBoundedAsyncIterator,
   type AbortableSubscriber,
@@ -83,6 +83,21 @@ export interface EnqueueOptions {
   idempotencyKey?: string
 }
 
+/** Options for `engine.schedule()`. */
+export interface ScheduleOptions {
+  /**
+   * Identity of this schedule, shared across engine instances.
+   *
+   * Scheduled runs are enqueued with an idempotency key derived from this value
+   * and the interval slot, so every instance running the same schedule
+   * converges on a single run per interval. It defaults to a hash of the
+   * workflow name, interval, and input, which is already stable across
+   * instances — set it explicitly only to keep that identity fixed while one of
+   * those changes, or to deliberately split one logical schedule into two.
+   */
+  key?: string
+}
+
 /** The workflow engine. Connects workflows to storage and handles execution, polling, and scheduling. */
 export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Record<string, PersistedValue>> {
   /** Submit a workflow run. Type-safe: only accepts registered workflow names with matching input. */
@@ -106,11 +121,25 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    * fails schema validation.
    */
   sendEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
-  /** Enqueue a workflow on a recurring interval. Returns a schedule ID. */
+  /**
+   * Enqueue a workflow on a recurring interval. Returns a schedule ID for
+   * {@link Engine.unschedule}.
+   *
+   * Ticks are aligned to wall-clock slots of `intervalMs` rather than to
+   * elapsed time since the call, and each enqueue carries an idempotency key
+   * derived from the schedule's identity and its slot. Every engine instance
+   * therefore computes the same key for the same moment, so a schedule
+   * registered on N instances still produces exactly one run per interval
+   * instead of N.
+   *
+   * Schedules themselves are in-memory timers and do not survive a restart —
+   * only the deduplication is durable.
+   */
   schedule<TName extends string & keyof TWorkflowMap>(
     workflowName: TName,
     input: TWorkflowMap[TName],
     intervalMs: number,
+    options?: ScheduleOptions,
   ): string
   /** Cancel a recurring schedule by ID. */
   unschedule(scheduleId: string): boolean
@@ -573,6 +602,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     workflowName: string,
     input: PersistedValue,
     intervalMs: number,
+    options?: ScheduleOptions,
   ): string {
     if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
       throw new ConfigError('Schedule intervalMs must be a positive number')
@@ -582,10 +612,21 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     if (!wf) throw new WorkflowNotFoundError(workflowName)
 
     const parsedInput = wf.parseInput(input)
+    const scheduleKey = options?.key ?? deriveScheduleKey(workflowName, intervalMs, parsedInput)
     const scheduleId = randomUUID()
-    const interval = setInterval(() => {
-      void enqueue(workflowName, parsedInput).catch(reportError)
-    }, intervalMs)
+
+    const fire = () => {
+      // Slot by wall clock rather than by elapsed time since this call. Every
+      // instance independently derives the same slot for the same moment, so
+      // the idempotency keys collide and storage keeps exactly one run — which
+      // is what stops a schedule registered on N workers producing N runs.
+      const slot = Math.floor(Date.now() / intervalMs)
+      void enqueue(workflowName, parsedInput, {
+        idempotencyKey: `reflow.schedule:${scheduleKey}:${slot}`,
+      }).catch(reportError)
+    }
+
+    const interval = setInterval(fire, intervalMs)
 
     schedules.set(scheduleId, interval)
     return scheduleId
@@ -837,6 +878,26 @@ function runWithSignal<T>(
         },
       )
   })
+}
+
+/**
+ * Derive a schedule identity that every engine instance computes identically.
+ *
+ * Hashes the canonical (key-order-independent) form of the input together with
+ * the workflow name and interval, so two processes registering the same logical
+ * schedule agree without having to coordinate or configure anything.
+ */
+function deriveScheduleKey(
+  workflowName: string,
+  intervalMs: number,
+  input: PersistedValue,
+): string {
+  const canonicalInput = canonicalizePersistedValue(input, 'Schedule input')
+
+  return createHash('sha256')
+    .update(`${workflowName}\u0000${intervalMs}\u0000${canonicalInput}`)
+    .digest('base64url')
+    .slice(0, 22)
 }
 
 function normalizeIdempotencyKey(idempotencyKey?: string): string | null {

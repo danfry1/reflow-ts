@@ -10,8 +10,15 @@
 
 - **Error codes** — every `ReflowError` now carries a stable literal `code` (`'STEP_TIMEOUT'`, `'LEASE_EXPIRED'`, …) alongside its class. Branching on `code` is a closed union, so a `switch` over it can be checked for exhaustiveness, and unlike `instanceof` it survives bundling, duplicate copies of the package, and cross-realm boundaries. Errors also implement `toJSON()`, emitting the discriminant, their structured context, and a flattened `cause` chain, so they can be logged without a custom serializer. New exported types: `ReflowErrorCode`, `SerializedReflowError`. New exported errors: `StepFailedError`, `HookError`, `ThrownValueError`, `TestRunIncompleteError`, `InternalError`. New exported helpers: `toError`, `assertNever`.
 
+### Fixed
+
+- **`engine.schedule()` no longer multiplies across engine instances.** Scheduled ticks were plain `setInterval` callbacks calling `enqueue()` with no idempotency key, so a schedule registered on N engines sharing one storage produced N runs per interval — silently, in exactly the multi-instance deployment the concurrency guide recommends. Ticks are now aligned to wall-clock slots of `intervalMs` and enqueued with an idempotency key derived from the schedule's identity and slot number, so every instance computes the same key for the same moment and storage keeps one run. The identity defaults to a hash of the workflow name, interval, and canonical input; `schedule()` takes a new optional fourth argument, `{ key }`, to set it explicitly. Timers remain in-memory and still do not survive a restart — only the deduplication is durable. New exported type: `ScheduleOptions`.
+
+  The scheduling guide previously suggested giving scheduled runs an idempotency key to make them self-deduplicating, which `schedule()` had no parameter to do. That advice is now the built-in behaviour.
+
 ### Changed
 
+- Scheduled runs fire on wall-clock boundaries of `intervalMs` rather than at a fixed offset from the `schedule()` call. This is what lets independent instances agree on which tick is which; it also removes `setInterval` drift accumulation.
 - **Observer failures are reported instead of swallowed.** A lifecycle hook, stream consumer, or `onFailure` handler that throws was previously discarded by an empty `catch`, making a broken hook invisible. Those failures are now wrapped in a `HookError` (with the original throw preserved as `cause`) and delivered to the `onError` hook. Observers still cannot affect a run's outcome — only their visibility changes. Engines with no `onError` hook behave exactly as before.
 - Non-`Error` throws (`throw 'boom'`) are wrapped in `ThrownValueError` rather than a bare `Error`. The message is unchanged — it is still the thrown value's string form — and the original value is now retained on both `cause` and `.value`, so a thrown object is no longer flattened beyond recovery.
 - `testEngine.run()` throws `TestRunIncompleteError` (was a bare `Error`) when a run has not reached a terminal state after its single tick, and the message now names the usual cause: a workflow that suspends on `.sleep()` or `.waitForEvent()` needs a full `createEngine` to drive it.
