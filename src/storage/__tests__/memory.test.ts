@@ -388,7 +388,7 @@ describe('MemoryStorage', () => {
       const page1 = await storage.listRuns({ limit: 2 })
       expect(page1.map((r) => r.id)).toEqual(['c', 'b'])
 
-      const page2 = await storage.listRuns({ limit: 2, before: page1[page1.length - 1].createdAt })
+      const page2 = await storage.listRuns({ limit: 2, before: at(page1, page1.length - 1).createdAt })
       expect(page2.map((r) => r.id)).toEqual(['a'])
     })
 
@@ -398,7 +398,7 @@ describe('MemoryStorage', () => {
       await storage.createRun(makeRun({ id: 'c', createdAt: 1000 }))
 
       const page1 = await storage.listRuns({ limit: 2 })
-      const last = page1[page1.length - 1]
+      const last = at(page1, page1.length - 1)
       const page2 = await storage.listRuns({ limit: 2, before: last.createdAt, beforeId: last.id })
 
       expect(page1.length + page2.length).toBe(3)
@@ -415,7 +415,7 @@ describe('MemoryStorage', () => {
       ;(runs[0] as any).input = { x: 999 }
 
       const fresh = await storage.listRuns()
-      expect(fresh[0].input).toEqual({ x: 1 })
+      expect(at(fresh, 0).input).toEqual({ x: 1 })
     })
   })
 

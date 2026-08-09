@@ -261,7 +261,7 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
 
     const page1 = await storage.listRuns({ limit: 1 })
     expect(page1.map((r) => r.id)).toEqual(['c'])
-    const page2 = await storage.listRuns({ limit: 1, before: page1[0].createdAt })
+    const page2 = await storage.listRuns({ limit: 1, before: at(page1, 0).createdAt })
     expect(page2.map((r) => r.id)).toEqual(['b'])
   })
 

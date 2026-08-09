@@ -37,6 +37,8 @@ export function translateStorageErrors(storage: StorageAdapter): StorageAdapter 
     takeEvent: (runId, eventName) =>
       guard('takeEvent', () => storage.takeEvent(runId, eventName)),
     getRun: (runId) => guard('getRun', () => storage.getRun(runId)),
+    listRuns: (filter) => guard('listRuns', () => storage.listRuns(filter)),
+    requeueRun: (runId) => guard('requeueRun', () => storage.requeueRun(runId)),
     getStepResults: (runId) => guard('getStepResults', () => storage.getStepResults(runId)),
     saveStepResult: (result, leaseId) =>
       guard('saveStepResult', () => storage.saveStepResult(result, leaseId)),
