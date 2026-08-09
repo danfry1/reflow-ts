@@ -129,9 +129,34 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
       return { kind: 'advance', output: existing.output }
     }
 
+    // Skipped on a previous execution — the decision is persisted, so `when` is
+    // not re-evaluated (it may read state that has since changed).
+    if (existing?.status === 'skipped') {
+      return { kind: 'passthrough' }
+    }
+
     const frozenSteps = ctx.snapshotSteps()
 
     try {
+      if (stepDef.when) {
+        const shouldRun = await stepDef.when({ input: ctx.run.input, prev, steps: frozenSteps })
+
+        if (!shouldRun) {
+          // Persist the skip before announcing it, so a crash between the two
+          // replays as a skip rather than re-evaluating the predicate.
+          await ctx.saveStep({ name: stepDef.name, status: 'skipped', output: null, attempts: 0 })
+
+          await ctx.emit({
+            type: 'stepSkipped',
+            runId: ctx.run.id,
+            workflow: ctx.run.workflow,
+            stepName: stepDef.name,
+          })
+
+          return { kind: 'passthrough' }
+        }
+      }
+
       await ctx.emit({
         type: 'stepStart',
         runId: ctx.run.id,

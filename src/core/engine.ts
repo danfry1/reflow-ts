@@ -290,6 +290,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         return hooks?.onRunStart?.(copy)
       case 'stepStart':
         return hooks?.onStepStart?.(copy)
+      case 'stepSkipped':
+        return hooks?.onStepSkipped?.(copy)
       case 'stepComplete':
         return hooks?.onStepComplete?.(copy)
       case 'runComplete':

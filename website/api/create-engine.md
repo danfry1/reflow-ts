@@ -30,6 +30,7 @@ All hooks are optional and receive an [`EngineEvent`](/api/events)-shaped payloa
 |---|---|
 | `onRunStart` | `{ runId, workflow }` |
 | `onStepStart` | `{ runId, workflow, stepName }` |
+| `onStepSkipped` | `{ runId, workflow, stepName }` |
 | `onStepComplete` | `{ runId, workflow, stepName, output, attempts }` |
 | `onRunComplete` | `{ runId, workflow, output }` |
 | `onRunFailed` | `{ runId, workflow, stepName, error }` |
