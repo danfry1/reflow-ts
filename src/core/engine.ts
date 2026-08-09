@@ -667,23 +667,30 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   async function processDueSchedules(): Promise<void> {
     const now = Date.now()
 
-    for (;;) {
-      const due = await storage.claimDueSchedule(workflowNames, now)
-      if (!due) {
-        return
-      }
+    try {
+      for (;;) {
+        const due = await storage.claimDueSchedule(workflowNames, now)
+        if (!due) {
+          return
+        }
 
-      try {
-        // Keyed by the occurrence it fired for. The atomic claim already makes
-        // this a single firing; the key is what keeps that true if a retry ever
-        // replays the enqueue.
-        await enqueue(due.workflow, due.input, {
-          idempotencyKey: `reflow.schedule:${due.key}:${due.nextRunAt}`,
-        })
-      } catch (error) {
-        // One bad schedule must not stop the others from firing.
-        reportError(error)
+        try {
+          // Keyed by the occurrence it fired for. The atomic claim already makes
+          // this a single firing; the key is what keeps that true if a retry ever
+          // replays the enqueue.
+          await enqueue(due.workflow, due.input, {
+            idempotencyKey: `reflow.schedule:${due.key}:${due.nextRunAt}`,
+          })
+        } catch (error) {
+          // One bad schedule must not stop the others from firing.
+          reportError(error)
+        }
       }
+    } catch (error) {
+      // Scheduling is auxiliary, and this runs first in every tick. A failure
+      // reading the schedule table must not stop the engine from claiming and
+      // executing runs, which is its actual job.
+      reportError(error)
     }
   }
 

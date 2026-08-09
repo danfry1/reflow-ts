@@ -7,6 +7,7 @@ export default defineConfig({
     'storage/sqlite-bun': 'src/storage/sqlite-bun.ts',
     'storage/sqlite-node-builtin': 'src/storage/sqlite-node-builtin.ts',
     'test/index': 'src/test/index.ts',
+    conformance: 'src/storage/conformance.ts',
   },
   format: 'esm',
   dts: true,

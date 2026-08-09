@@ -1,3 +1,5 @@
+import { ConfigError } from './errors'
+
 /**
  * The first occurrence strictly after `now`, given a firing that was due at
  * `dueAt` and repeats every `intervalMs`.
@@ -12,6 +14,16 @@
  * outage on a short interval costs one operation instead of millions.
  */
 export function nextOccurrence(dueAt: number, intervalMs: number, now: number): number {
+  // A non-positive or non-finite interval would yield NaN, and `NaN <= now` is
+  // false forever — the schedule would stop firing and never say why. Only a
+  // corrupted row can reach this (`schedule()` validates the interval), so
+  // failing loudly is better than writing a value that silently kills it.
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new ConfigError(
+      `Schedule interval must be a positive, finite number of milliseconds, got ${intervalMs}`,
+    )
+  }
+
   if (dueAt > now) {
     return dueAt
   }

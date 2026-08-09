@@ -9,6 +9,9 @@ export default defineConfig({
       exclude: [
         'src/**/__tests__/**',
         'src/**/*.test.ts',
+        // Test infrastructure, not library code. It lives outside __tests__ so
+        // the Bun smoke script can import it, but it ships with neither.
+        'src/storage/conformance.ts',
         // Single-runtime adapters: not loadable in the default (Bun) coverage
         // run. Each is exercised in its own runtime — sqlite-bun via the Bun
         // smoke test (`bun run test:bun`), sqlite-node-builtin via the
