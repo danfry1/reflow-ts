@@ -11,7 +11,7 @@ import type {
   WorkflowSchedule,
 } from '../core/types'
 import { InternalError } from '../core/errors'
-import { nextOccurrence } from '../core/schedule-timing'
+import { nextOccurrence, sameRecurrence } from '../core/schedule-timing'
 import { clonePersistedValue } from './codec'
 
 interface StoredRun extends WorkflowRun {
@@ -306,7 +306,7 @@ export class MemoryStorage implements StorageAdapter {
       input: clonePersistedValue(schedule.input, 'Schedule input'),
       // A restarting process must rejoin the existing cadence rather than push
       // the next firing out by a full interval on every deploy.
-      nextRunAt: existing && existing.intervalMs === schedule.intervalMs
+      nextRunAt: existing && sameRecurrence(existing.recurrence, schedule.recurrence)
         ? existing.nextRunAt
         : schedule.nextRunAt,
       createdAt: existing?.createdAt ?? schedule.createdAt,
@@ -333,7 +333,7 @@ export class MemoryStorage implements StorageAdapter {
     // these two statements.
     this.schedules.set(due.key, {
       ...due,
-      nextRunAt: nextOccurrence(due.nextRunAt, due.intervalMs, now),
+      nextRunAt: nextOccurrence(due.nextRunAt, due.recurrence, now),
       updatedAt: now,
     })
 

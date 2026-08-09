@@ -1,4 +1,6 @@
 export { createWorkflow } from './core/workflow'
+export { parseCron, nextCronOccurrence } from './core/cron'
+export type { CronExpression } from './core/cron'
 export { createEngine } from './core/engine'
 export {
   ReflowError,
@@ -50,6 +52,7 @@ export type {
   EngineEventOf,
   EnqueueOptions,
   ScheduleOptions,
+  ScheduleSpec,
   StreamOptions,
   ResultStream,
 } from './core/engine'
@@ -63,6 +66,7 @@ export type {
   StorageAdapter,
   WorkflowRun,
   WorkflowSchedule,
+  ScheduleRecurrence,
   StepResult,
   RunStatus,
   StepStatus,

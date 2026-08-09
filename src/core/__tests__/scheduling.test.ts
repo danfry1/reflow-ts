@@ -174,7 +174,7 @@ describe('durable schedules', () => {
     const schedules = await engine.listSchedules()
     expect(schedules).toHaveLength(1)
     expect(at(schedules, 0).key).toBe(key)
-    expect(at(schedules, 0).intervalMs).toBe(2 * HOUR)
+    expect(at(schedules, 0).recurrence).toStrictEqual({ kind: 'interval', intervalMs: 2 * HOUR })
     expect(at(schedules, 0).nextRunAt).toBe(Date.now() + 2 * HOUR)
   })
 
@@ -319,6 +319,97 @@ describe('durable schedules', () => {
     expect(onError).toHaveBeenCalled()
   })
 
+  it('accepts a duration string as the interval', async () => {
+    const storage = new MemoryStorage()
+    await storage.initialize()
+    const created = trackCreatedRuns(storage)
+
+    const engine = createEngine({ storage, workflows: [cleanup] })
+    await engine.schedule('cleanup', { olderThanDays: 30 }, { every: '1h' })
+
+    vi.advanceTimersByTime(HOUR)
+    await engine.tick()
+
+    expect(created).toHaveLength(1)
+  })
+
+  it('fires a cron schedule at its next occurrence', async () => {
+    vi.setSystemTime(Date.parse('2026-03-10T08:00:00Z'))
+    const storage = new MemoryStorage()
+    await storage.initialize()
+    const created = trackCreatedRuns(storage)
+
+    const engine = createEngine({ storage, workflows: [cleanup] })
+    await engine.schedule('cleanup', { olderThanDays: 30 }, { cron: '0 9 * * *' })
+
+    // 08:30 — not yet due.
+    vi.setSystemTime(Date.parse('2026-03-10T08:30:00Z'))
+    await engine.tick()
+    expect(created).toHaveLength(0)
+
+    // 09:00 — due.
+    vi.setSystemTime(Date.parse('2026-03-10T09:00:00Z'))
+    await engine.tick()
+    expect(created).toHaveLength(1)
+  })
+
+  it('advances a cron schedule to its next occurrence, not by a fixed gap', async () => {
+    // Weekdays at 09:00: from Friday the next firing is Monday, three days on.
+    vi.setSystemTime(Date.parse('2026-03-13T08:00:00Z'))
+    const storage = new MemoryStorage()
+    await storage.initialize()
+
+    const engine = createEngine({ storage, workflows: [cleanup] })
+    await engine.schedule('cleanup', { olderThanDays: 30 }, { cron: '0 9 * * 1-5' })
+
+    vi.setSystemTime(Date.parse('2026-03-13T09:00:00Z'))
+    await engine.tick()
+
+    expect(at(await engine.listSchedules(), 0).nextRunAt).toBe(Date.parse('2026-03-16T09:00:00Z'))
+  })
+
+  it('stores the cron expression as its recurrence', async () => {
+    const storage = new MemoryStorage()
+    await storage.initialize()
+
+    const engine = createEngine({ storage, workflows: [cleanup] })
+    await engine.schedule('cleanup', { olderThanDays: 30 }, { cron: '@daily' })
+
+    expect(at(await engine.listSchedules(), 0).recurrence)
+      .toStrictEqual({ kind: 'cron', expression: '@daily' })
+  })
+
+  it('gives interval and cron schedules of the same workflow distinct keys', async () => {
+    const storage = new MemoryStorage()
+    await storage.initialize()
+
+    const engine = createEngine({ storage, workflows: [cleanup] })
+    const a = await engine.schedule('cleanup', { olderThanDays: 30 }, HOUR)
+    const b = await engine.schedule('cleanup', { olderThanDays: 30 }, { cron: '0 * * * *' })
+
+    expect(a).not.toBe(b)
+    expect(await engine.listSchedules()).toHaveLength(2)
+  })
+
+  it('rejects a malformed cron expression at registration', async () => {
+    // Registration is the last point this can reach a caller; after it the
+    // schedule fires unattended.
+    const engine = createEngine({ storage: new MemoryStorage(), workflows: [cleanup] })
+
+    await expect(engine.schedule('cleanup', { olderThanDays: 1 }, { cron: 'not a cron' }))
+      .rejects.toThrow(ConfigError)
+    await expect(engine.schedule('cleanup', { olderThanDays: 1 }, { cron: '99 * * * *' }))
+      .rejects.toThrow(/out of range/)
+  })
+
+  it('rejects a cron expression that can never occur', async () => {
+    const engine = createEngine({ storage: new MemoryStorage(), workflows: [cleanup] })
+
+    // 30 February. Caught at registration rather than on the first tick.
+    await expect(engine.schedule('cleanup', { olderThanDays: 1 }, { cron: '0 0 30 2 *' }))
+      .rejects.toThrow(ConfigError)
+  })
+
   it('rejects a non-positive interval', async () => {
     const engine = createEngine({ storage: new MemoryStorage(), workflows: [cleanup] })
 
@@ -351,31 +442,31 @@ describe('durable schedules', () => {
 
 describe('nextOccurrence', () => {
   it('leaves a future occurrence untouched', () => {
-    expect(nextOccurrence(1_000, 100, 500)).toBe(1_000)
+    expect(nextOccurrence(1_000, { kind: 'interval', intervalMs: 100 }, 500)).toBe(1_000)
   })
 
   it('advances past now by whole intervals', () => {
-    expect(nextOccurrence(1_000, 100, 1_000)).toBe(1_100)
-    expect(nextOccurrence(1_000, 100, 1_050)).toBe(1_100)
-    expect(nextOccurrence(1_000, 100, 1_100)).toBe(1_200)
+    expect(nextOccurrence(1_000, { kind: 'interval', intervalMs: 100 }, 1_000)).toBe(1_100)
+    expect(nextOccurrence(1_000, { kind: 'interval', intervalMs: 100 }, 1_050)).toBe(1_100)
+    expect(nextOccurrence(1_000, { kind: 'interval', intervalMs: 100 }, 1_100)).toBe(1_200)
   })
 
   it('skips a long outage in one step rather than stepping through it', () => {
     // A year of missed one-second firings must not cost a loop of 31 million.
-    expect(nextOccurrence(0, 1_000, 365 * 24 * 60 * 60 * 1_000)).toBe(31_536_001_000)
+    expect(nextOccurrence(0, { kind: 'interval', intervalMs: 1_000 }, 365 * 24 * 60 * 60 * 1_000)).toBe(31_536_001_000)
   })
 
   it('rejects an interval that would produce NaN rather than writing it', () => {
     // A NaN next_run_at compares false against every clock, so the schedule
     // would stop firing permanently and silently.
     for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(() => nextOccurrence(0, bad, 1_000)).toThrow(ConfigError)
+      expect(() => nextOccurrence(0, { kind: 'interval', intervalMs: bad }, 1_000)).toThrow(ConfigError)
     }
   })
 
   it('always returns a time strictly after now', () => {
     for (const now of [0, 1, 99, 100, 101, 12_345]) {
-      expect(nextOccurrence(0, 100, now)).toBeGreaterThan(now)
+      expect(nextOccurrence(0, { kind: 'interval', intervalMs: 100 }, now)).toBeGreaterThan(now)
     }
   })
 })

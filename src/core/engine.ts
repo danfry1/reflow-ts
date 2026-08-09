@@ -18,6 +18,9 @@ import {
   ValidationError,
   WorkflowNotFoundError,
 } from './errors'
+import { parseCron } from './cron'
+import { parseDuration } from './duration'
+import { firstOccurrence } from './schedule-timing'
 import { cloneEngineEvent, type EngineEvent, type EngineHooks } from './events'
 import { parallelExecutor } from './execution/parallel'
 import { sleepExecutor } from './execution/sleep'
@@ -34,6 +37,7 @@ import type {
   StorageAdapter,
   WorkflowRun,
   WorkflowSchedule,
+  ScheduleRecurrence,
 } from './types'
 import type { AnyWorkflow, ExecutionUnit, WorkflowInputMap } from './workflow'
 
@@ -85,6 +89,19 @@ export interface EnqueueOptions {
   /** Prevents duplicate runs. Same key + same input returns the existing run. Same key + different input throws. */
   idempotencyKey?: string
 }
+
+/**
+ * How often a schedule fires.
+ *
+ * A bare number is milliseconds, so existing interval callers are unaffected.
+ * `{ every }` additionally accepts a duration string (`'30s'`, `'24h'`), the
+ * same form `.sleep()` takes. `{ cron }` takes a five-field expression,
+ * evaluated in UTC.
+ */
+export type ScheduleSpec =
+  | number
+  | { readonly every: number | string; readonly cron?: never }
+  | { readonly cron: string; readonly every?: never }
 
 /** Options for `engine.schedule()`. */
 export interface ScheduleOptions {
@@ -150,11 +167,14 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    *
    * Occurrences missed while every instance was down are **skipped, not
    * backfilled**: the schedule fires once on return and resumes its cadence.
+   *
+   * Fires on a fixed interval (`60_000`, or `{ every: '1h' }`) or a cron
+   * expression (`{ cron: '0 9 * * 1-5' }`, evaluated in UTC).
    */
   schedule<TName extends string & keyof TWorkflowMap>(
     workflowName: TName,
     input: TWorkflowMap[TName],
-    intervalMs: number,
+    spec: ScheduleSpec,
     options?: ScheduleOptions,
   ): Promise<string>
   /**
@@ -656,28 +676,26 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   async function schedule(
     workflowName: string,
     input: PersistedValue,
-    intervalMs: number,
+    spec: ScheduleSpec,
     options?: ScheduleOptions,
   ): Promise<string> {
-    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
-      throw new ConfigError('Schedule intervalMs must be a positive number')
-    }
+    const recurrence = parseScheduleSpec(spec)
 
     const wf = registry.get(workflowName)
     if (!wf) throw new WorkflowNotFoundError(workflowName)
 
     const parsedInput = wf.parseInput(input)
-    const key = options?.key ?? deriveScheduleKey(workflowName, intervalMs, parsedInput)
+    const key = options?.key ?? deriveScheduleKey(workflowName, recurrence, parsedInput)
     const now = Date.now()
 
     // `nextRunAt` here is only the value used when the schedule is new (or its
-    // interval changed) — storage preserves an existing cadence otherwise.
+    // recurrence changed) — storage preserves an existing cadence otherwise.
     const stored = await storage.upsertSchedule({
       key,
       workflow: workflowName,
       input: parsedInput,
-      intervalMs,
-      nextRunAt: now + intervalMs,
+      recurrence,
+      nextRunAt: firstOccurrence(recurrence, now),
       createdAt: now,
       updatedAt: now,
     })
@@ -978,15 +996,51 @@ function runWithSignal<T>(
  */
 function deriveScheduleKey(
   workflowName: string,
-  intervalMs: number,
+  recurrence: ScheduleRecurrence,
   input: PersistedValue,
 ): string {
   const canonicalInput = canonicalizePersistedValue(input, 'Schedule input')
+  const cadence = recurrence.kind === 'cron' ? `cron:${recurrence.expression}` : `every:${recurrence.intervalMs}`
 
   return createHash('sha256')
-    .update(`${workflowName}\u0000${intervalMs}\u0000${canonicalInput}`)
+    .update(`${workflowName}\u0000${cadence}\u0000${canonicalInput}`)
     .digest('base64url')
     .slice(0, 22)
+}
+
+/**
+ * Normalise the caller's recurrence, validating it before anything is stored.
+ *
+ * Registration is the last point a bad cadence can be reported to a caller —
+ * after this the schedule fires unattended — so a malformed cron expression is
+ * rejected here rather than on the first tick that tries to advance it.
+ */
+function parseScheduleSpec(spec: ScheduleSpec): ScheduleRecurrence {
+  if (typeof spec === 'number') {
+    return intervalRecurrence(spec)
+  }
+
+  if (spec.every !== undefined) {
+    return intervalRecurrence(typeof spec.every === 'string' ? parseDuration(spec.every) : spec.every)
+  }
+
+  if (spec.cron !== undefined) {
+    // Parsed eagerly and discarded: this is a validation call, and the stored
+    // form stays the expression so it round-trips through storage unchanged.
+    parseCron(spec.cron)
+    return { kind: 'cron', expression: spec.cron.trim() }
+  }
+
+  // Unreachable through the types, but reachable from JavaScript.
+  throw new ConfigError('Schedule must specify either `every` or `cron`')
+}
+
+function intervalRecurrence(intervalMs: number): ScheduleRecurrence {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new ConfigError('Schedule intervalMs must be a positive number')
+  }
+
+  return { kind: 'interval', intervalMs }
 }
 
 function normalizeIdempotencyKey(idempotencyKey?: string): string | null {
