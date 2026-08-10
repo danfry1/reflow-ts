@@ -88,7 +88,7 @@
     "better-sqlite3": "13.0.2",
     "syncpack": "15.3.2",
     "tsdown": "0.22.14",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "vitepress": "1.6.4",
     "vitest": "4.1.10",
     "zod": "4.4.3"
