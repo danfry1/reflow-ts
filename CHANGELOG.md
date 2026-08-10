@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-08-10
+
+Schedules gain cron. The stored next-occurrence introduced in 0.6 is what makes
+this possible: interval arithmetic cannot express a cadence whose gaps vary,
+but a stored next-run time can.
+
+**Upgrading:** one breaking change, `WorkflowSchedule.intervalMs` becoming
+`recurrence`. It affects code reading `engine.listSchedules()` and custom
+storage adapters; the SQLite adapters migrate themselves. See
+[Migrating to 0.7](https://danfry1.github.io/reflow-ts/guide/migrating-0-7).
 
 ### Added
 
