@@ -98,6 +98,12 @@ npm install reflow-ts better-sqlite3
 
 Node.js 18.18 or newer is required.
 
+**On Node 18–21, pin `better-sqlite3@12`** — version 13 raises its own floor to Node 22, so the
+plain install above fails there with an engine error. Reflow accepts `better-sqlite3 >= 9`, so
+`npm install reflow-ts better-sqlite3@12` works on any supported Node. On Node 22+, the latest is
+fine. This applies only to the `reflow-ts/sqlite-node` adapter; Bun and the `node:sqlite` adapter
+have no native dependency.
+
 Then pick a storage adapter based on your runtime:
 
 ```typescript

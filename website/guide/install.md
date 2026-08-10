@@ -35,6 +35,19 @@ const storage = new SQLiteStorage('./reflow.db')
 
 On Node, `better-sqlite3` is an optional peer dependency — install it alongside Reflow. On Bun, nothing extra is needed.
 
+::: warning better-sqlite3 13 requires Node 22
+Reflow supports Node 18.18+, but `better-sqlite3` 13 raises its own floor to Node 22, so a plain `npm install better-sqlite3` fails on Node 18–21 with an engine error.
+
+Reflow's peer range is `>=9`, so pin the older major there:
+
+```bash
+npm install reflow-ts better-sqlite3@12   # Node 18-21
+npm install reflow-ts better-sqlite3      # Node 22+
+```
+
+Only the `reflow-ts/sqlite-node` adapter is affected. Bun's adapter and the `node:sqlite` adapter have no native dependency — though the latter needs Node 22.5+ for its own reasons.
+:::
+
 See [Storage](/guide/storage) for the in-memory adapter and how to write your own.
 
 ## Pick a schema library
