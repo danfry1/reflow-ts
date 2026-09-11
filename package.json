@@ -90,7 +90,7 @@
     "tsdown": "0.22.14",
     "typescript": "7.0.2",
     "vitepress": "1.6.4",
-    "vitest": "4.1.10",
+    "vitest": "4.1.11",
     "zod": "4.4.3"
   },
   "dependencies": {
