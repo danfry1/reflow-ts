@@ -28,9 +28,9 @@ npm install reflow-ts
 
 <section class="home-play">
 
-<h2>Kill it and watch</h2>
+<h2>Crash it</h2>
 
-<p>This is Reflow running in your browser — the real engine, with its database kept in memory. Follow the four steps: start an order, kill the process half-way, start a new one, and see what it does and does not repeat.</p>
+<p>The real Reflow engine, running in your browser.</p>
 
 <Playground />
 

@@ -1,127 +1,34 @@
 <script setup>
-// Reflow itself, running in the page: a real workflow on the real engine over
-// in-memory storage. The middle of the demo is the conversation between the
-// process and the database — every line is a storage call the engine really
-// made, which is where durability comes from: claim a run, read what is
-// already saved, save each step's result, keep renewing the claim. Killing
-// the process stops the engine mid-step, as a crash would; a new process
-// waits for the dead one's claim to lapse, reads what was saved, and carries
-// on from the first step not saved.
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+// One order, run two ways side by side: as a plain async function, and as a
+// Reflow workflow on the real engine over in-memory storage. Crash the server
+// part way through and it restarts on its own: the plain function starts over
+// and charges the card again; Reflow skips the steps it saved and carries on.
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { z } from 'zod'
 import { createEngine, createWorkflow } from '../../../../src/index'
 import { MemoryStorage } from '../../../../src/storage/memory'
 import { createDashboard } from '../../../../src/dashboard/index'
 
-const LEASE_MS = 2500
-const HEARTBEAT_MS = 700
-const DURATION = { charge: 1800, ship: 3000, 'send-receipt': 1300 }
-const STEPS = ['charge', 'ship', 'send-receipt']
+const STEPS = [
+  { name: 'charge', label: 'Charge card', ms: 1500 },
+  { name: 'ship', label: 'Ship order', ms: 3200 },
+  { name: 'send-receipt', label: 'Send receipt', ms: 1300 },
+]
+const LEASE_MS = 1200
+const RESTART_MS = 900
 
-const world = reactive({
-  stage: 'intro', // intro, running, killed, recovering, done, free
-  process: 0,
-  alive: false,
-  starting: false,
-  warehouseDown: false,
-  charges: 0,
-  orders: 0,
-  rerunsAvoided: 0,
-  focus: null,
-})
-const runs = ref([])
-const saved = ref(new Map())
-const working = reactive(new Map()) // run id -> { step, startedAt }
-const lost = reactive(new Map()) // run id -> step it was cut off in
+// idle -> running -> crashed -> restarting -> resumed -> done
+const phase = ref('idle')
 const now = ref(Date.now())
+let crashedOnce = false
 
-// --- The conversation: what the process asks of the database, and back.
-const messages = ref([])
-const logEl = ref(null)
-let messageId = 0
-function push(message) {
-  messages.value = [...messages.value, { id: ++messageId, at: Date.now(), count: 1, ...message }].slice(-40)
-  nextTick(() => {
-    const log = logEl.value
-    if (log) log.scrollTop = log.scrollHeight
-  })
+// Each lane: what every step is doing, and how many times the card was charged.
+function lane() {
+  return reactive({ steps: STEPS.map(() => ({ state: 'idle', startedAt: 0 })), charges: 0, done: false })
 }
-function say(from, text, detail = '', tone = '') {
-  push({ from, text, detail, tone })
-}
+const plain = lane()
+const reflow = lane()
 
-const base = new MemoryStorage()
-const labels = new Map()
-const label = (runId) => labels.get(runId) ?? 'the order'
-
-// The storage the engine uses: the real one, with each call it makes told
-// as a line of the conversation. The page and the dashboard read `base`
-// directly, so only the engine's own calls appear.
-const engineStorage = new Proxy(base, {
-  get(target, prop) {
-    const value = target[prop]
-    if (typeof value !== 'function') return value
-    return async (...args) => {
-      const result = await value.apply(target, args)
-      observe(prop, args, result)
-      return result
-    }
-  },
-})
-let claimWaitTold = false
-function observe(method, args, result) {
-  const p = `Process ${world.process}`
-  if (method === 'createRun') {
-    labels.set(args[0].id, args[0].input.orderId)
-    say('app', `Save ${args[0].input.orderId} as a new run`, 'It waits in the database until a process claims it.')
-  } else if (method === 'claimNextRun' && result) {
-    const expired = lost.has(result.id)
-    say(p, `Claim ${label(result.id)}`, expired
-      ? `Process ${world.process - 1}'s claim has run out, so this process can take the run over.`
-      : 'The run is this process\'s alone while it keeps renewing the claim.')
-  } else if (method === 'claimNextRun' && !result && world.alive && lost.size && !claimWaitTold) {
-    claimWaitTold = true
-    say(p, 'Ask for work', `${[...lost.keys()].map(label).join(', ')} is still claimed by process ${world.process - 1}. A dead process looks like a slow one, so this one waits for the claim to run out.`, 'held')
-  } else if (method === 'getStepResults') {
-    const done = result.filter((s) => s.status === 'completed').map((s) => s.name)
-    const next = STEPS.find((name) => !done.includes(name))
-    say('db', done.length ? `Saved so far: ${done.join(', ')}` : 'Saved so far: nothing', done.length
-      ? `So the process skips ${done.join(' and ')} and starts at ${next}.`
-      : `So the process starts at ${next}.`, done.length ? 'good' : '')
-  } else if (method === 'saveStepResult' && result) {
-    const step = args[0]
-    if (step.status === 'completed') {
-      say(p, `Save ${step.name}'s result`, `${summary(step)} — kept even if the process dies now.`, 'good')
-    } else if (step.status === 'retrying') {
-      say(p, `Save ${step.name}: attempt ${step.attempts} failed`, `${step.error}. The attempt count is saved too, so a restart will not reset it.`, 'bad')
-    }
-  } else if (method === 'sleepRun' && result) {
-    say(p, `Let go of ${label(args[0])} until ${clock(args[2])}`, 'The retry waits in the database; no process has to hold it.', 'held')
-  } else if (method === 'heartbeatRun' && result) {
-    const last = messages.value[messages.value.length - 1]
-    if (last && last.kind === 'beat' && last.runId === args[0]) {
-      last.count++
-      messages.value = [...messages.value]
-    } else {
-      push({ from: p, text: `Renew claim on ${label(args[0])}`, detail: 'Still alive, still working on it.', tone: 'quiet', kind: 'beat', runId: args[0] })
-    }
-  } else if (method === 'completeRun' && result) {
-    say(p, `Mark ${label(args[0])} finished`, '', 'good')
-  }
-}
-function clock(ts) {
-  return `+${Math.max(0, (ts - Date.now()) / 1000).toFixed(1)}s`
-}
-function summary(step) {
-  const out = step.output
-  if (out && typeof out === 'object') {
-    const [key, value] = Object.entries(out)[0] || []
-    return key ? `${key}: ${JSON.stringify(value)}` : '{}'
-  }
-  return JSON.stringify(out)
-}
-
-// A step's work, abandoned the moment the process is killed.
 function work(ms, signal) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(resolve, ms)
@@ -131,205 +38,169 @@ function work(ms, signal) {
     }, { once: true })
   })
 }
-const token = () => Math.random().toString(36).slice(2, 7)
 
-const order = createWorkflow({
-  name: 'order',
-  input: z.object({ orderId: z.string() }),
-  label: (input) => input.orderId,
-})
+// --- The plain function: nothing is saved, so a restart begins at the top.
+let plainAbort = null
+async function runPlain(again) {
+  plainAbort = new AbortController()
+  const { signal } = plainAbort
+  for (let i = 0; i < STEPS.length; i++) plain.steps[i] = { state: 'idle', startedAt: 0 }
+  try {
+    for (let i = 0; i < STEPS.length; i++) {
+      plain.steps[i] = { state: again ? 'again' : 'running', startedAt: Date.now() }
+      await work(STEPS[i].ms, signal)
+      if (STEPS[i].name === 'charge') plain.charges++
+      plain.steps[i] = { state: again ? 'redone' : 'done', startedAt: 0 }
+    }
+    plain.done = true
+  } catch {
+    // Killed with the server; whatever was running is lost.
+  }
+}
+
+// --- The Reflow workflow, on the real engine.
+const order = createWorkflow({ name: 'order', input: z.object({ orderId: z.string() }), label: (input) => input.orderId })
   .step('charge', async ({ signal }) => {
-    await work(DURATION.charge, signal)
-    world.charges++
-    return { chargeId: `ch_${token()}` }
+    await work(STEPS[0].ms, signal)
+    reflow.charges++
+    return { charged: true }
   })
-  .step('ship', {
-    retry: { maxAttempts: 5, backoff: 'exponential', initialDelayMs: 2000 },
-    handler: async ({ signal }) => {
-      await work(DURATION.ship, signal)
-      if (world.warehouseDown) throw new Error('Warehouse is down')
-      return { tracking: `TRK-${token().toUpperCase()}` }
-    },
+  .step('ship', async ({ signal }) => {
+    await work(STEPS[1].ms, signal)
+    return { shipped: true }
   })
   .step('send-receipt', async ({ signal }) => {
-    await work(DURATION['send-receipt'], signal)
-    return { emailed: true }
+    await work(STEPS[2].ms, signal)
+    return { sent: true }
   })
 
+const storage = new MemoryStorage()
 let engine = null
+let runId = null
+// The run a crash cut off, until the new server picks it up.
+let resumingId = null
+const indexOf = (name) => STEPS.findIndex((step) => step.name === name)
 
-async function startProcess() {
-  if (world.alive || world.starting) return
-  world.starting = true
-  const n = world.process + 1
-  const process = createEngine({
-    storage: engineStorage,
+async function startEngine() {
+  engine = createEngine({
+    storage,
     workflows: [order],
-    concurrency: 4,
     runLeaseDurationMs: LEASE_MS,
-    heartbeatIntervalMs: HEARTBEAT_MS,
+    heartbeatIntervalMs: 300,
     hooks: {
-      onStepStart: (event) => { working.set(event.runId, { step: event.stepName, startedAt: Date.now() }) },
       onRunStart: async (event) => {
-        await refresh()
-        const done = new Set((saved.value.get(event.runId) || []).filter((s) => s.status === 'completed').map((s) => s.name))
-        const step = STEPS.find((name) => !done.has(name))
-        if (step) working.set(event.runId, { step, startedAt: Date.now() })
-        lost.delete(event.runId)
+        if (event.runId !== resumingId) return
+        resumingId = null
+        // What the database says is already done is skipped, not run again.
+        const saved = (await storage.getStepResults(event.runId)).filter((s) => s.status === 'completed')
+        for (const step of saved) reflow.steps[indexOf(step.name)] = { state: 'kept', startedAt: 0 }
+        phase.value = 'resumed'
       },
-      // Read the saved result at once, so the process's view never shows a
-      // step running while the one before it looks unfinished.
-      onStepComplete: async (event) => {
-        await refresh()
-        working.delete(event.runId)
+      onStepStart: (event) => {
+        // The step the crash cut off is where the new server picks up.
+        const index = indexOf(event.stepName)
+        reflow.steps[index] = { state: reflow.steps[index].state === 'lost' ? 'resumed' : 'running', startedAt: Date.now() }
       },
-      onRunComplete: (event) => {
-        working.delete(event.runId)
-        if (event.runId === world.focus && (world.stage === 'running' || world.stage === 'recovering')) {
-          world.stage = 'done'
-        }
+      onStepComplete: (event) => {
+        const index = indexOf(event.stepName)
+        reflow.steps[index] = { state: reflow.steps[index].state === 'resumed' ? 'picked' : 'saved', startedAt: 0 }
       },
-      onRunFailed: (event) => { working.delete(event.runId) },
+      onRunComplete: () => {
+        reflow.done = true
+        if (plain.done || !crashedOnce) phase.value = 'done'
+      },
     },
   })
-  world.process = n
-  claimWaitTold = false
-  await process.start(200)
-  engine = process
-  world.alive = true
-  world.starting = false
-  say('event', `Process ${n} started`, n > 1 ? 'It knows nothing yet — everything it needs is in the database.' : '', 'event')
-  if (world.stage === 'killed') world.stage = 'recovering'
+  await engine.start(100)
 }
 
-async function kill() {
-  if (!engine) return
-  const process = engine
-  const n = world.process
+let orders = 0
+async function start() {
+  orders++
+  crashedOnce = false
+  for (const l of [plain, reflow]) {
+    l.charges = 0
+    l.done = false
+    for (let i = 0; i < STEPS.length; i++) l.steps[i] = { state: 'idle', startedAt: 0 }
+  }
+  phase.value = 'running'
+  if (!engine) await startEngine()
+  const run = await engine.enqueue('order', { orderId: `ORD-${1000 + orders}` })
+  runId = run.id
+  runPlain(false)
+}
+
+async function crash() {
+  if (phase.value !== 'running') return
+  crashedOnce = true
+  phase.value = 'crashed'
+  plainAbort?.abort()
+  const dying = engine
   engine = null
-  world.alive = false
-  let rerun = 0
-  for (const [runId, current] of working) {
-    lost.set(runId, current.step)
-    rerun += (saved.value.get(runId) || []).filter((s) => s.status === 'completed').length
+  // Whatever was mid-step dies with the server, in both.
+  for (const l of [plain, reflow]) {
+    for (const step of l.steps) {
+      if (step.state === 'running' || step.state === 'again' || step.state === 'resumed') step.state = 'lost'
+    }
   }
-  working.clear()
-  world.rerunsAvoided += rerun
-  await process.stop()
-  const cut = [...lost.entries()].map(([runId, step]) => `${step} for ${label(runId)}`).join(', ')
-  say('event', `Process ${n} killed`, cut
-    ? `It was part way through ${cut}; that work was never saved and is lost. Its claim is no longer renewed.`
-    : 'Nothing was mid-step. Its claims are no longer renewed.', 'dead')
-  if (world.stage !== 'intro') world.stage = 'killed'
+  await dying?.stop()
+  // The plain function remembered nothing: everything it did is gone with it.
+  for (const step of plain.steps) if (step.state === 'done') step.state = 'lost'
+  setTimeout(async () => {
+    phase.value = 'restarting'
+    runPlain(true)
+    resumingId = runId
+    await startEngine()
+  }, RESTART_MS)
 }
 
-async function startOrder() {
-  world.orders++
-  const orderId = `ORD-${1000 + world.orders}`
-  const writer = engine ?? createEngine({ storage: engineStorage, workflows: [order] })
-  const run = await writer.enqueue('order', { orderId })
-  if (world.stage === 'intro') world.stage = 'running'
-  if (world.stage === 'done') world.stage = 'free'
-  world.focus = run.id
-  await refresh()
+// Finish when both lanes have.
+const finished = computed(() => plain.done && reflow.done)
+function tick() {
+  now.value = Date.now()
+  if (finished.value && phase.value !== 'done' && phase.value !== 'idle') phase.value = 'done'
+}
+// Started on mount, not in setup, so the server render leaves no timer behind.
+let ticker = null
+
+function progress(step, index) {
+  if (step.state !== 'running' && step.state !== 'again' && step.state !== 'resumed') return step.state === 'idle' ? 0 : 1
+  return Math.min(1, (now.value - step.startedAt) / STEPS[index].ms)
 }
 
-function toggleWarehouse() {
-  world.warehouseDown = !world.warehouseDown
-  if (world.stage === 'done') world.stage = 'free'
-  say('event', world.warehouseDown ? 'The warehouse went down' : 'The warehouse is back', world.warehouseDown
-    ? 'ship will fail and be retried, waiting longer each time.'
-    : 'Retrying orders will ship at their next attempt.', 'event')
+const WORD = {
+  idle: '',
+  running: 'running',
+  again: 'running again',
+  done: 'done',
+  redone: 'done again',
+  resumed: 'picked up here',
+  picked: 'picked up here',
+  saved: 'saved',
+  kept: 'already saved',
+  lost: 'lost',
 }
 
-async function refresh() {
-  const listed = await base.listRuns({ limit: 6 })
-  runs.value = listed
-  saved.value = await base.getStepResultsForRuns(listed.map((r) => r.id))
+// The same, short enough for a phone's narrow columns.
+const SHORT = {
+  idle: '', running: 'running', again: 'again', done: 'done', redone: 'again',
+  resumed: 'resumed', picked: 'resumed', saved: 'saved', kept: 'skipped', lost: 'lost',
 }
 
-// --- What the view shows
+const canCrash = computed(() => phase.value === 'running' && reflow.steps[0].state === 'saved' && plain.steps[0].state === 'done')
 
-// One short line on what is happening, and the one button that matters now.
-const caption = computed(() => {
-  const focusStep = working.get(world.focus)?.step
-  switch (world.stage) {
-    case 'intro': return 'A process runs this order workflow. Watch what it tells the database as it goes.'
-    case 'running': return focusStep === 'ship'
-      ? 'charge is saved. Kill the process now, while ship is running.'
-      : 'The process is working through the steps, saving each result.'
-    case 'killed': return 'The process is gone. What did the database keep? Start a new process to find out.'
-    case 'recovering': return 'A new process, knowing nothing, reads the database and carries on.'
-    case 'done': return world.process > 1
-      ? 'Finished. Only the step that was cut off ran again; the card was charged once.'
-      : 'Finished, each step saved as it went. Start another order and kill the process while it ships.'
-    default: return world.warehouseDown
-      ? 'The warehouse is down: ship fails and retries. Kill the process during a wait — the count survives.'
-      : 'Try more: start orders, kill the process at any point, or break the warehouse.'
+const banner = computed(() => {
+  switch (phase.value) {
+    case 'idle': return 'One order, run two ways. Start it, then crash the server while it ships.'
+    case 'running': return canCrash.value ? 'The card is charged. Crash the server now.' : 'Charging the card…'
+    case 'crashed': return 'The server crashed.'
+    case 'restarting': return 'The server is back. Watch where each one starts.'
+    case 'resumed': return 'Reflow picked up where it left off. The plain function started over.'
+    default: return crashedOnce
+      ? `Plain code charged the card ${plain.charges === 2 ? 'twice' : `${plain.charges} times`}. Reflow charged it once and finished from where it stopped.`
+      : 'Both finished. Now run it again and crash the server while it ships.'
   }
 })
-
-const primary = computed(() => {
-  if (world.stage === 'intro') return { label: 'Start an order', act: startOrder }
-  if (!world.alive) return { label: 'Start a new process', act: startProcess, busy: world.starting }
-  if (world.stage === 'running' || world.stage === 'recovering') {
-    return { label: 'Kill the process', act: kill, danger: true, urge: world.stage === 'running' && working.get(world.focus)?.step === 'ship' }
-  }
-  return { label: 'Start another order', act: startOrder }
-})
-
-const stages = [
-  { label: 'Start an order', done: () => world.stage !== 'intro' },
-  { label: 'Kill the process', done: () => world.process > 1 || world.stage === 'killed' },
-  { label: 'Start a new one', done: () => world.process > 1 },
-  { label: 'See what it repeats', done: () => (world.stage === 'done' || world.stage === 'free') && world.process > 1 },
-]
-
-const focusRun = computed(() => runs.value.find((r) => r.id === world.focus) || runs.value[0] || null)
-
-// The process's view of the order it is on: each step done, running, cut off, or ahead.
-const processView = computed(() => {
-  const run = focusRun.value
-  if (!run) return []
-  const steps = saved.value.get(run.id) || []
-  return STEPS.map((name) => {
-    const step = steps.find((s) => s.name === name)
-    if (step && step.status === 'completed') return { name, state: 'saved', word: 'saved' }
-    if (lost.get(run.id) === name) return { name, state: 'lost', word: 'cut off' }
-    if (working.get(run.id)?.step === name) return { name, state: 'running', word: 'running' }
-    if (step && step.status === 'retrying') return { name, state: 'retrying', word: `retry ${step.attempts + 1} at ${clock(run.wakeAt || Date.now())}` }
-    return { name, state: 'ahead', word: '' }
-  })
-})
-
-function progress(runId) {
-  const current = working.get(runId)
-  if (!current) return 0
-  return Math.min(1, (now.value - current.startedAt) / (DURATION[current.step] || 1000))
-}
-
-const claimLeft = computed(() => {
-  if (!world.alive || lost.size === 0) return 0
-  const waiting = runs.value.filter((r) => lost.has(r.id) && r.status === 'running')
-  if (waiting.length === 0) return 0
-  return Math.max(0, Math.min(...waiting.map((r) => r.updatedAt + LEASE_MS - now.value)))
-})
-
-const dbRuns = computed(() => runs.value.slice(0, 4).map((run) => ({
-  run,
-  steps: (saved.value.get(run.id) || []).filter((s) => s.status === 'completed' || s.status === 'retrying'),
-  owner: run.status === 'running'
-    ? (lost.has(run.id) ? `claimed by process ${world.alive ? world.process - 1 : world.process}, which is dead` : `claimed by process ${world.process}`)
-    : run.status === 'completed' ? 'finished'
-      : run.status === 'sleeping' ? 'waiting to retry, unclaimed'
-        : run.status === 'pending' ? 'waiting for a process' : run.status,
-})))
-
-function fromLabel(from) {
-  if (from === 'app') return 'Your app'
-  if (from === 'db') return 'Database'
-  return from
-}
 
 // --- The real dashboard, in a frame, reading the same storage.
 //
@@ -338,17 +209,16 @@ function fromLabel(from) {
 // there is no server to stream them.
 const frame = ref(null)
 const control = {
-  cancel: (runId) => (engine ? engine.cancel(runId) : base.cancelRun(runId)),
-  resume: (runId) => (engine ? engine.resume(runId) : base.requeueRun(runId)),
+  cancel: (id) => (engine ? engine.cancel(id) : storage.cancelRun(id)),
+  resume: (id) => (engine ? engine.resume(id) : storage.requeueRun(id)),
 }
-
 async function mountDashboard() {
   const win = frame.value && frame.value.contentWindow
   if (!win) return
   // Written from this page, the frame's document takes this page's URL, which
   // ends in a slash as the dashboard expects; its API sits beneath it.
   const path = window.location.pathname.replace(/[^/]*$/, '')
-  const dashboard = createDashboard({ storage: base, engine: control, workflows: [order], authorize: () => true, basePath: path })
+  const dashboard = createDashboard({ storage, engine: control, workflows: [order], authorize: () => true, basePath: path })
   win.fetch = (input, init) => dashboard(new Request(new URL(String(input), win.location.href), init))
   win.EventSource = class {
     constructor() {
@@ -358,115 +228,65 @@ async function mountDashboard() {
     close() { win.clearInterval(this.timer) }
   }
   const html = await (await dashboard(new Request(new URL(path, window.location.origin)))).text()
+  // write() is what makes the frame run the dashboard page's own script; the
+  // page is the dashboard's, rendered by its handler a moment ago.
   win.document.open()
   win.document.write(html)
   win.document.close()
 }
 
-let poller = null
-let ticker = null
 onMounted(async () => {
-  await base.initialize()
+  ticker = setInterval(tick, 100)
+  await storage.initialize()
   await mountDashboard()
-  await startProcess()
-  poller = setInterval(refresh, 150)
-  ticker = setInterval(() => { now.value = Date.now() }, 100)
 })
-
 onUnmounted(async () => {
-  clearInterval(poller)
   clearInterval(ticker)
+  plainAbort?.abort()
   if (engine) await engine.stop()
   engine = null
 })
 </script>
 
 <template>
-  <section class="pg" aria-label="Reflow running in this page">
-    <div class="pg-top">
-      <ol class="pg-story" aria-label="Steps of the demo">
-        <li v-for="(stage, index) in stages" :key="stage.label" :class="{ done: stage.done() }">
-          <span class="pg-story-n">{{ index + 1 }}</span>{{ stage.label }}
-        </li>
-      </ol>
-      <div class="pg-say">
-        <p aria-live="polite">{{ caption }}</p>
-        <button class="pg-primary" :class="{ danger: primary.danger, urge: primary.urge }" :disabled="primary.busy" @click="primary.act">{{ primary.label }}</button>
+  <section class="pg" :data-phase="phase" aria-label="One order, run as plain code and as a Reflow workflow">
+    <p class="pg-banner" aria-live="polite">{{ banner }}</p>
+
+    <div class="pg-grid" role="table" aria-label="The order's steps in each version">
+      <div class="pg-head" role="row">
+        <span role="columnheader" />
+        <span v-for="step in STEPS" :key="step.name" role="columnheader" class="pg-step-head">{{ step.label }}</span>
+        <span role="columnheader" class="pg-charged-head">Card charged</span>
+      </div>
+
+      <div v-for="(l, key) in { plain, reflow }" :key="key" class="pg-lane" :class="key" role="row">
+        <span class="pg-lane-name" role="rowheader">
+          <template v-if="key === 'plain'">Plain code</template>
+          <template v-else>With Reflow</template>
+          <span class="pg-lane-note">{{ key === 'plain' ? 'remembers nothing' : 'saves each step' }}</span>
+        </span>
+        <span v-for="(step, index) in l.steps" :key="index" class="pg-cell" :data-state="step.state" role="cell">
+          <span class="pg-fill" :style="{ '--p': progress(step, index) }" />
+          <span class="pg-word"><span class="long">{{ WORD[step.state] }}</span><span class="short">{{ SHORT[step.state] }}</span></span>
+        </span>
+        <span class="pg-charged" :class="{ twice: l.charges > 1 }" role="cell">{{ l.charges }}×</span>
+      </div>
+
+      <div v-if="phase === 'crashed' || phase === 'restarting'" class="pg-crash" aria-hidden="true">
+        {{ phase === 'crashed' ? 'Server crashed' : 'Server restarting…' }}
       </div>
     </div>
 
-    <div class="pg-world">
-      <div class="pg-col pg-process" :data-alive="world.alive">
-        <h3 class="pg-col-title">
-          <span class="pg-lamp" :class="world.alive ? 's-live' : 's-dead'" aria-hidden="true" />
-          <template v-if="world.alive">Process {{ world.process }}</template>
-          <template v-else>Process {{ world.process }} <span class="pg-dead">killed</span></template>
-        </h3>
-        <p class="pg-col-sub">Runs the steps. Remembers nothing on its own.</p>
-        <template v-if="focusRun">
-          <p class="pg-on">{{ focusRun.input.orderId }}</p>
-          <ol class="pg-steps">
-            <li v-for="step in processView" :key="step.name" :data-state="step.state">
-              <span class="pg-mark" aria-hidden="true" />
-              <span class="pg-step-name">{{ step.name }}</span>
-              <span class="pg-step-word">{{ step.word }}</span>
-              <span v-if="step.state === 'running'" class="pg-bar" :style="{ '--p': progress(focusRun.id) }" />
-            </li>
-          </ol>
-          <p v-if="world.alive && claimLeft > 0" class="pg-wait">Waiting {{ (claimLeft / 1000).toFixed(1) }}s for the dead process's claim to run out</p>
-        </template>
-        <p v-else class="pg-idle">{{ world.alive ? 'Waiting for work' : 'Dead' }}</p>
-      </div>
-
-      <div class="pg-col pg-talk">
-        <h3 class="pg-col-title">What they say to each other</h3>
-        <p class="pg-col-sub">Every line is a call the engine really made to the database.</p>
-        <ol ref="logEl" class="pg-log" aria-label="Messages between the process and the database">
-          <li v-for="m in messages" :key="m.id" :class="[m.tone, 'from-' + (m.from === 'db' ? 'db' : m.from === 'event' ? 'event' : m.from === 'app' ? 'app' : 'process')]">
-            <span class="who">{{ m.from === 'event' ? '' : fromLabel(m.from) }}<span v-if="m.from !== 'event'" class="arrow" aria-hidden="true">{{ m.from === 'db' ? ' ←' : ' →' }}</span></span>
-            <span class="what">{{ m.text }}<span v-if="m.count > 1" class="count"> ×{{ m.count }}</span></span>
-            <span v-if="m.detail" class="why">{{ m.detail }}</span>
-          </li>
-          <li v-if="messages.length === 0" class="quiet"><span class="what">Nothing yet.</span></li>
-        </ol>
-      </div>
-
-      <div class="pg-col pg-db">
-        <h3 class="pg-col-title">The database</h3>
-        <p class="pg-col-sub">Outlives any process. Holds every result.</p>
-        <ul class="pg-rows">
-          <li v-for="entry in dbRuns" :key="entry.run.id" class="pg-row" :class="{ focus: entry.run.id === world.focus }">
-            <span class="pg-row-head"><strong>{{ entry.run.input.orderId }}</strong> <span class="pg-row-owner">{{ entry.owner }}</span></span>
-            <span v-for="step in entry.steps" :key="step.name" class="pg-saved" :data-state="step.status">
-              <span class="name">{{ step.name }}</span>
-              <span class="value">{{ step.status === 'retrying' ? `attempt ${step.attempts} failed` : summary(step) }}</span>
-            </span>
-            <span v-if="entry.steps.length === 0" class="pg-saved none">no results yet</span>
-          </li>
-          <li v-if="dbRuns.length === 0" class="pg-idle">Empty</li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="pg-foot">
-      <dl class="pg-tally">
-        <div><dt>cards charged</dt><dd>{{ world.charges }}</dd></div>
-        <div><dt>orders</dt><dd>{{ world.orders }}</dd></div>
-        <div><dt>steps a plain function would have run again</dt><dd>{{ world.rerunsAvoided }}</dd></div>
-      </dl>
-      <div v-if="world.stage === 'done' || world.stage === 'free'" class="pg-more">
-        <button class="pg-btn" @click="startOrder">Start another order</button>
-        <button v-if="world.alive" class="pg-btn danger" @click="kill">Kill the process</button>
-        <button v-else class="pg-btn" @click="startProcess">Start a new process</button>
-        <label class="pg-toggle"><input type="checkbox" :checked="world.warehouseDown" @change="toggleWarehouse" /> Break the warehouse</label>
-      </div>
+    <div class="pg-actions">
+      <button v-if="phase === 'idle' || phase === 'done'" class="pg-go" @click="start">{{ phase === 'done' ? 'Run it again' : 'Start the order' }}</button>
+      <button v-else-if="phase === 'running'" class="pg-crash-btn" :class="{ urge: canCrash }" :disabled="!canCrash" @click="crash">Crash the server</button>
     </div>
   </section>
 
   <section class="pg-dash" aria-labelledby="pg-dash-title">
-    <h2 id="pg-dash-title">The same runs, in the dashboard</h2>
-    <p>This is Reflow's real dashboard — the handler you would mount in your app — reading the database above. Open the order workflow and pick a run to see each step, its timing, and any retries.</p>
-    <iframe ref="frame" class="pg-frame" title="The Reflow dashboard, showing the runs from the demo above" />
+    <h2 id="pg-dash-title">The same run, in the dashboard</h2>
+    <p>Reflow's real dashboard, reading the Reflow run above. Open the order workflow and pick a run to see each step, when it ran, and what it returned.</p>
+    <iframe ref="frame" class="pg-frame" title="The Reflow dashboard, showing the run from the demo above" />
   </section>
 </template>
 
@@ -476,103 +296,60 @@ onUnmounted(async () => {
   --pg-good: #1e7a52;
   --pg-bad: #c0392f;
   --pg-held: #8f6100;
-  --pg-faint: #677086;
+  position: relative;
+  padding: 22px 24px 24px;
   border: 1px solid var(--vp-c-divider);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--vp-c-bg-soft);
-  overflow: hidden;
 }
-.dark .pg { --pg-live: #6e9bff; --pg-good: #4cc08a; --pg-bad: #f06a5f; --pg-held: #e8a317; --pg-faint: #8590a8; }
+.dark .pg { --pg-live: #6e9bff; --pg-good: #4cc08a; --pg-bad: #f06a5f; --pg-held: #e8a317; }
 
-.pg-top { border-bottom: 1px solid var(--vp-c-divider); background: var(--vp-c-bg); }
-.pg-story { display: flex; flex-wrap: wrap; gap: 6px 26px; margin: 0; padding: 14px 20px 0; list-style: none; font-size: 0.9rem; color: var(--vp-c-text-2); }
-.pg-story li { display: flex; align-items: center; gap: 8px; margin: 0; }
-.pg-story-n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; font: 700 0.8rem var(--rf-sign); box-shadow: inset 0 0 0 1.5px var(--pg-faint); }
-.pg-story li.done { color: var(--vp-c-text-1); }
-.pg-story li.done .pg-story-n { background: var(--pg-good); box-shadow: none; color: #fff; }
-.pg-say { display: flex; align-items: center; gap: 12px 24px; padding: 14px 20px 16px; }
-.pg-say p { flex: 1; margin: 0; font: 700 1.25rem/1.35 var(--rf-sign); color: var(--vp-c-text-1); }
-.pg-primary { flex: none; font: inherit; font-weight: 700; padding: 11px 20px; border-radius: 6px; border: 1px solid transparent; background: var(--vp-c-text-1); color: var(--vp-c-bg); cursor: pointer; }
-.pg-primary.danger { background: var(--pg-bad); color: #fff; }
-.pg-primary.urge { animation: pg-urge 1.1s ease-in-out infinite; }
-.pg-primary:disabled { opacity: 0.5; cursor: default; }
-.pg-primary:focus-visible, .pg-btn:focus-visible { outline: 2px solid var(--vp-c-brand-1); outline-offset: 2px; }
-@keyframes pg-urge { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--pg-bad) 25%, transparent); } }
+.pg-banner { margin: 0 0 20px; min-height: 2.6em; font: 700 1.35rem/1.3 var(--rf-sign); color: var(--vp-c-text-1); }
+.pg[data-phase='crashed'] .pg-banner { color: var(--pg-bad); }
 
-.pg-world { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr) minmax(0, 1fr); }
-.pg-col { padding: 16px 18px; border-left: 1px solid var(--vp-c-divider); min-width: 0; }
-.pg-col:first-child { border-left: 0; }
-.pg-col-title { display: flex; align-items: center; gap: 8px; margin: 0; padding: 0; border: 0; font: 700 1.1rem var(--rf-sign); letter-spacing: 0; }
-.pg-col-sub { margin: 2px 0 14px; font-size: 0.84rem; color: var(--vp-c-text-2); }
-.pg-dead { color: var(--pg-bad); }
-.pg-process[data-alive='false'] { background: color-mix(in srgb, var(--pg-bad) 6%, transparent); }
+.pg-grid { position: relative; display: grid; gap: 10px; }
+.pg-head, .pg-lane { display: grid; grid-template-columns: 9.5em repeat(3, minmax(0, 1fr)) 5.5em; gap: 10px; align-items: center; }
+.pg-step-head, .pg-charged-head { font-size: 0.86rem; font-weight: 600; color: var(--vp-c-text-2); }
+.pg-charged-head { text-align: center; }
+.pg-lane-name { font: 700 1.05rem var(--rf-sign); line-height: 1.2; }
+.pg-lane-note { display: block; font: 400 0.8rem var(--vp-font-family-base); color: var(--vp-c-text-2); }
 
-.pg-lamp { flex: none; width: 10px; height: 10px; border-radius: 50%; }
-.pg-lamp.s-live { background: var(--pg-live); animation: pg-pulse 1s ease-in-out infinite; }
-.pg-lamp.s-dead { background: var(--pg-bad); }
-@keyframes pg-pulse { 50% { opacity: 0.45; } }
+/* A step: a block that fills as it runs, and keeps or loses its fill. */
+.pg-cell { position: relative; height: 54px; border-radius: 8px; background: var(--vp-c-bg); box-shadow: inset 0 0 0 1px var(--vp-c-divider); overflow: hidden; }
+.pg-fill { position: absolute; inset: 0; transform-origin: left; transform: scaleX(var(--p)); background: var(--pg-live); opacity: 0.22; transition: background-color 0.2s; }
+.pg-word { position: relative; display: flex; align-items: center; height: 100%; padding: 0 12px; font-weight: 700; font-size: 0.95rem; }
+.pg-cell[data-state='running'] .pg-word { color: var(--pg-live); }
+.pg-cell[data-state='again'] .pg-fill, .pg-cell[data-state='redone'] .pg-fill { background: var(--pg-held); }
+.pg-cell[data-state='again'] .pg-word, .pg-cell[data-state='redone'] .pg-word { color: var(--pg-held); }
+.pg-cell[data-state='resumed'] { box-shadow: inset 0 0 0 2px var(--pg-live); }
+.pg-cell[data-state='resumed'] .pg-word { color: var(--pg-live); }
+.pg-cell[data-state='done'] .pg-fill { background: var(--vp-c-text-3); }
+.pg-cell[data-state='done'] .pg-word { color: var(--vp-c-text-2); }
+.pg-cell[data-state='saved'] .pg-fill, .pg-cell[data-state='kept'] .pg-fill, .pg-cell[data-state='picked'] .pg-fill { background: var(--pg-good); opacity: 0.28; }
+.pg-cell[data-state='saved'] .pg-word, .pg-cell[data-state='kept'] .pg-word, .pg-cell[data-state='picked'] .pg-word { color: var(--pg-good); }
+.pg-cell[data-state='picked'] { box-shadow: inset 0 0 0 2px var(--pg-live); }
+.pg-cell[data-state='saved']::after, .pg-cell[data-state='kept']::after, .pg-cell[data-state='picked']::after { content: '✓'; position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--pg-good); font-weight: 700; }
+.pg-cell[data-state='kept'] { box-shadow: inset 0 0 0 2px var(--pg-good); }
+.pg-cell[data-state='lost'] { box-shadow: inset 0 0 0 2px var(--pg-bad); background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--pg-bad) 12%, transparent) 0 6px, transparent 6px 12px); }
+.pg-cell[data-state='lost'] .pg-fill { opacity: 0; }
+.pg-cell[data-state='lost'] .pg-word { color: var(--pg-bad); }
 
-.pg-on { margin: 0 0 6px; font: 700 1rem var(--rf-sign); }
-.pg-steps { margin: 0; padding: 0; list-style: none; }
-.pg-steps li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; grid-template-areas: "mark name word" ". bar bar"; gap: 4px 8px; align-items: center; margin: 0; padding: 7px 0; border-top: 1px solid var(--vp-c-divider); font-size: 0.92rem; }
-.pg-mark { grid-area: mark; width: 10px; height: 10px; border-radius: 50%; box-shadow: inset 0 0 0 2px var(--pg-faint); }
-.pg-step-name { grid-area: name; font-family: var(--vp-font-family-mono); font-size: 0.86rem; }
-.pg-step-word { grid-area: word; font-size: 0.84rem; color: var(--vp-c-text-2); }
-.pg-steps [data-state='saved'] .pg-mark { background: var(--pg-good); box-shadow: none; }
-.pg-steps [data-state='saved'] .pg-step-word { color: var(--pg-good); }
-.pg-steps [data-state='running'] .pg-mark { background: var(--pg-live); box-shadow: none; }
-.pg-steps [data-state='running'] .pg-step-word { color: var(--pg-live); }
-.pg-steps [data-state='lost'] .pg-mark { background: var(--pg-bad); box-shadow: none; }
-.pg-steps [data-state='lost'] .pg-step-word { color: var(--pg-bad); font-weight: 600; }
-.pg-steps [data-state='retrying'] .pg-mark { box-shadow: inset 0 0 0 2px var(--pg-held); }
-.pg-steps [data-state='retrying'] .pg-step-word { color: var(--pg-held); }
-.pg-steps [data-state='ahead'] .pg-step-name { color: var(--vp-c-text-2); }
-.pg-bar { grid-area: bar; display: block; height: 5px; border-radius: 3px; background: var(--vp-c-divider); overflow: hidden; position: relative; }
-.pg-bar::after { content: ''; position: absolute; inset: 0; transform-origin: left; transform: scaleX(var(--p)); background: var(--pg-live); }
-.pg-wait { margin: 10px 0 0; font-size: 0.86rem; color: var(--pg-held); }
-.pg-idle { margin: 0; font-size: 0.92rem; color: var(--vp-c-text-2); }
+.pg-word .short { display: none; }
+.pg-charged { text-align: center; font: 700 1.7rem var(--rf-sign); color: var(--vp-c-text-1); }
+.pg-charged.twice { color: var(--pg-bad); }
 
-/* The conversation. */
-.pg-talk { background: var(--vp-c-bg); }
-.pg-log { margin: 0; padding: 0; list-style: none; height: 330px; overflow-y: auto; scroll-behavior: smooth; }
-.pg-log li { display: grid; grid-template-columns: 7.6em minmax(0, 1fr); gap: 1px 10px; margin: 0; padding: 7px 0; border-top: 1px solid var(--vp-c-divider); font-size: 0.9rem; animation: pg-in 0.35s ease-out; }
-.pg-log li:first-child { border-top: 0; }
-.pg-log .who { font-size: 0.8rem; font-weight: 600; color: var(--vp-c-text-2); white-space: nowrap; }
-.pg-log .from-db .who { color: var(--pg-good); }
-.pg-log .what { font-weight: 600; color: var(--vp-c-text-1); }
-.pg-log .count { font-weight: 400; color: var(--vp-c-text-2); }
-.pg-log .why { grid-column: 2; font-size: 0.84rem; color: var(--vp-c-text-2); line-height: 1.45; }
-.pg-log .good .what { color: var(--pg-good); }
-.pg-log .bad .what { color: var(--pg-bad); }
-.pg-log .held .what { color: var(--pg-held); }
-.pg-log .quiet .what { font-weight: 400; color: var(--vp-c-text-2); }
-.pg-log .from-event { grid-template-columns: minmax(0, 1fr); padding: 9px 10px; margin: 4px 0; border: 0; border-radius: 6px; background: var(--vp-c-bg-soft); }
-.pg-log .from-event .who { display: none; }
-.pg-log .from-event .why { grid-column: 1; }
-.pg-log .dead { background: color-mix(in srgb, var(--pg-bad) 10%, transparent); }
-.pg-log .dead .what { color: var(--pg-bad); }
-@keyframes pg-in { from { opacity: 0; transform: translateY(4px); } }
+.pg-crash { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 8px; background: color-mix(in srgb, var(--vp-c-bg) 55%, transparent); font: 700 1.6rem var(--rf-sign); color: var(--pg-bad); pointer-events: none; animation: pg-flash 0.5s ease-out; }
+.pg[data-phase='restarting'] .pg-crash { color: var(--vp-c-text-1); }
+@keyframes pg-flash { from { background: color-mix(in srgb, var(--pg-bad) 35%, transparent); } }
 
-.pg-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
-.pg-row { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--vp-c-bg); font-size: 0.86rem; }
-.pg-row.focus { box-shadow: inset 0 0 0 1px var(--vp-c-text-3); }
-.pg-row-owner { display: block; font-size: 0.8rem; color: var(--vp-c-text-2); }
-.pg-saved { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: baseline; font-family: var(--vp-font-family-mono); font-size: 0.78rem; }
-.pg-saved .name { color: var(--pg-good); }
-.pg-saved[data-state='retrying'] .name, .pg-saved[data-state='retrying'] .value { color: var(--pg-held); }
-.pg-saved .value { color: var(--vp-c-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pg-saved.none { display: block; font-family: var(--vp-font-family-base); color: var(--vp-c-text-2); }
-
-.pg-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; padding: 14px 20px; border-top: 1px solid var(--vp-c-divider); background: var(--vp-c-bg); }
-.pg-tally { display: flex; flex-wrap: wrap; gap: 8px 32px; margin: 0; }
-.pg-tally div { margin: 0; display: flex; align-items: baseline; gap: 8px; }
-.pg-tally dt { font-size: 0.86rem; color: var(--vp-c-text-2); }
-.pg-tally dd { margin: 0; order: -1; font: 700 1.6rem var(--rf-sign); }
-.pg-more { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-.pg-btn { font: inherit; font-size: 0.9rem; font-weight: 600; padding: 7px 13px; border-radius: 6px; border: 1px solid var(--vp-c-divider); background: var(--vp-c-bg-soft); color: var(--vp-c-text-1); cursor: pointer; }
-.pg-btn:hover { border-color: var(--vp-c-text-2); }
-.pg-btn.danger { color: var(--pg-bad); border-color: currentColor; background: transparent; }
-.pg-toggle { display: flex; align-items: center; gap: 7px; font-size: 0.9rem; color: var(--vp-c-text-2); cursor: pointer; }
+.pg-actions { display: flex; justify-content: center; min-height: 50px; margin-top: 22px; }
+.pg-go, .pg-crash-btn { font: inherit; font-size: 1.05rem; font-weight: 700; padding: 13px 26px; border-radius: 8px; border: 0; cursor: pointer; }
+.pg-go { background: var(--vp-c-text-1); color: var(--vp-c-bg); }
+.pg-crash-btn { background: var(--pg-bad); color: #fff; }
+.pg-crash-btn:disabled { opacity: 0.35; cursor: default; }
+.pg-crash-btn.urge { animation: pg-urge 1s ease-in-out infinite; }
+.pg-go:focus-visible, .pg-crash-btn:focus-visible { outline: 2px solid var(--vp-c-brand-1); outline-offset: 3px; }
+@keyframes pg-urge { 50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--pg-bad) 25%, transparent); } }
 
 /* Wider than the text column, so the dashboard has room for its three panes. */
 .pg-dash { margin: 72px calc(50% - min(640px, 50vw - 24px)) 0; }
@@ -580,18 +357,26 @@ onUnmounted(async () => {
 .pg-dash p { max-width: 980px; margin: 0 auto 20px; padding: 0 24px; color: var(--vp-c-text-2); }
 .pg-frame { display: block; width: 100%; height: 720px; border: 1px solid var(--vp-c-divider); border-radius: 10px; background: var(--vp-c-bg-alt); }
 
-@media (max-width: 900px) {
-  .pg-world { grid-template-columns: minmax(0, 1fr); }
-  .pg-col { border-left: 0; border-top: 1px solid var(--vp-c-divider); }
-  .pg-col:first-child { border-top: 0; }
-  .pg-story { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; font-size: 0.86rem; }
-  .pg-say { flex-direction: column; align-items: stretch; }
-  .pg-say p { font-size: 1.1rem; }
-  .pg-log { height: 280px; }
+@media (max-width: 720px) {
+  .pg { padding: 18px 14px 20px; }
+  .pg-banner { font-size: 1.15rem; }
+  /* The lane's name takes its own line, so the steps get the full width. */
+  .pg-head, .pg-lane { grid-template-columns: repeat(3, minmax(0, 1fr)) 2.6em; gap: 6px; }
+  .pg-head > :first-child { display: none; }
+  .pg-lane-name { grid-column: 1 / -1; margin-top: 4px; font-size: 0.95rem; }
+  .pg-lane-note { display: inline; margin-left: 0.5em; }
+  .pg-step-head { font-size: 0.74rem; }
+  .pg-charged-head { font-size: 0; }
+  .pg-charged-head::after { content: 'Paid'; font-size: 0.74rem; }
+  .pg-cell { height: 48px; }
+  .pg-word { padding: 0 6px; font-size: 0.8rem; line-height: 1.15; }
+  .pg-word .long { display: none; }
+  .pg-word .short { display: inline; }
+  .pg-cell[data-state='saved']::after, .pg-cell[data-state='kept']::after, .pg-cell[data-state='picked']::after { display: none; }
+  .pg-charged { font-size: 1.3rem; }
   .pg-frame { height: 640px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .pg-lamp.s-live, .pg-primary.urge, .pg-log li { animation: none; }
-  .pg-log { scroll-behavior: auto; }
+  .pg-crash-btn.urge, .pg-crash { animation: none; }
 }
 </style>
