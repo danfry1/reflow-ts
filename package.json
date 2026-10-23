@@ -92,17 +92,20 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",
-    "@vitest/coverage-v8": "4.1.10",
+    "@vitest/coverage-v8": "4.1.11",
     "better-sqlite3": "13.0.2",
     "happy-dom": "20.14.6",
     "syncpack": "15.3.2",
     "tsdown": "0.22.14",
     "typescript": "7.0.2",
     "vitepress": "1.6.4",
-    "vitest": "4.1.10",
-    "zod": "4.4.3"
+    "vitest": "4.1.11",
+    "zod": "4.6.6"
   },
   "dependencies": {
     "@standard-schema/spec": "^1.1.0"
+  },
+  "overrides": {
+    "vite": "6.4.4"
   }
 }
