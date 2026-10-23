@@ -12,11 +12,15 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
   sitemap: { hostname: 'https://danfry1.github.io/reflow-ts/' },
-  // The home page runs the real engine in the browser; this maps the one Node
-  // module it imports to the browser's equivalents.
+  // The home page runs the real engine and dashboard in the browser; this maps
+  // the Node modules they import to browser equivalents or unused stand-ins.
   vite: {
     resolve: {
-      alias: { 'node:crypto': fileURLToPath(new URL('./theme/playground/node-crypto.ts', import.meta.url)) },
+      alias: {
+        'node:crypto': fileURLToPath(new URL('./theme/playground/node-crypto.ts', import.meta.url)),
+        'node:stream/promises': fileURLToPath(new URL('./theme/playground/node-stream.ts', import.meta.url)),
+        'node:stream': fileURLToPath(new URL('./theme/playground/node-stream.ts', import.meta.url)),
+      },
     },
   },
   head: [

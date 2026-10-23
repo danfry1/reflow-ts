@@ -28,9 +28,9 @@ npm install reflow-ts
 
 <section class="home-play">
 
-<h2>Try to break it</h2>
+<h2>Kill it and watch</h2>
 
-<p>This is Reflow, running in this page: two real workflows on the real engine, with storage in memory. Start orders, kill the process while they run, start another, and watch what carries on.</p>
+<p>This is Reflow running in your browser — the real engine, with its database kept in memory. Follow the four steps: start an order, kill the process half-way, start a new one, and see what it does and does not repeat.</p>
 
 <Playground />
 
@@ -85,18 +85,13 @@ await engine.enqueue('order', { orderId: 'ORD-1001', amount: 5000 })
 
 <section class="home-section home-dashboard">
 
-<h2>See every run</h2>
+<h2>On your own runs</h2>
 
-<p>The dashboard shows each workflow, its runs, and for each run what every step did — including each failed attempt and how long it waited before the next. Point it at a database file, or mount it in your own app behind your own auth.</p>
+<p>The dashboard above is the one that ships in the package. Point it at a database file, or mount it in your app behind your own auth — see <a href="/reflow-ts/guide/dashboard">the dashboard guide</a>.</p>
 
 ```sh
 npx reflow-ts dashboard ./app.db
 ```
-
-<figure class="home-shot">
-  <img class="shot-light" src="/dashboard-light.jpg" alt="The Reflow dashboard: workflows in a sidebar, a charge-invoice workflow's runs in a list, and one run open showing its capture step failing after four attempts, with the wait before each retry" width="2000" height="1194" loading="lazy" />
-  <img class="shot-dark" src="/dashboard-dark.jpg" alt="The Reflow dashboard: workflows in a sidebar, a charge-invoice workflow's runs in a list, and one run open showing its capture step failing after four attempts, with the wait before each retry" width="2000" height="1194" loading="lazy" />
-</figure>
 
 </section>
 
