@@ -242,14 +242,24 @@ export class SqliteStorageBase implements StorageAdapter {
         clauseParams.push(staleBefore)
       }
       const reclaimClause = `(${conditions.join(' OR ')})`
+      // Claim in the order runs became due, so a steady stream of new pending
+      // runs cannot starve a woken sleeper or a crashed run awaiting reclaim.
+      // A stale run became due when its lease expired, `staleLeaseMs` after
+      // its last heartbeat.
+      const staleLeaseMs = staleBefore === undefined ? 0 : now - staleBefore
 
       const row = this.get<WorkflowRunRow>(
         `SELECT * FROM workflow_runs
          WHERE workflow IN (${placeholders}) AND ${reclaimClause}
-         ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END ASC, created_at ASC, rowid ASC
+         ORDER BY CASE status
+                    WHEN 'pending' THEN updated_at
+                    WHEN 'running' THEN updated_at + ?
+                    ELSE wake_at
+                  END ASC, created_at ASC, rowid ASC
          LIMIT 1`,
         ...workflowNames,
         ...clauseParams,
+        staleLeaseMs,
       )
 
       if (!row) {

@@ -200,6 +200,57 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
   {
+    name: 'claimNextRun claims pending runs in the order they became pending',
+    async run(storage) {
+      const now = Date.now()
+      await storage.createRun(makeRun({ id: 'newer', createdAt: now - 1_000, updatedAt: now - 1_000 }))
+      await storage.createRun(makeRun({ id: 'older', createdAt: now - 2_000, updatedAt: now - 2_000 }))
+
+      assertEqual((await claim(storage)).id, 'older', 'first claim')
+      assertEqual((await claim(storage)).id, 'newer', 'second claim')
+    },
+  },
+  {
+    name: 'claimNextRun does not starve a woken sleeper behind newer pending runs',
+    async run(storage) {
+      await storage.createRun(makeRun({ id: 'sleeper', createdAt: 1, updatedAt: 1 }))
+      const sleeper = await claim(storage)
+      await storage.sleepRun('sleeper', sleeper.leaseId, Date.now() - 60_000)
+      await storage.createRun(makeRun({ id: 'fresh' }))
+
+      assertEqual(
+        (await claim(storage)).id,
+        'sleeper',
+        'a run due a minute ago must be claimed before one enqueued just now',
+      )
+    },
+  },
+  {
+    name: 'claimNextRun orders a woken sleeper by its wake time, not ahead of older pending runs',
+    async run(storage) {
+      const now = Date.now()
+      await storage.createRun(makeRun({ id: 'sleeper' }))
+      const sleeper = await claim(storage)
+      await storage.sleepRun('sleeper', sleeper.leaseId, now - 1_000)
+      await storage.createRun(makeRun({ id: 'waiting-longer', createdAt: now - 60_000, updatedAt: now - 60_000 }))
+
+      assertEqual((await claim(storage)).id, 'waiting-longer', 'first claim')
+      assertEqual((await claim(storage)).id, 'sleeper', 'second claim')
+    },
+  },
+  {
+    name: 'claimNextRun does not starve a stale run behind newer pending runs',
+    async run(storage) {
+      const now = Date.now()
+      // Last heartbeat two minutes ago with a 30s lease: due for 90s.
+      await storage.createRun(makeRun({ id: 'stale', status: 'running', updatedAt: now - 120_000 }))
+      await storage.createRun(makeRun({ id: 'fresh' }))
+
+      const reclaimed = await storage.claimNextRun(['test'], now - 30_000)
+      assertEqual(reclaimed?.id, 'stale', 'a run whose lease expired 90s ago must be claimed first')
+    },
+  },
+  {
     name: 'heartbeatRun succeeds with the held lease and fails once it is lost',
     async run(storage) {
       await storage.createRun(makeRun())

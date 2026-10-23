@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+**Upgrading:** no API changes. Custom storage adapters are held to a new
+claim-ordering rule (below), which `reflow-ts/conformance` now checks.
+
+### Fixed
+
+- **Several processes can share one SQLite database.** The `better-sqlite3` (`reflow-ts/sqlite-node`) and `bun:sqlite` (`reflow-ts/sqlite-bun`) adapters ran their transactions in SQLite's default deferred mode. A deferred transaction starts as a reader and upgrades to a writer on its first write; if another connection commits in between, the upgrade fails with `SQLITE_BUSY_SNAPSHOT`, which `busy_timeout` cannot retry. Claiming a run reads and then writes, so with four processes claiming from one file most claims failed outright. Every transaction now begins with `BEGIN IMMEDIATE`, taking the write lock up front, so contention becomes a short wait instead of an error. The `node:sqlite` adapter already did this.
+- **Claiming no longer starves woken and crashed runs.** `claimNextRun` ranked every pending run ahead of every sleeping, waiting, or stale one, so while new runs kept arriving, a run whose `.sleep()` had elapsed, whose `.waitForEvent()` had timed out, or whose worker had crashed could wait indefinitely. Runs are now claimed in the order they became claimable: a pending run from when it became pending, a sleeping or waiting run from its wake time, a stale run from when its lease expired.
+
+### Changed
+
+- **The `StorageAdapter.claimNextRun` contract specifies claim order**, as described above. `reflow-ts/conformance` gains four cases for it; a custom adapter that ranks by status will fail them.
+- The three SQLite adapters now share one implementation, each supplying only a small driver for its binding, so a fix to the SQL, the schema, or the transaction handling reaches all three at once. They also cache prepared statements rather than preparing each query on every call. The public classes, their constructors, and the on-disk schema are unchanged.
+
 ## 0.7.0 — 2026-08-10
 
 Schedules gain cron. The stored next-occurrence introduced in 0.6 is what makes

@@ -153,6 +153,12 @@ export interface StorageAdapter {
    * Atomically claim the next runnable run for execution: a `pending` run, a
    * stale `running` run (older than `staleBefore`), or a `sleeping`/`waiting`
    * run whose wake time has passed.
+   *
+   * Must claim the run that has been claimable longest: a pending run counts
+   * from when it became pending (its `updatedAt`), a sleeping or waiting run
+   * from its wake time, and a stale run from when its lease expired. Ranking
+   * by kind instead — say, every pending run first — lets a steady stream of
+   * new work starve woken and crashed runs indefinitely.
    */
   claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
   /** Renew the lease on a running run. Returns false if the lease was lost. */
