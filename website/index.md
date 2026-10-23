@@ -10,7 +10,9 @@ titleTemplate: false
 
 <h1>Steps that survive a crash.</h1>
 
-<p class="home-lede">Reflow runs multi-step workflows in your TypeScript app. Each step's result is saved to SQLite the moment it finishes, so a run that dies half-way — a deploy, an out-of-memory kill, a closed laptop — carries on from the next step instead of starting over. There is nothing to deploy beside your app.</p>
+<p class="home-lede">Reflow runs multi-step workflows in your TypeScript app and saves each step's result the moment it finishes. Kill the process half-way and the run carries on from the next step — nothing to deploy beside your app.</p>
+
+<div class="home-start">
 
 ```sh
 npm install reflow-ts
@@ -18,15 +20,29 @@ npm install reflow-ts
 
 <p class="home-links"><a href="/reflow-ts/guide/quick-start">Quick start</a><a href="/reflow-ts/guide/">How it works</a><a href="https://github.com/danfry1/reflow-ts">GitHub</a></p>
 
+</div>
+
+<p class="home-facts"><span>Node 18 or later, and Bun</span><span>SQLite, in a file next to your app</span><span>Zod, Valibot, ArkType, or any Standard Schema</span><span>MIT licensed</span></p>
+
 </section>
 
-<CrashTest />
+<section class="home-play">
+
+<h2>Try to break it</h2>
+
+<p>This is Reflow, running in this page: two real workflows on the real engine, with storage in memory. Start orders, kill the process while they run, start another, and watch what carries on.</p>
+
+<Playground />
+
+</section>
 
 <section class="home-section">
 
 <h2>What you write</h2>
 
-<p>A workflow is a sequence of steps. Each one returns what the next needs; the engine saves it before moving on.</p>
+<p>A workflow is a sequence of steps. Each returns what the next needs, and the engine saves it before moving on — that is the whole trick.</p>
+
+<div class="home-code">
 
 ```typescript
 import { createWorkflow, createEngine } from 'reflow-ts'
@@ -46,8 +62,9 @@ const order = createWorkflow({
     retry: { maxAttempts: 5, backoff: 'exponential' },
     handler: async ({ prev }) => ({ tracking: await warehouse.ship(prev.chargeId) }),
   })
-  .step('notify', async ({ input, prev }) => {
-    await email.send(input.orderId, `On its way: ${prev.tracking}`)
+  .sleep('wait-a-day', '1d')
+  .step('ask-for-review', async ({ input, prev }) => {
+    await email.send(input.orderId, `How was it? ${prev.tracking}`)
   })
 
 const engine = createEngine({ storage: new SQLiteStorage('./app.db'), workflows: [order] })
@@ -55,7 +72,14 @@ await engine.start()
 await engine.enqueue('order', { orderId: 'ORD-1001', amount: 5000 })
 ```
 
-<p>If the process dies after <code>charge</code>, the customer has been charged once and stays charged once: the next engine to pick the run up starts at <code>ship</code>. If the warehouse is down, <code>ship</code> is retried with growing waits, and a restart in the middle of those waits does not reset the count.</p>
+<ol class="home-notes">
+  <li><strong>charge</strong> runs once. Its result is saved before <code>ship</code> starts, so a crash after it never charges the card again.</li>
+  <li><strong>ship</strong> retries with growing waits. The attempt count is saved too, so a restart mid-wait does not start the count over.</li>
+  <li><strong>wait-a-day</strong> holds no worker for the day. The run sleeps in the database and wakes on time, whichever process is running then.</li>
+  <li><strong>label</strong> names each run in the dashboard.</li>
+</ol>
+
+</div>
 
 </section>
 

@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitepress'
 
 const description =
@@ -11,6 +12,13 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
   sitemap: { hostname: 'https://danfry1.github.io/reflow-ts/' },
+  // The home page runs the real engine in the browser; this maps the one Node
+  // module it imports to the browser's equivalents.
+  vite: {
+    resolve: {
+      alias: { 'node:crypto': fileURLToPath(new URL('./theme/playground/node-crypto.ts', import.meta.url)) },
+    },
+  },
   head: [
     ['link', { rel: 'icon', href: '/reflow-ts/favicon.svg', type: 'image/svg+xml' }],
     ['meta', { name: 'theme-color', content: '#14213d' }],
