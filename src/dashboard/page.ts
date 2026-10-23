@@ -22,6 +22,7 @@ export function renderPage({ title, nonce }: PageOptions): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex, nofollow">
 <title>${escapeHtml(title)}</title>
 <link rel="icon" href="data:image/svg+xml,${encodeURIComponent(MARK_SVG)}">
 <style nonce="${nonce}">${STYLES}</style>
@@ -57,14 +58,15 @@ const STYLES = String.raw`
   --surface: #FFFFFF;
   --ink: #14213D;
   --ink-soft: #4A5672;
-  --ink-faint: #8A93A8;
+  /* Every colour that colours text reads at 4.5:1 or more on both backgrounds. */
+  --ink-faint: #677086;
   --rule: #DCE1EA;
   --focus: #2563EB;
   --live: #2563EB;
-  --hold: #C98A0B;
-  --proceed: #23825A;
-  --stop: #D2463C;
-  --withdrawn: #6B7488;
+  --hold: #8F6100;
+  --proceed: #1E7A52;
+  --stop: #C0392F;
+  --withdrawn: #5F6779;
   --code-bg: #EAEEF4;
   /* Signage: DIN where the system has it (macOS, Windows), for names and figures. */
   --sign: "DIN Alternate", Bahnschrift, "DIN Next", "D-DIN", "Barlow Semi Condensed", "Helvetica Neue", Arial, sans-serif;
@@ -78,7 +80,7 @@ const STYLES = String.raw`
     --surface: #131D31;
     --ink: #E6EAF2;
     --ink-soft: #A9B3C7;
-    --ink-faint: #6E7A93;
+    --ink-faint: #8590A8;
     --rule: #24314A;
     --focus: #7AA7FF;
     --live: #6E9BFF;
