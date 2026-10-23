@@ -407,6 +407,22 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
   {
+    name: 'requeueRun discards a step that was waiting out a retry, so it starts over',
+    async run(storage) {
+      await storage.createRun(makeRun({ status: 'cancelled' }))
+      await storage.saveStepResult(makeStep({ id: 'done', name: 'a', status: 'completed' }))
+      await storage.saveStepResult(makeStep({ id: 'backing-off', name: 'b', status: 'retrying', attempts: 1, output: 0 }))
+
+      assert(await storage.requeueRun('run_1'), 'a cancelled run must requeue')
+
+      assertEqual(
+        (await storage.getStepResults('run_1')).map((step) => step.name),
+        ['a'],
+        'remaining steps',
+      )
+    },
+  },
+  {
     name: 'countRuns counts every status, including those with no runs',
     async run(storage) {
       await storage.createRun(makeRun({ id: 'a' }))

@@ -233,7 +233,7 @@ export class MemoryStorage implements StorageAdapter {
 
     const steps = this.steps.get(runId)
     if (steps) {
-      this.steps.set(runId, steps.filter((step) => step.status !== 'failed'))
+      this.steps.set(runId, steps.filter((step) => step.status !== 'failed' && step.status !== 'retrying'))
     }
 
     return true

@@ -28,6 +28,8 @@ export interface StepAttemptContext {
   readonly runSignal: AbortSignal
   /** Attempts earlier executions already spent on this step. Numbering continues from here. */
   readonly priorAttempts?: number
+  /** The error the last of those attempts failed with, as persisted. */
+  readonly priorError?: string
 }
 
 /**
@@ -119,10 +121,14 @@ export async function runStepHandler(
   // RunControlError is rethrown inside the loop, so reaching here means a plain
   // failure — or a null `lastError` when the signal aborted before any attempt
   // could run, which needs an error of its own to report.
+  // No attempt ran: either the signal aborted first, or earlier executions had
+  // already spent every attempt (the workflow now allows fewer). In the second
+  // case the persisted error is the one that explains the failure.
+  const attempts = Math.max(maxAttempts, priorAttempts)
   return {
     kind: 'failed',
-    error: lastError ?? new StepFailedError(stepDef.name, maxAttempts),
-    attempts: Math.max(maxAttempts, priorAttempts),
+    error: lastError ?? new StepFailedError(stepDef.name, attempts, { lastError: attempt.priorError }),
+    attempts,
   }
 }
 
@@ -216,7 +222,10 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
       if (retrying) {
         const retryAt = Number(retrying.output)
         if (Date.now() < retryAt) {
-          return suspendForRetry(ctx, stepDef.name, retrying.error ?? '', retrying.attempts, retryAt, startedAt)
+          if (ctx.durableBackoff) {
+            return suspendForRetry(ctx, stepDef.name, retrying.error ?? '', retrying.attempts, retryAt, startedAt)
+          }
+          await delayWithSignal(retryAt - Date.now(), ctx.signals.run.signal)
         }
       } else {
         await ctx.emit({
@@ -227,12 +236,18 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
         })
       }
 
-      const outcome = await runStepHandler(
-        stepDef,
-        { input: ctx.run.input, runSignal: ctx.signals.run.signal, priorAttempts: retrying?.attempts ?? 0 },
-        prev,
-        frozenSteps,
-      )
+      const attempt: StepAttemptContext = {
+        input: ctx.run.input,
+        runSignal: ctx.signals.run.signal,
+        priorAttempts: retrying?.attempts ?? 0,
+        priorError: retrying?.error ?? undefined,
+      }
+      // Suspending is only worth it when something will come back for the run.
+      // A tick()-driven engine has no poller to, so it waits in process and the
+      // tick still finishes the step.
+      const outcome = ctx.durableBackoff
+        ? await runStepHandler(stepDef, attempt, prev, frozenSteps)
+        : await runStepHandlerInProcess(stepDef, attempt, prev, frozenSteps)
 
       if (outcome.kind === 'retry') {
         if (isControlAbort(ctx)) {

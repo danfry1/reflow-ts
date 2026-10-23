@@ -264,7 +264,8 @@ export interface StorageAdapter {
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
   /**
    * Reset a `failed` or `cancelled` run to `pending` so it can be re-executed,
-   * discarding any `failed` step results so the failed step runs again.
+   * discarding any `failed` or `retrying` step results so that step runs again
+   * from its first attempt.
    * Completed steps are preserved and skipped on replay. Returns false if the
    * run does not exist or is not in a resumable state.
    *

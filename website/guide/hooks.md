@@ -33,7 +33,7 @@ Every hook receives an event carrying `runId` and `workflow`. The shapes mirror 
 
 | Hook | Fires | Extra fields |
 |---|---|---|
-| `onRunStart` | A run begins executing (also on crash-recovery resume) | — |
+| `onRunStart` | An engine picks up a run to execute it: when it first starts, and again each time it resumes — after a sleep, a wait, a retry backoff, or crash recovery | — |
 | `onStepStart` | Before each step runs | `stepName` |
 | `onStepSkipped` | A step's [`when`](/api/workflow) predicate returned false | `stepName` |
 | `onStepComplete` | After a step's result is persisted | `stepName`, `output`, `attempts` |

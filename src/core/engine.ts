@@ -586,6 +586,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       workflow,
       storage,
       signals: activeRun.signals,
+      durableBackoff: running,
       replay,
       steps,
       emit: (event) => emit(event, observerSignal),

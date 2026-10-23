@@ -45,6 +45,13 @@ export interface ExecutionContext {
   readonly signals: RunSignals
 
   /**
+   * Whether a retry backoff should suspend the run durably. True on a started
+   * engine, whose polling will resume it; false for one driven by `tick()`,
+   * where nothing would, so the backoff is waited out in process instead.
+   */
+  readonly durableBackoff: boolean
+
+  /**
    * Step results persisted by earlier executions of this run, keyed by step
    * name. Empty on a first execution; populated when a suspended or reclaimed
    * run resumes. Executors consult it to replay rather than repeat work.
