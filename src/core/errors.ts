@@ -281,9 +281,10 @@ export class StepFailedError extends ReflowError {
   constructor(
     public readonly stepName: string,
     public readonly attempts: number,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; lastError?: string },
   ) {
-    super('STEP_FAILED', `Step "${stepName}" failed after ${attempts} attempt(s)`, options)
+    const last = options?.lastError === undefined ? '' : `: ${options.lastError}`
+    super('STEP_FAILED', `Step "${stepName}" failed after ${attempts} attempt(s)${last}`, options)
     this.name = 'StepFailedError'
   }
 

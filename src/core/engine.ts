@@ -328,6 +328,9 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   let fillInFlight = false
   let refillRequested = false
   let pollInFlight = false
+  /** Soon-due wake times of runs this instance suspended, ascending. See {@link scheduleWake}. */
+  const wakeTimes: number[] = []
+  let wakeTimer: ReturnType<typeof setTimeout> | null = null
 
   for (const wf of workflows) {
     if (registry.has(wf.name)) {
@@ -583,6 +586,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       workflow,
       storage,
       signals: activeRun.signals,
+      durableBackoff: running,
       replay,
       steps,
       emit: (event) => emit(event, observerSignal),
@@ -668,7 +672,9 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           case 'passthrough':
             continue
           case 'halt':
+            return
           case 'suspend':
+            scheduleWake(outcome.wakeAt)
             return
           case 'complete':
             await finishRun(run, ctx, outcome.output)
@@ -961,6 +967,52 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       })
   }
 
+  /**
+   * Refill slots when a run this instance suspended is due to wake, rather
+   * than leaving it for the next poll.
+   *
+   * Polling already finds every due run eventually; this only makes a short
+   * sleep, wait timeout, or retry backoff resume on time instead of up to
+   * `pollIntervalMs` late. Wakes further out than {@link LOCAL_WAKE_HORIZON_MS}
+   * are left to polling, where that delay is negligible, so the list stays
+   * small however many long sleeps are outstanding.
+   */
+  function scheduleWake(wakeAt: number | null): void {
+    if (wakeAt === null || !running || wakeAt - Date.now() > LOCAL_WAKE_HORIZON_MS) {
+      return
+    }
+
+    const index = sortedIndex(wakeTimes, wakeAt)
+    wakeTimes.splice(index, 0, wakeAt)
+    if (index === 0) {
+      armWakeTimer()
+    }
+  }
+
+  function armWakeTimer(): void {
+    if (wakeTimer) {
+      clearTimeout(wakeTimer)
+      wakeTimer = null
+    }
+
+    const [next] = wakeTimes
+    if (next === undefined) {
+      return
+    }
+
+    // A millisecond late rather than early: a timer can fire just before its
+    // target, when the run would not yet be claimable.
+    wakeTimer = setTimeout(() => {
+      wakeTimer = null
+      const now = Date.now()
+      while (wakeTimes[0] !== undefined && wakeTimes[0] <= now) {
+        wakeTimes.shift()
+      }
+      requestFill()
+      armWakeTimer()
+    }, Math.max(0, next - Date.now()) + 1)
+  }
+
   /** One polling cycle: fire due schedules, then fill free slots. Cycles never overlap. */
   async function poll(): Promise<void> {
     if (pollInFlight || !running) {
@@ -1018,6 +1070,12 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       clearInterval(timer)
       timer = null
     }
+
+    if (wakeTimer) {
+      clearTimeout(wakeTimer)
+      wakeTimer = null
+    }
+    wakeTimes.length = 0
 
     for (const [runId, activeRun] of activeRuns) {
       abortActiveRun(runId, new RunControlError('Engine stopped'))
@@ -1282,6 +1340,25 @@ function errorCode(error: Error): string | null {
 }
 
 const TERMINAL_STATUSES: readonly TerminalRunStatus[] = ['completed', 'failed', 'cancelled']
+
+/** How far ahead {@link scheduleWake} sets a local timer; later wakes are left to polling. */
+const LOCAL_WAKE_HORIZON_MS = 5 * 60_000
+
+/** Where `value` belongs in the ascending `sorted`, after any equal values. */
+function sortedIndex(sorted: readonly number[], value: number): number {
+  let low = 0
+  let high = sorted.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    const candidate = sorted[middle]
+    if (candidate !== undefined && candidate <= value) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+  return low
+}
 
 /** Runs deleted per `deleteRuns` call during `prune()`: each batch is one short write transaction. */
 const PRUNE_BATCH_SIZE = 500

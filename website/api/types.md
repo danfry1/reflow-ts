@@ -18,7 +18,7 @@ type RunStatus = 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 
 type TerminalRunStatus = 'completed' | 'failed' | 'cancelled'
 type StepStatus =
   | 'pending' | 'running' | 'completed' | 'completed-early'
-  | 'skipped' | 'sleeping' | 'waiting' | 'failed'
+  | 'skipped' | 'sleeping' | 'waiting' | 'retrying' | 'failed'
 ```
 
 `RUN_STATUSES` and `STEP_STATUSES` are exported as readonly arrays of every value, for building filters or validating input.

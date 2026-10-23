@@ -45,6 +45,13 @@ export interface ExecutionContext {
   readonly signals: RunSignals
 
   /**
+   * Whether a retry backoff should suspend the run durably. True on a started
+   * engine, whose polling will resume it; false for one driven by `tick()`,
+   * where nothing would, so the backoff is waited out in process instead.
+   */
+  readonly durableBackoff: boolean
+
+  /**
    * Step results persisted by earlier executions of this run, keyed by step
    * name. Empty on a first execution; populated when a suspended or reclaimed
    * run resumes. Executors consult it to replay rather than repeat work.
@@ -94,8 +101,11 @@ export type UnitOutcome =
   | { readonly kind: 'advance'; readonly output: PersistedValue }
   /** Continue to the next unit, leaving `prev` untouched (a sleep, or a skipped step). */
   | { readonly kind: 'passthrough' }
-  /** The run is durably suspended and its lease released. Stop; a later claim resumes it. */
-  | { readonly kind: 'suspend' }
+  /**
+   * The run is durably suspended and its lease released. Stop; a later claim
+   * resumes it — at `wakeAt` (epoch ms), or when an event arrives if `null`.
+   */
+  | { readonly kind: 'suspend'; readonly wakeAt: number | null }
   /** A handler called `complete()`. Finish the run as completed with `output`. */
   | { readonly kind: 'complete'; readonly output: PersistedValue }
   /** The unit failed. Mark the run failed and report `stepName` / `error`. */

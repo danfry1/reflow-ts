@@ -18,7 +18,7 @@ type EngineEvent =
 
 | Variant | Fires |
 |---|---|
-| `runStart` | A run begins executing (also on crash-recovery resume) |
+| `runStart` | An engine picks up a run to execute it — when it first starts, and again each time it resumes after a sleep, wait, retry backoff, or crash recovery |
 | `stepStart` | Before each step (or parallel branch) runs |
 | `stepSkipped` | A step's [`when`](/api/workflow) predicate returned false and the step was skipped |
 | `stepComplete` | After a step's result is persisted |

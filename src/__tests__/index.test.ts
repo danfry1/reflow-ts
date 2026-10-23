@@ -30,7 +30,7 @@ describe('public API', () => {
   it('exports every run and step status', () => {
     expect(RUN_STATUSES).toStrictEqual(['pending', 'running', 'sleeping', 'waiting', 'completed', 'failed', 'cancelled'])
     expect(STEP_STATUSES).toStrictEqual([
-      'pending', 'running', 'completed', 'completed-early', 'skipped', 'sleeping', 'waiting', 'failed',
+      'pending', 'running', 'completed', 'completed-early', 'skipped', 'sleeping', 'waiting', 'retrying', 'failed',
     ])
   })
 

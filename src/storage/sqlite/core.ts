@@ -421,7 +421,9 @@ export class SqliteStorageBase implements StorageAdapter {
         return false
       }
 
-      this.run(`DELETE FROM workflow_steps WHERE run_id = ? AND status = 'failed'`, runId)
+      // A failed step runs again from scratch, and so does one that was waiting
+      // out a backoff when the run was cancelled: its attempts start over.
+      this.run(`DELETE FROM workflow_steps WHERE run_id = ? AND status IN ('failed', 'retrying')`, runId)
 
       return true
     })
