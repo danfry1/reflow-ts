@@ -30,7 +30,8 @@ export function renderPage({ title, nonce }: PageOptions): string {
 <header class="bar">
   <a class="brand" href="#/">${MARK_SVG}<span>${escapeHtml(title)}</span></a>
   <nav class="views" aria-label="Views">
-    <a href="#/" data-view="runs">Runs</a>
+    <a href="#/" data-view="workflows">Workflows</a>
+    <a href="#/runs" data-view="runs">All runs</a>
     <a href="#/schedules" data-view="schedules">Schedules</a>
   </nav>
   <span class="live" id="live" hidden>Live</span>
@@ -109,7 +110,7 @@ button { font: inherit; color: inherit; }
 .live[hidden] { display: none; }
 .live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--live); }
 
-main { padding: 24px 24px 56px; max-width: 1480px; margin: 0 auto; }
+main { padding: 24px 24px 56px; max-width: 1200px; margin: 0 auto; }
 
 /* Status lamps: a filled lamp is a settled state, a ring one that will move on. */
 .lamp { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex: none; }
@@ -128,9 +129,6 @@ main { padding: 24px 24px 56px; max-width: 1480px; margin: 0 auto; }
 .filters button[aria-pressed="true"] { color: var(--ink); border-bottom-color: currentColor; }
 .filters button[aria-pressed="true"] .lamp { box-shadow: 0 0 0 3px var(--canvas), 0 0 0 4px currentColor; }
 
-.layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 36px; }
-.layout.open { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); }
-@media (max-width: 1080px) { .layout.open { grid-template-columns: minmax(0, 1fr); } .layout.open .list { display: none; } }
 
 .search { width: 100%; margin-bottom: 12px; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); color: var(--ink); font: inherit; }
 
@@ -150,9 +148,9 @@ main { padding: 24px 24px 56px; max-width: 1480px; margin: 0 auto; }
 .empty strong { display: block; color: var(--ink); font-family: var(--sign); font-size: 18px; margin-bottom: 4px; }
 
 /* The detail sits on the canvas, not in a card: the line is the thing to look at. */
-.detail-head { display: flex; align-items: flex-start; gap: 16px; }
-.detail-head h1 { margin: 0; font-size: 32px; line-height: 1.1; font-weight: 700; overflow-wrap: anywhere; }
-.runid { display: block; margin-top: 4px; font-size: 13px; color: var(--ink-faint); overflow-wrap: anywhere; }
+.detail-head { display: flex; align-items: flex-start; gap: 16px; margin-top: 6px; }
+.runid { display: flex; flex-wrap: wrap; gap: 2px 18px; margin-top: 4px; font-size: 13px; color: var(--ink-faint); overflow-wrap: anywhere; }
+.runid .input { color: var(--ink-soft); }
 .actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .btn { padding: 7px 14px; border-radius: 4px; border: 1px solid var(--rule); background: var(--surface); cursor: pointer; }
 .btn:hover { border-color: var(--ink-soft); }
@@ -212,6 +210,37 @@ h2 { margin: 34px 0 10px; font: 700 18px var(--sign); }
   .filters .n { font-size: 18px; }
 }
 
+/* Page heads: where you are in workflows, then runs, then one run. */
+main > h1, .detail-head h1 { margin: 6px 0 6px; font-size: 32px; line-height: 1.1; font-weight: 700; overflow-wrap: anywhere; }
+.crumbs { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 14px; color: var(--ink-soft); }
+.crumbs a { text-decoration: none; color: var(--ink-soft); }
+.crumbs a:hover { color: var(--ink); text-decoration: underline; }
+.crumbs > * + *::before { content: "/"; margin-right: 10px; color: var(--ink-faint); }
+.crumbs [aria-current] { color: var(--ink); }
+.intro { margin: 4px 0 20px; max-width: 46em; color: var(--ink-soft); }
+
+/* Workflows: each with its steps and how its runs stand. */
+.wfs { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+.wfs li + li .wf { border-top: 1px solid var(--rule); }
+.wf { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; padding: 16px 18px; text-decoration: none; }
+.wf:hover { background: var(--canvas); }
+.wf-name { font: 700 19px var(--sign); }
+.wf-total { font-family: var(--sign); color: var(--ink-soft); text-align: right; }
+.wf .recipe, .wf .counts { grid-column: 1 / 3; }
+.recipe { display: flex; flex-wrap: wrap; gap: 4px 22px; margin: 0; padding: 0; list-style: none; counter-reset: step; font-size: 14px; }
+.recipe li { counter-increment: step; display: flex; gap: 7px; align-items: baseline; }
+.recipe li::before { content: counter(step); font: 700 13px var(--sign); color: var(--ink-faint); }
+.recipe-block { margin: 14px 0 8px; }
+.recipe-block .label { margin: 0 0 6px; font-size: 13px; color: var(--ink-soft); }
+.recipe-block .recipe { font-size: 15px; }
+.counts { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 14px; color: var(--ink-soft); }
+.counts.none { color: var(--ink-faint); }
+.count { display: flex; align-items: center; gap: 7px; }
+.count .n { font: 700 15px var(--sign); color: var(--ink); }
+.row .name .label { display: block; font-weight: 400; font-size: 13px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; }
+.trail .unreached { color: var(--ink-faint); }
+.steps tr.unreached .name, .steps tr.unreached .status { color: var(--ink-faint); }
+
 /* The list: each run's steps so far, in order. */
 .trail { grid-area: trail; display: flex; flex-wrap: wrap; gap: 2px 16px; margin: 4px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--ink-soft); }
 .trail li { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -260,7 +289,7 @@ const SCRIPT = String.raw`
 
   var app = document.getElementById('app');
   var liveBadge = document.getElementById('live');
-  var state = { overview: null, status: null, workflow: '', runs: [], next: null, selected: null, detail: null, problem: null };
+  var state = { overview: null, workflows: null, schedules: null, status: null, workflow: '', search: '', scope: null, runs: [], next: null, detail: null, problem: null };
 
   // --- DOM helpers: every piece of run data goes in as text, never markup.
   function h(tag, props, children) {
@@ -297,10 +326,10 @@ const SCRIPT = String.raw`
     var s = ms / 1000;
     if (s < 60) return (s < 10 ? s.toFixed(1) : Math.round(s)) + 's';
     var m = Math.floor(s / 60), rs = Math.round(s % 60);
-    if (m < 60) return m + 'm ' + rs + 's';
+    if (m < 60) return m + 'm' + (rs ? ' ' + rs + 's' : '');
     var hr = Math.floor(m / 60);
-    if (hr < 48) return hr + 'h ' + (m % 60) + 'm';
-    return Math.floor(hr / 24) + 'd ' + (hr % 24) + 'h';
+    if (hr < 48) return hr + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '');
+    return Math.floor(hr / 24) + 'd' + (hr % 24 ? ' ' + (hr % 24) + 'h' : '');
   }
   function ago(ts) {
     if (!ts) return '';
@@ -385,17 +414,37 @@ const SCRIPT = String.raw`
     return STATUS_LABEL[step.status] || step.status;
   }
 
-  // The list's summary of a run: its steps so far, each with its lamp.
-  function trail(run) {
-    var units = unitsOf(run.steps || []);
-    var items = units.map(function (unit) {
-      var names = unit.members.map(function (step) { return step.name; }).join(' + ');
-      var status = unitStatus(unit);
-      return h('li', { title: names + ': ' + (STATUS_LABEL[status] || status) }, [lamp(status), h('span', { text: names })]);
+  // A run's steps as a short chain: those it ran, with their lamps, and —
+  // when the workflow's definition is known — those it has not reached yet.
+  function trail(run, outline) {
+    var steps = run.steps || [];
+    var entries;
+    if (outline) {
+      var byName = {};
+      steps.forEach(function (step) { byName[step.name] = step; });
+      entries = outline.map(function (unit) {
+        var names = unit.kind === 'parallel' ? unit.branches : [unit.name];
+        var ran = names.map(function (name) { return byName[name]; }).filter(Boolean);
+        return { label: names.join(' + '), status: ran.length ? unitStatus({ members: ran }) : null };
+      });
+      if (run.status === 'running') {
+        var next = entries.filter(function (entry) { return entry.status === null; })[0];
+        if (next) next.status = 'running';
+      }
+    } else {
+      entries = unitsOf(steps).map(function (unit) {
+        return { label: unit.members.map(function (step) { return step.name; }).join(' + '), status: unitStatus(unit) };
+      });
+      if (run.status === 'running') entries.push({ label: 'next step', status: 'running' });
+    }
+    var items = entries.map(function (entry) {
+      var reached = entry.status !== null;
+      return h('li', { class: reached ? null : 'unreached', title: entry.label + ': ' + (reached ? STATUS_LABEL[entry.status] || entry.status : 'not reached') }, [
+        lamp(reached ? entry.status : 'pending'), h('span', { text: entry.label })
+      ]);
     });
-    if (run.status === 'running') items.push(h('li', { class: 'now' }, [lamp('running'), h('span', { text: 'running' })]));
-    if (items.length > 6) {
-      items = items.slice(0, 2).concat([h('li', { class: 'gap', text: (items.length - 5) + ' more' })], items.slice(-3));
+    if (items.length > 7) {
+      items = items.slice(0, 3).concat([h('li', { class: 'gap', text: (items.length - 6) + ' more' })], items.slice(-3));
     }
     return items.length ? h('ol', { class: 'trail', 'aria-label': 'Steps' }, items) : null;
   }
@@ -424,8 +473,8 @@ const SCRIPT = String.raw`
     return track;
   }
 
-  function stepsTable(run, steps) {
-    if (steps.length === 0 && run.status !== 'running') {
+  function stepsTable(run, steps, outline) {
+    if (steps.length === 0 && run.status !== 'running' && !outline) {
       return h('p', { class: 'note', text: run.startedAt ? 'No step has finished yet.' : 'Waiting for an engine to pick it up.' });
     }
     var origin = run.startedAt || run.createdAt;
@@ -471,6 +520,22 @@ const SCRIPT = String.raw`
       ]));
     }
 
+    // Steps the run has not reached, from the workflow's definition.
+    if (outline) {
+      var ran = {};
+      steps.forEach(function (step) { ran[step.name] = true; });
+      outline.forEach(function (unit) {
+        var names = unit.kind === 'parallel' ? unit.branches : [unit.name];
+        if (names.some(function (name) { return ran[name]; })) return;
+        rows.push(h('tr', { class: 'step unreached' }, [
+          h('td', { class: 'name' }, [h('span', { text: names.join(' + ') }), unit.kind === 'parallel' ? h('span', { class: 'aside', text: 'in parallel' }) : null]),
+          h('td', { class: 'status' }, [lamp('pending'), h('span', { text: TERMINAL[run.status] ? 'Did not run' : 'Not reached yet' })]),
+          h('td', { class: 'when' }, [h('div', { class: 'track' })]),
+          h('td', { class: 'took' })
+        ]));
+      });
+    }
+
     return h('table', { class: 'steps' }, [
       h('thead', null, [h('tr', null, [
         h('th', { text: 'Step' }),
@@ -502,29 +567,34 @@ const SCRIPT = String.raw`
     });
   }
 
-  // --- Routing
+  // --- Routing: workflows, then a workflow's runs, then one run.
   function route() {
     var hash = location.hash.replace(/^#/, '') || '/';
-    var match = hash.match(/^\/runs\/(.+)$/);
-    if (hash === '/schedules') return { view: 'schedules' };
-    var runId = null;
-    if (match) {
-      try { runId = decodeURIComponent(match[1]); } catch (error) { runId = match[1]; }
+    function param(prefix) {
+      if (hash.indexOf(prefix) !== 0 || hash.length === prefix.length) return null;
+      var raw = hash.slice(prefix.length);
+      try { return decodeURIComponent(raw); } catch (error) { return raw; }
     }
-    return { view: 'runs', runId: runId };
+    if (hash === '/schedules') return { view: 'schedules' };
+    if (hash === '/runs') return { view: 'runs' };
+    var runId = param('/runs/');
+    if (runId !== null) return { view: 'run', runId: runId };
+    var workflow = param('/workflows/');
+    if (workflow !== null) return { view: 'workflow', workflow: workflow };
+    return { view: 'workflows' };
   }
+  function workflowHref(name) { return '#/workflows/' + encodeURIComponent(name); }
+  function runHref(id) { return '#/runs/' + encodeURIComponent(id); }
 
   function markView(view) {
+    var section = view === 'workflow' || view === 'run' ? 'workflows' : view;
     document.querySelectorAll('.views a').forEach(function (link) {
-      if (link.getAttribute('data-view') === view) link.setAttribute('aria-current', 'page');
+      if (link.getAttribute('data-view') === section) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     });
   }
 
   // --- Data
-  function loadOverview() {
-    return api('api/overview').then(function (overview) { state.overview = overview; });
-  }
   function query(extra) {
     var params = new URLSearchParams();
     if (state.status) params.set('status', state.status);
@@ -543,24 +613,31 @@ const SCRIPT = String.raw`
       render();
     }, showProblem);
   }
-  function loadDetail(id) {
-    return api('api/runs/' + encodeURIComponent(id)).then(
-      function (detail) { state.detail = detail; },
-      function () { state.detail = null; }
-    );
-  }
 
   function refresh() {
     var r = route();
     markView(r.view);
+    var loads = [api('api/overview').then(function (overview) { state.overview = overview; })];
     if (r.view === 'schedules') {
-      return api('api/schedules').then(function (body) { state.problem = null; renderSchedules(body.schedules); }, showProblem);
+      loads.push(api('api/schedules').then(function (body) { state.schedules = body.schedules; }));
+    } else if (r.view === 'run') {
+      loads.push(api('api/runs/' + encodeURIComponent(r.runId)).then(
+        function (detail) { state.detail = detail; },
+        function () { state.detail = null; }
+      ));
+    } else {
+      loads.push(api('api/workflows').then(function (body) { state.workflows = body; }));
+      if (r.view === 'workflow' || r.view === 'runs') {
+        var scope = r.view === 'workflow' ? r.workflow : state.search;
+        if (state.scope !== r.view + ':' + (r.workflow || '')) {
+          state.scope = r.view + ':' + (r.workflow || '');
+          state.status = null;
+        }
+        state.workflow = scope || '';
+        loads.push(loadRuns());
+      }
     }
-    state.selected = r.runId;
-    return Promise.all([loadOverview(), loadRuns(), r.runId ? loadDetail(r.runId) : null]).then(
-      function () { state.problem = null; render(); },
-      showProblem
-    );
+    return Promise.all(loads).then(function () { state.problem = null; render(); }, showProblem);
   }
 
   function showProblem(error) {
@@ -571,19 +648,74 @@ const SCRIPT = String.raw`
   // --- Views
   function render() {
     var r = route();
-    if (r.view !== 'runs') return;
+    var body;
+    if (r.view === 'schedules') body = schedulesView();
+    else if (r.view === 'run') body = runView();
+    else if (r.view === 'workflow') body = workflowView(r.workflow);
+    else if (r.view === 'runs') body = allRunsView();
+    else body = workflowsView();
     app.replaceChildren.apply(app, [
-      state.problem ? h('p', { class: 'problem', role: 'alert', text: state.problem }) : null,
-      state.overview ? filters() : null,
-      h('div', { class: 'layout' + (state.selected ? ' open' : '') }, [
-        h('section', { class: 'list', 'aria-label': 'Runs' }, [search(), runList()]),
-        state.selected ? detailView() : null
-      ])
-    ].filter(Boolean));
+      state.problem ? h('p', { class: 'problem', role: 'alert', text: state.problem }) : null
+    ].concat(body).filter(Boolean));
   }
 
-  function filters() {
-    var counts = state.overview.counts;
+  function crumbs(items) {
+    return h('nav', { class: 'crumbs', 'aria-label': 'Breadcrumb' }, items.map(function (item, index) {
+      return index < items.length - 1 ? h('a', { href: item[1], text: item[0] }) : h('span', { 'aria-current': 'page', text: item[0] });
+    }));
+  }
+
+  function countsLine(counts) {
+    var parts = FILTERS.filter(function (status) { return counts[status]; }).map(function (status) {
+      return h('span', { class: 'count' }, [lamp(status), h('span', { class: 'n', text: String(counts[status]) }), ' ' + STATUS_LABEL[status].toLowerCase()]);
+    });
+    return parts.length ? h('div', { class: 'counts' }, parts) : h('div', { class: 'counts none', text: 'No runs yet' });
+  }
+
+  function outlineFor(name) {
+    var list = state.workflows && state.workflows.workflows || [];
+    var found = list.filter(function (workflow) { return workflow.name === name; })[0];
+    return found ? found.steps : null;
+  }
+
+  // The recipe: a workflow's steps in the order every run takes them.
+  function recipe(outline) {
+    return h('ol', { class: 'recipe' }, outline.map(function (unit) {
+      var text = unit.kind === 'parallel' ? unit.branches.join(' + ')
+        : unit.kind === 'sleep' ? unit.name + ' (sleep ' + duration(unit.durationMs) + ')'
+        : unit.kind === 'wait' ? unit.name + ' (wait for event' + (unit.timeoutMs ? ', up to ' + duration(unit.timeoutMs) : '') + ')'
+        : unit.name;
+      return h('li', { text: text });
+    }));
+  }
+
+  function workflowsView() {
+    var data = state.workflows;
+    if (!data) return [];
+    var intro = h('p', { class: 'intro', text: 'A workflow is a sequence of steps defined in code. Each time your app enqueues one, it starts a run that works through those steps on its own. Pick a workflow to see its runs.' });
+    if (data.workflows.length === 0) {
+      return [h('h1', { text: 'Workflows' }), intro, h('div', { class: 'empty' }, [h('strong', { text: 'No runs yet' }), 'Workflows appear here once your app enqueues a run.'])];
+    }
+    var rows = data.workflows.map(function (workflow) {
+      var total = FILTERS.reduce(function (sum, status) { return sum + (workflow.counts[status] || 0); }, 0);
+      return h('li', null, [h('a', { class: 'wf', href: workflowHref(workflow.name) }, [
+        h('span', { class: 'wf-name', text: workflow.name }),
+        h('span', { class: 'wf-total', text: plural(total, 'run') }),
+        workflow.steps ? recipe(workflow.steps) : null,
+        countsLine(workflow.counts)
+      ])]);
+    });
+    return [
+      h('h1', { text: 'Workflows' }),
+      intro,
+      h('ul', { class: 'wfs' }, rows),
+      data.source === 'recent-runs'
+        ? h('p', { class: 'note', text: 'Showing the workflows seen in the latest runs, without their step lists. Pass workflows to createDashboard() to list every workflow with its steps.' })
+        : null
+    ];
+  }
+
+  function statusFilters(counts) {
     var total = FILTERS.reduce(function (sum, status) { return sum + (counts[status] || 0); }, 0);
     function filter(status, n) {
       return h('li', null, [h('button', {
@@ -597,59 +729,75 @@ const SCRIPT = String.raw`
       ])]);
     }
     return h('ul', { class: 'filters', 'aria-label': 'Filter by status' },
-      FILTERS.map(function (status) { return filter(status, counts[status] || 0); }).concat([filter('all', total)]));
+      [filter('all', total)].concat(FILTERS.map(function (status) { return filter(status, counts[status] || 0); })));
   }
 
-  var filterTimer = null;
-  function search() {
-    return h('input', {
-      class: 'search', type: 'search', placeholder: 'Filter by workflow name', 'aria-label': 'Filter by workflow name', value: state.workflow,
-      oninput: function (event) {
-        var value = event.target.value.trim();
-        clearTimeout(filterTimer);
-        filterTimer = setTimeout(function () { state.workflow = value; reloadList(); }, 250);
-      }
-    });
+  function workflowView(name) {
+    var outline = outlineFor(name);
+    var entry = (state.workflows && state.workflows.workflows || []).filter(function (workflow) { return workflow.name === name; })[0];
+    return [
+      crumbs([['Workflows', '#/'], [name]]),
+      h('h1', { text: name }),
+      outline ? h('div', { class: 'recipe-block' }, [h('p', { class: 'label', text: 'Every run takes these steps, in order:' }), recipe(outline)]) : null,
+      h('h2', { text: 'Runs' }),
+      h('p', { class: 'intro', text: 'Each row is one run of ' + name + ', started separately and independent of the others. Newest first.' }),
+      entry ? statusFilters(entry.counts) : null,
+      runRows(false, outline)
+    ];
+  }
+
+  var searchTimer = null;
+  function allRunsView() {
+    return [
+      h('h1', { text: 'All runs' }),
+      h('p', { class: 'intro', text: 'Every run of every workflow, newest first. Each run is independent.' }),
+      statusFilters(state.overview ? state.overview.counts : {}),
+      h('input', {
+        class: 'search', type: 'search', placeholder: 'Filter by workflow name', 'aria-label': 'Filter by workflow name', value: state.search || '',
+        oninput: function (event) {
+          var value = event.target.value.trim();
+          clearTimeout(searchTimer);
+          searchTimer = setTimeout(function () { state.search = value; state.workflow = value; reloadList(); }, 250);
+        }
+      }),
+      runRows(true, null)
+    ];
   }
 
   function reloadList() {
     loadRuns().then(render, showProblem);
   }
 
-  function runList() {
+  function runRows(showWorkflow, outline) {
     if (state.runs.length === 0) {
       var filtered = state.status || state.workflow;
       return h('div', { class: 'empty' }, [
-        h('strong', { text: filtered ? 'No runs match these filters' : 'No runs yet' }),
-        filtered ? 'Clear the status or workflow filter to see every run.' : 'Runs appear here as soon as your app enqueues one.'
+        h('strong', { text: state.status ? 'No ' + STATUS_LABEL[state.status].toLowerCase() + ' runs' : 'No runs yet' }),
+        filtered && state.status ? 'Choose All to see every run.' : 'Runs appear here as soon as your app enqueues one.'
       ]);
     }
     return h('div', null, [
       h('ul', { class: 'rows' }, state.runs.map(function (run) {
-        return h('li', null, [h('a', {
-          class: 'row',
-          href: '#/runs/' + encodeURIComponent(run.id),
-          'aria-current': String(run.id === state.selected)
-        }, [
+        var title = showWorkflow ? run.workflow : run.label || 'Run ' + shortId(run.id);
+        return h('li', null, [h('a', { class: 'row', href: runHref(run.id) }, [
           lamp(run.status),
-          h('span', { class: 'name', text: run.workflow, title: run.id }),
+          h('span', { class: 'name' }, [
+            h('span', { text: title }),
+            showWorkflow && run.label ? h('span', { class: 'label', text: run.label }) : null
+          ]),
           h('span', { class: 'when' }, [time(run.createdAt, true)]),
           h('span', { class: 'why', text: why(run) || STATUS_LABEL[run.status] }),
-          trail(run)
+          trail(run, showWorkflow ? outlineFor(run.workflow) : outline)
         ])]);
       })),
       state.next ? h('button', { class: 'more', onclick: loadMore, text: 'Load older runs' }) : null
     ]);
   }
 
-  function detailView() {
+  function runView() {
     var detail = state.detail;
-    var close = h('button', { class: 'close', 'aria-label': 'Close run', onclick: function () { location.hash = '#/'; }, text: '×' });
     if (!detail) {
-      return h('section', { class: 'detail', 'aria-label': 'Run' }, [
-        h('div', { class: 'detail-head' }, [h('h1', { text: 'Run not found' }), h('div', { class: 'actions' }, [close])]),
-        h('p', { text: 'It may have been pruned, or the link is wrong.' })
-      ]);
+      return [crumbs([['Workflows', '#/'], ['Run']]), h('h1', { text: 'Run not found' }), h('p', { text: 'It may have been pruned, or the link is wrong.' })];
     }
     var run = detail.run;
     var steps = detail.steps;
@@ -658,22 +806,24 @@ const SCRIPT = String.raw`
       if (!TERMINAL[run.status]) actions.push(h('button', { class: 'btn danger', onclick: function () { act(run, 'cancel'); }, text: 'Cancel run' }));
       if (run.status === 'failed' || run.status === 'cancelled') actions.push(h('button', { class: 'btn', onclick: function () { act(run, 'resume'); }, text: 'Resume run' }));
     }
-    actions.push(close);
-
-    return h('section', { class: 'detail', 'aria-label': 'Run ' + run.id }, [
+    return [
+      crumbs([['Workflows', '#/'], [run.workflow, workflowHref(run.workflow)], ['Run ' + shortId(run.id)]]),
       h('div', { class: 'detail-head' }, [
-        h('div', null, [h('h1', { text: run.workflow }), h('span', { class: 'runid', text: run.id })]),
-        h('div', { class: 'actions' }, actions)
+        h('div', null, [
+          h('h1', { text: 'Run of ' + run.workflow }),
+          h('span', { class: 'runid' }, [detail.label ? h('span', { class: 'input', text: detail.label }) : null, h('span', { text: 'id ' + run.id })])
+        ]),
+        actions.length ? h('div', { class: 'actions' }, actions) : null
       ]),
       statement(run, steps),
       facts(run),
-      h('h2', { text: 'Steps' }),
-      stepsTable(run, steps),
+      h('h2', { text: 'Steps of this run' }),
+      stepsTable(run, steps, detail.outline),
       h('div', { class: 'pair' }, [
         h('div', null, [h('h2', { text: 'Input' }), h('pre', { class: 'json', text: json(run.input) })]),
         run.status === 'completed' ? h('div', null, [h('h2', { text: 'Output' }), h('pre', { class: 'json', text: json(run.output) })]) : null
       ])
-    ]);
+    ];
   }
 
   // Where the run stands, as one sentence beside its lamp.
@@ -692,7 +842,7 @@ const SCRIPT = String.raw`
       head = 'Waiting for ' + (run.waitingFor || 'an event');
       reason = run.wakeAt ? 'Times out at ' + clock(run.wakeAt) : 'No timeout';
     } else if (run.status === 'sleeping' && run.wakeAt) {
-      head = 'Sleeping until ' + clock(run.wakeAt);
+      head = 'Sleeping until ' + clock(run.wakeAt) + ' (' + ago(run.wakeAt) + ')';
     } else if (run.status === 'pending') {
       head = run.startedAt ? 'Queued to carry on' : 'Queued';
     } else if (run.status === 'running') {
@@ -703,7 +853,7 @@ const SCRIPT = String.raw`
 
   function facts(run) {
     var items = [['Enqueued', time(run.createdAt, false)]];
-    if (run.startedAt) items.push([run.finishedAt ? 'Ran' : 'Running for', duration((run.finishedAt || Date.now()) - run.startedAt)]);
+    if (run.startedAt) items.push([run.finishedAt ? 'Ran' : 'Elapsed', duration((run.finishedAt || Date.now()) - run.startedAt)]);
     if (run.finishedAt) items.push(['Finished', time(run.finishedAt, false)]);
     return h('dl', { class: 'facts' }, items.map(function (item) {
       return h('div', null, [h('dt', { text: item[0] }), h('dd', null, [item[1]])]);
@@ -720,28 +870,29 @@ const SCRIPT = String.raw`
       }, showProblem);
   }
 
-  function renderSchedules(schedules) {
+  function schedulesView() {
+    var schedules = state.schedules || [];
+    var head = [h('h1', { text: 'Schedules' }), h('p', { class: 'intro', text: 'Schedules start a new run of a workflow on a timetable.' })];
     if (schedules.length === 0) {
-      app.replaceChildren(h('div', { class: 'empty' }, [
+      return head.concat([h('div', { class: 'empty' }, [
         h('strong', { text: 'No schedules registered' }),
         'Schedules registered with engine.schedule() appear here.'
-      ]));
-      return;
+      ])]);
     }
-    app.replaceChildren(h('table', { class: 'sched' }, [
+    return head.concat([h('table', { class: 'sched' }, [
       h('thead', null, [h('tr', null, [h('th', { text: 'Workflow' }), h('th', { text: 'Repeats' }), h('th', { text: 'Next run' }), h('th', { text: 'Key' })])]),
       h('tbody', null, schedules.map(function (schedule) {
         var repeats = schedule.recurrence.kind === 'cron'
           ? h('code', { text: schedule.recurrence.expression + ' (UTC)' })
           : 'Every ' + duration(schedule.recurrence.intervalMs);
         return h('tr', null, [
-          h('td', { text: schedule.workflow }),
+          h('td', null, [h('a', { href: workflowHref(schedule.workflow), text: schedule.workflow })]),
           h('td', null, [repeats]),
           h('td', null, [time(schedule.nextRunAt, false), ' (' + ago(schedule.nextRunAt) + ')']),
           h('td', null, [h('code', { text: schedule.key })])
         ]);
       }))
-    ]));
+    ])]);
   }
 
   // --- Updates: live from the engine when available, otherwise polling.

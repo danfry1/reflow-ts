@@ -178,6 +178,53 @@ describe('createDashboard', () => {
       expect(steps[0]).not.toHaveProperty('output')
     })
 
+    it('lists the given workflows with their steps in order and their run counts', async () => {
+      const staged = createWorkflow({ name: 'staged', input: z.object({}) })
+        .step('first', async () => ({}))
+        .parallel({ left: async () => ({}), right: async () => ({}) })
+        .sleep('pause', 60_000)
+        .waitForEvent('approved', { timeoutMs: 5_000 })
+      await engine.enqueue('order', { id: 'o1' })
+      await engine.tick()
+
+      const body = await (await dashboard({ workflows: [wf, staged] })(get('/api/workflows'))).json()
+
+      expect(body.source).toBe('definitions')
+      expect(body.workflows.map((workflow: { name: string }) => workflow.name)).toStrictEqual(['order', 'staged'])
+      expect(body.workflows[0].counts.completed).toBe(1)
+      expect(body.workflows[1].steps).toStrictEqual([
+        { kind: 'step', name: 'first' },
+        { kind: 'parallel', branches: ['left', 'right'] },
+        { kind: 'sleep', name: 'pause', durationMs: 60_000 },
+        { kind: 'wait', name: 'approved', timeoutMs: 5_000 },
+      ])
+    })
+
+    it('lists the workflows seen in recent runs when given no definitions', async () => {
+      await engine.enqueue('order', { id: 'o1' })
+      await engine.enqueue('approval', {})
+
+      const body = await (await dashboard()(get('/api/workflows'))).json()
+
+      expect(body.source).toBe('recent-runs')
+      expect(body.workflows.map((workflow: { name: string; steps: unknown }) => [workflow.name, workflow.steps]))
+        .toStrictEqual([['approval', null], ['order', null]])
+    })
+
+    it('labels each run by its input, so runs of one workflow can be told apart', async () => {
+      const short = await engine.enqueue('order', { id: 'o1' })
+      const long = await engine.enqueue('order', { id: 'x'.repeat(200) })
+
+      const listed = await (await dashboard()(get('/api/runs'))).json()
+      const detail = await (await dashboard({ workflows: [wf] })(get(`/api/runs/${long.id}`))).json()
+      const labels = new Map(listed.runs.map((run: { id: string; label: string }) => [run.id, run.label]))
+
+      expect(labels.get(short.id)).toBe('id: o1')
+      expect(labels.get(long.id)).toHaveLength(80)
+      expect(detail.label).toMatch(/^id: x+…$/)
+      expect(detail.outline).toStrictEqual([{ kind: 'step', name: 'charge' }])
+    })
+
     it('filters runs by status and workflow', async () => {
       await engine.enqueue('order', { id: 'ok' })
       await engine.enqueue('order', { id: 'bad' })

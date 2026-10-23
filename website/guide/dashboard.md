@@ -25,6 +25,7 @@ import { createDashboard } from 'reflow-ts/dashboard'
 const dashboard = createDashboard({
   storage,
   engine, // optional — see below
+  workflows: [signup, invoice], // optional — the list you pass to createEngine
   authorize: (request) => request.headers.get('authorization') === `Bearer ${process.env.REFLOW_ADMIN_TOKEN}`,
 })
 ```
@@ -66,15 +67,18 @@ createServer(toNodeHandler(dashboard)).listen(4400)
 | `authorize(request)` | **Required.** Return `true` to let the request through, `false` to answer 401. Called for the page and every API request; may be `async`. Check what the request carries — a session, a token — not where it comes from. |
 | `allowedHosts` | The `Host` values to answer to, such as `['localhost:4400']`; anything else gets 421. **Set it whenever `authorize` checks no credentials.** Also list your public host if a proxy in front rewrites `Host`. |
 | `engine` | Optional. Enables cancelling and resuming runs, and live updates. Without it the dashboard is read-only and refreshes every few seconds. |
+| `workflows` | Optional. The workflows your engine runs, as passed to `createEngine`. With them the dashboard lists every workflow with its steps in order, and shows which steps a run has not reached yet. Without them it lists the workflows seen in recent runs, and only the steps that have run. |
 | `basePath` | The path it is mounted at, when your server passes full paths (Bun, Hono, Next.js). Default `/`. |
 | `title` | Shown in the header and the browser tab. Default `Reflow`. |
 
 ## What it shows
 
-- **Counts by status**, which double as the filter: click *Failed* to see only failed runs. Filter by workflow name too.
-- **Every run, newest first**, with one line on where it stands — *Waiting for email-verified, times out in 23h*, *Resumes in 8m*, *ship: Warehouse API 503*.
-- **A run's flow**: its steps drawn on one line, each as long as the time it took. Work is solid, durable pauses — sleeps, waits, retry backoffs — are dashed, a failure ends in a stop, and each retry is a notch. Branches of a parallel group are stacked, since they ran side by side.
-- **Its steps** with their status, attempts, duration, and errors, and the run's input and output.
+It goes from the general to the particular: workflows, then a workflow's runs, then one run.
+
+- **Workflows.** Each workflow you defined, with its steps in order and how many of its runs are failed, waiting, sleeping, or completed. A workflow is the recipe; every `enqueue()` starts a new, independent run of it.
+- **A workflow's runs**, newest first. Each run is labelled by its input — *email: ada@example.com* — so runs of the same workflow can be told apart, with one line on where it stands (*Retrying capture in 3s, after 2 failed attempts*, *Waiting for approved, times out in 23h*) and its steps so far. Counts by status double as filters.
+- **One run.** Where it stands in a sentence, then each step with its status, how long it took, and where it fell in the run's time. A retried step lists every attempt with its error and the wait before the next; a stretch where nothing ran, such as a crash before another engine picked the run up, is called out between steps. Then the run's input and output.
+- **All runs**, across workflows, for triage — every failed run, say.
 - **Schedules**, with when each next fires.
 
 ## Security

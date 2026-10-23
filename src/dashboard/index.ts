@@ -23,7 +23,7 @@
 
 import { randomBytes } from 'node:crypto'
 import type { Engine } from '../core/engine'
-import { toError } from '../core/errors'
+import { assertNever, toError } from '../core/errors'
 import {
   RUN_STATUSES,
   type ListRunsFilter,
@@ -32,6 +32,7 @@ import {
   type StorageAdapter,
   type WorkflowRun,
 } from '../core/types'
+import type { ExecutionUnit } from '../core/workflow'
 import { renderPage } from './page'
 
 export { toNodeHandler } from './node'
@@ -75,7 +76,30 @@ export interface DashboardOptions {
   basePath?: string
   /** Shown in the page title and header. Defaults to `"Reflow"`. */
   title?: string
+  /**
+   * The workflows your engine runs — the same list passed to `createEngine`.
+   * Optional: with it the dashboard lists every workflow with its steps in
+   * order, including steps a run has not reached yet; without it, it lists
+   * the workflows seen in recent runs, and only the steps that have run.
+   */
+  workflows?: readonly DescribedWorkflow[]
 }
+
+/** The part of a workflow the dashboard reads: its name and its steps. */
+export interface DescribedWorkflow {
+  readonly name: string
+  readonly executionUnits: readonly ExecutionUnit[]
+}
+
+/** One entry in a workflow's outline, as the page draws it. */
+type OutlineUnit =
+  | { readonly kind: 'step'; readonly name: string }
+  | { readonly kind: 'parallel'; readonly branches: readonly string[] }
+  | { readonly kind: 'sleep'; readonly name: string; readonly durationMs: number }
+  | { readonly kind: 'wait'; readonly name: string; readonly timeoutMs: number | null }
+
+/** How many recent runs are read for workflow names when no definitions are given. */
+const RECENT_RUNS_FOR_NAMES = 500
 
 /** A Fetch API request handler. */
 export type DashboardHandler = (request: Request) => Promise<Response>
@@ -100,6 +124,7 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
   const allowedHosts = options.allowedHosts?.map((host) => host.toLowerCase())
   const basePath = normalizeBasePath(options.basePath ?? '/')
   const title = options.title ?? 'Reflow'
+  const outlines = new Map((options.workflows ?? []).map((workflow) => [workflow.name, outlineOf(workflow)]))
 
   return async (request) => {
     const url = new URL(request.url)
@@ -163,6 +188,11 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       })
     }
 
+    if (second === 'workflows' && segments.length === 2) {
+      if (method !== 'GET') return methodNotAllowed('GET')
+      return listWorkflows()
+    }
+
     if (second === 'runs' && segments.length === 2) {
       if (method !== 'GET') return methodNotAllowed('GET')
       return listRuns(url.searchParams)
@@ -172,7 +202,12 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       if (method !== 'GET') return methodNotAllowed('GET')
       const run = await storage.getRun(third)
       if (!run) return json(404, { error: `No run with id "${third}"` })
-      return json(200, { run, steps: await storage.getStepResults(third) })
+      return json(200, {
+        run,
+        label: labelOf(run.input),
+        steps: await storage.getStepResults(third),
+        outline: outlines.get(run.workflow) ?? null,
+      })
     }
 
     if (second === 'runs' && third !== undefined && (fourth === 'cancel' || fourth === 'resume') && segments.length === 4) {
@@ -199,6 +234,23 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
     }
 
     return json(404, { error: `No such endpoint: ${route}` })
+  }
+
+  /**
+   * Every workflow with its run counts. Names come from the definitions when
+   * given; otherwise from recent runs, since storage keeps no list of them.
+   */
+  async function listWorkflows(): Promise<Response> {
+    const known = outlines.size > 0
+    const names = known
+      ? [...outlines.keys()]
+      : [...new Set((await storage.listRuns({ limit: RECENT_RUNS_FOR_NAMES })).map((run) => run.workflow))].sort()
+    const workflows = await Promise.all(names.map(async (name) => ({
+      name,
+      steps: outlines.get(name) ?? null,
+      counts: await storage.countRuns({ workflow: name }),
+    })))
+    return json(200, { workflows, source: known ? 'definitions' : 'recent-runs' })
   }
 
   async function listRuns(params: URLSearchParams): Promise<Response> {
@@ -244,7 +296,11 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
     // and the detail endpoint returns them for the one run being looked at.
     const steps = await Promise.all(runs.map((run) => storage.getStepResults(run.id)))
     return json(200, {
-      runs: runs.map((run, index) => ({ ...summarize(run), steps: (steps[index] ?? []).map(outline) })),
+      runs: runs.map((run, index) => ({
+        ...summarize(run),
+        label: labelOf(run.input),
+        steps: (steps[index] ?? []).map(outline),
+      })),
       next,
     })
   }
@@ -277,7 +333,45 @@ function summarize(run: WorkflowRun): Omit<WorkflowRun, 'input' | 'output'> {
   return summary
 }
 
-/** A step without its output: what a run's line needs and nothing more. */
+/** A workflow's units as names and kinds, without handlers or schemas. */
+function outlineOf(workflow: DescribedWorkflow): OutlineUnit[] {
+  return workflow.executionUnits.map((unit): OutlineUnit => {
+    switch (unit.kind) {
+      case 'step':
+        return { kind: 'step', name: unit.definition.name }
+      case 'parallel':
+        return { kind: 'parallel', branches: unit.branches.map((branch) => branch.name) }
+      case 'sleep':
+        return { kind: 'sleep', name: unit.name, durationMs: unit.durationMs }
+      case 'waitForEvent':
+        return { kind: 'wait', name: unit.name, timeoutMs: unit.timeoutMs ?? null }
+      default:
+        return assertNever(unit, 'execution unit')
+    }
+  })
+}
+
+/** Longest label sent for a run; its full input is in the run's detail. */
+const LABEL_LENGTH = 80
+
+/**
+ * A short line telling a run apart from others of its workflow: its input's
+ * top-level values, such as `email: ada@example.com`. The page shows it in
+ * place of a run id nobody can read.
+ */
+function labelOf(input: unknown): string {
+  let label: string
+  if (typeof input === 'object' && input !== null && !Array.isArray(input)) {
+    label = Object.entries(input)
+      .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value) ?? String(value)}`)
+      .join(', ')
+  } else {
+    label = JSON.stringify(input) ?? ''
+  }
+  return label.length > LABEL_LENGTH ? `${label.slice(0, LABEL_LENGTH - 1)}…` : label
+}
+
+/** A step without its output: what a run's row needs and nothing more. */
 function outline(step: StepResult): Omit<StepResult, 'output' | 'id' | 'runId'> {
   const { output: _output, id: _id, runId: _runId, ...rest } = step
   return rest
