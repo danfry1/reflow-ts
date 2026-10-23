@@ -51,14 +51,18 @@ export type {
   EngineEvent,
   EngineEventOf,
   EnqueueOptions,
+  PruneOptions,
   ScheduleOptions,
   ScheduleSpec,
   StreamOptions,
   ResultStream,
 } from './core/engine'
+export { RUN_STATUSES, STEP_STATUSES } from './core/types'
 export type {
   ClaimedRun,
+  CountRunsFilter,
   CreateRunResult,
+  DeleteRunsFilter,
   ListRunsFilter,
   PersistedPrimitive,
   PersistedObject,
@@ -68,8 +72,11 @@ export type {
   WorkflowSchedule,
   ScheduleRecurrence,
   StepResult,
+  RunCounts,
+  RunError,
   RunStatus,
   StepStatus,
+  TerminalRunStatus,
   RetryConfig,
   RunInfo,
 } from './core/types'

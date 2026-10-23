@@ -3,7 +3,9 @@ import Database from 'better-sqlite3'
 import { existsSync, unlinkSync } from 'node:fs'
 import { SqliteStorageBase } from '../sqlite/core'
 import type { SqliteDriver } from '../sqlite/driver'
-import { SerializationError } from '../../core/errors'
+import { ConfigError, SerializationError } from '../../core/errors'
+import { SQLiteStorage } from '../sqlite-node'
+import { SCHEMA_VERSION } from '../sqlite/schema'
 import type { WorkflowRun } from '../../core/types'
 
 const DB_PATH = '/tmp/reflow-sqlite-core.db'
@@ -24,6 +26,12 @@ function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     status: 'pending',
     createdAt: now,
     updatedAt: now,
+    startedAt: null,
+    finishedAt: null,
+    output: undefined,
+    error: null,
+    wakeAt: null,
+    waitingFor: null,
     ...overrides,
   }
 }
@@ -148,6 +156,95 @@ describe('SqliteStorageBase connection setup and recovery', () => {
     await storage.createRun(makeRun({ id: 'kept' }))
     expect((await storage.getRun('kept'))?.status).toBe('pending')
     expect(await storage.getRun('lost')).toBeNull()
+    storage.close()
+  })
+})
+
+/** The tables exactly as 0.7.0 created them, before versioned migrations. */
+const SCHEMA_0_7 = `
+  CREATE TABLE workflow_runs (
+    id TEXT PRIMARY KEY, workflow TEXT NOT NULL, input TEXT NOT NULL, idempotency_key TEXT,
+    lease_id TEXT, status TEXT NOT NULL, wake_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE workflow_steps (
+    id TEXT PRIMARY KEY, run_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, output TEXT,
+    error TEXT, attempts INTEGER DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE workflow_events (
+    id TEXT PRIMARY KEY, run_id TEXT NOT NULL, event_name TEXT NOT NULL, payload TEXT, created_at INTEGER NOT NULL
+  );
+  CREATE TABLE workflow_schedules (
+    key TEXT PRIMARY KEY, workflow TEXT NOT NULL, input TEXT NOT NULL, interval_ms INTEGER, cron TEXT,
+    next_run_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+`
+
+describe('SqliteStorageBase migrations', () => {
+  beforeEach(removeDatabase)
+  afterEach(removeDatabase)
+
+  function seed0_7(): void {
+    const db = new Database(DB_PATH)
+    db.exec(SCHEMA_0_7)
+    db.prepare(
+      `INSERT INTO workflow_runs (id, workflow, input, status, created_at, updated_at) VALUES (?, 'w', '{}', ?, 100, ?)`,
+    ).run('done', 'completed', 500)
+    db.prepare(
+      `INSERT INTO workflow_runs (id, workflow, input, status, created_at, updated_at) VALUES (?, 'w', '{}', ?, 100, ?)`,
+    ).run('live', 'pending', 500)
+    db.close()
+  }
+
+  function userVersion(): number {
+    const db = new Database(DB_PATH)
+    const version = db.pragma('user_version', { simple: true })
+    db.close()
+    return Number(version)
+  }
+
+  it('upgrades a 0.7 database in place, keeping its runs', async () => {
+    seed0_7()
+    const storage = new SQLiteStorage(DB_PATH)
+
+    await storage.initialize()
+
+    expect(userVersion()).toBe(SCHEMA_VERSION)
+    expect(await storage.getRun('done')).toMatchObject({ status: 'completed', startedAt: null, error: null })
+    expect((await storage.getRun('live'))?.status).toBe('pending')
+    storage.close()
+  })
+
+  it('backfills when old runs finished, so they can be pruned', async () => {
+    seed0_7()
+    const storage = new SQLiteStorage(DB_PATH)
+    await storage.initialize()
+
+    expect((await storage.getRun('done'))?.finishedAt).toBe(500)
+    expect((await storage.getRun('live'))?.finishedAt).toBeNull()
+    expect(await storage.deleteRuns({ finishedBefore: 1_000, statuses: ['completed'], limit: 10 })).toBe(1)
+    storage.close()
+  })
+
+  it('does nothing when initialized again', async () => {
+    const storage = new SQLiteStorage(DB_PATH)
+    await storage.initialize()
+    await storage.createRun(makeRun())
+
+    await storage.initialize()
+
+    expect(userVersion()).toBe(SCHEMA_VERSION)
+    expect((await storage.getRun('run_1'))?.status).toBe('pending')
+    storage.close()
+  })
+
+  it('refuses a database written by a newer version', async () => {
+    const db = new Database(DB_PATH)
+    db.pragma(`user_version = ${SCHEMA_VERSION + 1}`)
+    db.close()
+    const storage = new SQLiteStorage(DB_PATH)
+
+    await expect(storage.initialize()).rejects.toBeInstanceOf(ConfigError)
+    expect(userVersion()).toBe(SCHEMA_VERSION + 1)
     storage.close()
   })
 })

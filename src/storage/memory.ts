@@ -1,22 +1,27 @@
 import { randomUUID } from 'node:crypto'
 import type {
   ClaimedRun,
+  CountRunsFilter,
   CreateRunResult,
+  DeleteRunsFilter,
   PersistedValue,
   ListRunsFilter,
+  RunCounts,
+  RunError,
   RunStatus,
   StepResult,
   StorageAdapter,
+  TerminalRunStatus,
   WorkflowRun,
   WorkflowSchedule,
 } from '../core/types'
+import { emptyRunCounts } from './records'
 import { assertNever, InternalError } from '../core/errors'
 import { nextOccurrence, sameRecurrence } from '../core/schedule-timing'
 import { clonePersistedValue } from './codec'
 
 interface StoredRun extends WorkflowRun {
   leaseId: string | null
-  wakeAt: number | null
 }
 
 interface StoredEvent {
@@ -51,8 +56,9 @@ export class MemoryStorage implements StorageAdapter {
     const storedRun: StoredRun = {
       ...run,
       input: clonePersistedValue(run.input, 'Workflow input'),
+      output: run.status === 'completed' ? clonePersistedValue(run.output, 'Run output') : undefined,
+      error: run.error === null ? null : { ...run.error },
       leaseId: null,
-      wakeAt: null,
     }
 
     this.runs.set(run.id, storedRun)
@@ -94,9 +100,11 @@ export class MemoryStorage implements StorageAdapter {
     }
 
     run.status = 'running'
-    run.updatedAt = Date.now()
+    run.updatedAt = now
+    run.startedAt ??= now
     run.leaseId = randomUUID()
     run.wakeAt = null
+    run.waitingFor = null
 
     return cloneClaimedRun(run)
   }
@@ -136,6 +144,7 @@ export class MemoryStorage implements StorageAdapter {
     run.status = buffered ? 'pending' : 'waiting'
     run.leaseId = null
     run.wakeAt = buffered ? null : wakeAt
+    run.waitingFor = buffered ? null : eventName
     run.updatedAt = Date.now()
     return true
   }
@@ -154,6 +163,7 @@ export class MemoryStorage implements StorageAdapter {
       run.status = 'pending'
       run.leaseId = null
       run.wakeAt = null
+      run.waitingFor = null
       run.updatedAt = Date.now()
     }
     return true
@@ -217,6 +227,9 @@ export class MemoryStorage implements StorageAdapter {
     run.status = 'pending'
     run.leaseId = null
     run.updatedAt = Date.now()
+    run.finishedAt = null
+    run.output = undefined
+    run.error = null
 
     const steps = this.steps.get(runId)
     if (steps) {
@@ -255,35 +268,72 @@ export class MemoryStorage implements StorageAdapter {
     return true
   }
 
-  async updateRunStatus(runId: string, status: RunStatus): Promise<boolean> {
-    const run = this.runs.get(runId)
+  async completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean> {
+    const run = this.heldRun(runId, leaseId)
     if (!run) {
       return false
     }
 
-    run.status = status
-    run.updatedAt = Date.now()
-    run.leaseId = null
-    run.wakeAt = null
-
+    // Serialize before transitioning, so an unpersistable output leaves the run
+    // held and running rather than completed with nothing recorded.
+    const stored = clonePersistedValue(output, 'Run output')
+    finish(run, 'completed')
+    run.output = stored
     return true
   }
 
-  async updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean> {
-    const run = this.runs.get(runId)
-    if (!run || run.status !== 'running' || run.leaseId !== leaseId) {
+  async failRun(runId: string, leaseId: string, error: RunError): Promise<boolean> {
+    const run = this.heldRun(runId, leaseId)
+    if (!run) {
       return false
     }
 
-    run.status = status
-    run.updatedAt = Date.now()
+    finish(run, 'failed')
+    run.error = { ...error }
+    return true
+  }
 
-    if (status !== 'running') {
-      run.leaseId = null
-      run.wakeAt = null
+  async cancelRun(runId: string): Promise<boolean> {
+    const run = this.runs.get(runId)
+    if (!run || isTerminal(run.status)) {
+      return false
     }
 
+    finish(run, 'cancelled')
     return true
+  }
+
+  async countRuns(filter: CountRunsFilter = {}): Promise<RunCounts> {
+    const counts = emptyRunCounts()
+    for (const run of this.runs.values()) {
+      if (filter.workflow === undefined || run.workflow === filter.workflow) {
+        counts[run.status]++
+      }
+    }
+    return counts
+  }
+
+  async deleteRuns(filter: DeleteRunsFilter): Promise<number> {
+    const doomed = Array.from(this.runs.values())
+      .filter((run) =>
+        run.finishedAt !== null
+        && run.finishedAt < filter.finishedBefore
+        && filter.statuses.some((status) => status === run.status),
+      )
+      .sort((left, right) => (left.finishedAt ?? 0) - (right.finishedAt ?? 0))
+      .slice(0, Math.max(0, filter.limit))
+
+    for (const run of doomed) {
+      this.runs.delete(run.id)
+      this.steps.delete(run.id)
+      this.events.delete(run.id)
+    }
+    return doomed.length
+  }
+
+  private heldRun(runId: string, leaseId: string): StoredRun | null {
+    const run = this.runs.get(runId)
+    return run && run.status === 'running' && run.leaseId === leaseId ? run : null
   }
 
   async upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule> {
@@ -350,7 +400,28 @@ function cloneWorkflowRun(run: StoredRun): WorkflowRun {
     status: run.status,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    output: clonePersistedValue(run.output, 'Run output'),
+    error: run.error === null ? null : { ...run.error },
+    wakeAt: run.wakeAt,
+    waitingFor: run.waitingFor,
   }
+}
+
+function isTerminal(status: RunStatus): status is TerminalRunStatus {
+  return status === 'completed' || status === 'failed' || status === 'cancelled'
+}
+
+/** Move a run to a terminal status, releasing everything that only a live run holds. */
+function finish(run: StoredRun, status: TerminalRunStatus): void {
+  const now = Date.now()
+  run.status = status
+  run.leaseId = null
+  run.wakeAt = null
+  run.waitingFor = null
+  run.updatedAt = now
+  run.finishedAt = now
 }
 
 /**

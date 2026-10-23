@@ -4,7 +4,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow } from '../workflow'
 import { createEngine } from '../engine'
-import type { StorageAdapter } from '../types'
 import { MemoryStorage } from '../../storage/memory'
 import { SQLiteStorage } from '../../storage/sqlite-node'
 import { at, delegatingAdapter } from '../../__tests__/helpers'
@@ -438,6 +437,7 @@ describe('Engine', () => {
         attempts: 1,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        startedAt: null,
       })
 
       await engine.tick()
@@ -473,6 +473,7 @@ describe('Engine', () => {
         attempts: 1,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        startedAt: null,
       })
 
       await engine.tick()
@@ -490,7 +491,8 @@ describe('Engine', () => {
 
       const engine = createEngine({ storage, workflows: [wf], runLeaseDurationMs: 5 })
       const run = await engine.enqueue('lease-recovery', {})
-      await storage.updateRunStatus(run.id, 'running')
+      // A worker claims the run, then dies without ever heartbeating it.
+      await storage.claimNextRun(['lease-recovery'])
 
       await new Promise((resolve) => setTimeout(resolve, 10))
       await engine.tick()
@@ -546,10 +548,7 @@ describe('Engine', () => {
       await delegate.initialize()
 
       let heartbeatCalls = 0
-      const flakyStorage: StorageAdapter = {
-        initialize: () => delegate.initialize(),
-        createRun: (run) => delegate.createRun(run),
-        claimNextRun: (workflowNames, staleBefore) => delegate.claimNextRun(workflowNames, staleBefore),
+      const flakyStorage = delegatingAdapter(delegate, {
         heartbeatRun: async (runId, leaseId) => {
           heartbeatCalls++
           if (heartbeatCalls === 1) {
@@ -558,24 +557,7 @@ describe('Engine', () => {
 
           return delegate.heartbeatRun(runId, leaseId)
         },
-        sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
-        waitRun: (runId, leaseId, eventName, wakeAt) => delegate.waitRun(runId, leaseId, eventName, wakeAt),
-        deliverEvent: (runId, eventName, payload) => delegate.deliverEvent(runId, eventName, payload),
-        takeEvent: (runId, eventName) => delegate.takeEvent(runId, eventName),
-        getRun: (runId) => delegate.getRun(runId),
-        getStepResults: (runId) => delegate.getStepResults(runId),
-        listRuns: (filter) => delegate.listRuns(filter),
-        requeueRun: (runId) => delegate.requeueRun(runId),
-        saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
-        updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
-        updateClaimedRunStatus: (runId, leaseId, status) =>
-          delegate.updateClaimedRunStatus(runId, leaseId, status),
-        upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
-        claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
-        deleteSchedule: (key) => delegate.deleteSchedule(key),
-        listSchedules: () => delegate.listSchedules(),
-        close: () => delegate.close(),
-      }
+      })
 
       const afterStep = vi.fn(async () => ({ done: true }))
       const wf = createWorkflow({
@@ -1863,8 +1845,8 @@ describe('Engine', () => {
 
       const engine = createEngine({ storage, workflows: [wf] })
       const run = await engine.enqueue('test', {})
-      // Manually set to running
-      await storage.updateRunStatus(run.id, 'running')
+      // Held by some worker, not this engine.
+      await storage.claimNextRun(['test'])
 
       const cancelled = await engine.cancel(run.id)
       expect(cancelled).toBe(true)
@@ -2032,13 +2014,11 @@ describe('Engine', () => {
     it('still runs what it claimed when a later claim in the batch fails', async () => {
       const wf = createWorkflow({ name: 'test', input: z.object({}) }).step('a', async () => ({ done: true }))
       let claims = 0
-      const flaky: StorageAdapter = Object.create(storage, {
-        claimNextRun: {
-          value: async (names: readonly string[], staleBefore?: number) => {
-            claims++
-            if (claims === 2) throw new Error('disk I/O error')
-            return storage.claimNextRun(names, staleBefore)
-          },
+      const flaky = delegatingAdapter(storage, {
+        claimNextRun: async (names, staleBefore) => {
+          claims++
+          if (claims === 2) throw new Error('disk I/O error')
+          return storage.claimNextRun(names, staleBefore)
         },
       })
       const engine = createEngine({ storage: flaky, workflows: [wf], concurrency: 2 })
@@ -2310,6 +2290,7 @@ describe('Engine', () => {
         attempts: 1,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        startedAt: null,
       }, claimed.leaseId)
 
       // Simulate lease expiry so a second engine can reclaim

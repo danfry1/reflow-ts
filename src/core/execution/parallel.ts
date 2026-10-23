@@ -38,6 +38,8 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
 
     const frozenSteps = ctx.snapshotSteps()
     const runSignal = ctx.signals.run.signal
+    // Branches start together, so they share one start time.
+    const startedAt = Date.now()
 
     // Branches share a group-scoped abort so one failure can cancel its
     // siblings without aborting the run itself.
@@ -129,6 +131,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
           output: null,
           error: firstFailure.branchError.message,
           attempts: firstFailure.attempts,
+          startedAt,
         })
 
         return { kind: 'failed', stepName: firstFailure.branchName, error: firstFailure.branchError }
@@ -143,6 +146,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
           status: 'completed',
           output: branch.output,
           attempts: branch.attempts,
+          startedAt,
         })
 
         await ctx.emit({

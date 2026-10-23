@@ -399,9 +399,16 @@ const run = await engine.enqueue('order-fulfillment', { orderId: 'ORD_1', amount
 // Later...
 const info = await engine.getRunStatus(run.id)
 if (info) {
-  info.run.status    // 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
-  info.steps         // StepResult[] — each step's output, error, and attempt count
+  info.run.status     // 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+  info.run.output     // a completed run's final output
+  info.run.error      // a failed run's { stepName, message, code }
+  info.run.waitingFor // the event a waiting run is waiting for
+  info.run.startedAt  // first claimed; finishedAt once it is done
+  info.steps          // StepResult[] — each step's output, error, attempts, and start time
 }
+
+await engine.countRuns()               // { pending: 3, running: 1, ..., failed: 2 }
+await engine.prune({ olderThan: '30d' }) // delete runs that finished over 30 days ago
 ```
 
 ### Hooks
@@ -620,14 +627,29 @@ interface StorageAdapter {
   createRun(run: WorkflowRun): Promise<CreateRunResult>
   claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
   heartbeatRun(runId: string, leaseId: string): Promise<boolean>
+  sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean>
+  waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
+  deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
+  takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
   getRun(runId: string): Promise<WorkflowRun | null>
+  listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
+  requeueRun(runId: string): Promise<boolean>
   getStepResults(runId: string): Promise<StepResult[]>
   saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
-  updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
-  updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean>
+  completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean>
+  failRun(runId: string, leaseId: string, error: RunError): Promise<boolean>
+  cancelRun(runId: string): Promise<boolean>
+  countRuns(filter?: CountRunsFilter): Promise<RunCounts>
+  deleteRuns(filter: DeleteRunsFilter): Promise<number>
+  upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule>
+  claimDueSchedule(workflowNames: readonly string[], now: number): Promise<WorkflowSchedule | null>
+  deleteSchedule(key: string): Promise<boolean>
+  listSchedules(): Promise<WorkflowSchedule[]>
   close(): void
 }
 ```
+
+Each method's contract is in the [Storage API reference](https://danfry1.github.io/reflow-ts/api/storage), and `reflow-ts/conformance` checks an adapter against it.
 
 Persisted workflow input and step output must be plain data: objects, arrays, strings, numbers, booleans, `null`, `undefined`, and `Date`.
 
@@ -913,7 +935,15 @@ Returns `Promise<readonly WorkflowSchedule[]>` — every registered schedule, or
 
 ### `engine.getRunStatus(runId)`
 
-Returns `{ run, steps }` with the run's current status and all step results, or `null` if not found.
+Returns `{ run, steps }` with the run's current status and all step results, or `null` if not found. The run records `startedAt`, `finishedAt`, `output`, `error`, `wakeAt`, and `waitingFor`.
+
+### `engine.countRuns(filter?)`
+
+Returns how many runs are in each status, optionally for one `workflow`.
+
+### `engine.prune({ olderThan, statuses? })`
+
+Deletes finished runs that finished longer ago than `olderThan` (ms or a duration string like `'30d'`), with their steps and events. Never touches a run that can still progress. Returns how many were deleted.
 
 ### `testEngine(config)`
 

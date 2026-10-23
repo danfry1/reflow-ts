@@ -28,6 +28,12 @@ function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     status: 'pending',
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    startedAt: null,
+    finishedAt: null,
+    output: undefined,
+    error: null,
+    wakeAt: null,
+    waitingFor: null,
     ...overrides,
   }
 }
@@ -43,6 +49,7 @@ function makeStep(overrides: Partial<StepResult> = {}): StepResult {
     attempts: 1,
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    startedAt: null,
     ...overrides,
   }
 }
@@ -328,10 +335,10 @@ describe('SQLiteStorage', () => {
 
     it('reflects status updates', async () => {
       await storage.createRun(makeRun({ id: 'run_1' }))
-      await storage.updateRunStatus('run_1', 'completed')
+      await storage.cancelRun('run_1')
 
       const run = expectPresent(await storage.getRun('run_1'))
-      expect(run.status).toBe('completed')
+      expect(run.status).toBe('cancelled')
     })
 
     it('roundtrips complex JSON input', async () => {
@@ -363,36 +370,6 @@ describe('SQLiteStorage', () => {
     it('returns false for a nonexistent run', async () => {
       const ok = await storage.heartbeatRun('nonexistent', 'some-lease')
       expect(ok).toBe(false)
-    })
-  })
-
-  describe('updateRunStatus', () => {
-    it('updates the status of a run', async () => {
-      await storage.createRun(makeRun({ id: 'run_1' }))
-      await storage.updateRunStatus('run_1', 'completed')
-
-      const claimed = await storage.claimNextRun(['test'])
-      expect(claimed).toBeNull()
-    })
-
-    it('transitions through all status values', async () => {
-      await storage.createRun(makeRun({ id: 'run_1' }))
-      await storage.updateRunStatus('run_1', 'running')
-      await storage.updateRunStatus('run_1', 'failed')
-      // Should not throw
-    })
-
-    it('returns false for a nonexistent run', async () => {
-      const ok = await storage.updateRunStatus('nonexistent', 'completed')
-      expect(ok).toBe(false)
-    })
-
-    it('updates a claimed run only when the lease matches', async () => {
-      await storage.createRun(makeRun({ id: 'run_1' }))
-      const claimed = expectPresent(await storage.claimNextRun(['test']))
-
-      expect(await storage.updateClaimedRunStatus('run_1', 'wrong-lease', 'completed')).toBe(false)
-      expect(await storage.updateClaimedRunStatus('run_1', claimed.leaseId, 'completed')).toBe(true)
     })
   })
 

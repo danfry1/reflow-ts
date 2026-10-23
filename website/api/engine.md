@@ -36,7 +36,7 @@ Invalid `bufferSize` (negative, or a non-integer that isn't `Infinity`) throws [
 
 ## `engine.cancel(runId)`
 
-Cancels a pending or running workflow. Returns `true` if cancelled, `false` if it already completed / failed / cancelled. Aborts the current step's `AbortSignal` immediately. See [Cancellation](/guide/cancellation).
+Cancels a run that has not finished — pending, running, sleeping, or waiting. Returns `true` if cancelled, `false` if it does not exist or already completed / failed / cancelled; the check and the cancel are one atomic storage write, so a run finishing at that moment is never reported cancelled. Aborts the current step's `AbortSignal` immediately. See [Cancellation](/guide/cancellation).
 
 ## `engine.sendEvent(runId, eventName, payload)`
 
@@ -98,6 +98,26 @@ const page2 = last
   : []
 ```
 
+
+## `engine.countRuns(filter?)`
+
+Returns how many runs are in each status, optionally for one workflow — every status present, zero or not. Cheap enough to poll for a status bar or a health check.
+
+```typescript
+const counts = await engine.countRuns({ workflow: 'order-fulfillment' })
+counts.failed // 3
+```
+
+## `engine.prune(options)`
+
+Deletes finished runs — with their step results and buffered events — that finished longer ago than `olderThan` (milliseconds, or a duration string like `'30d'`). `statuses` narrows it to some of `completed` / `failed` / `cancelled` (default: all three). Runs that can still progress are never deleted. Resolves to how many runs were removed.
+
+```typescript
+await engine.prune({ olderThan: '30d' })
+await engine.prune({ olderThan: '7d', statuses: ['completed'] }) // keep failures longer
+```
+
+Deletes in batches of 500, so on SQLite it never holds the write lock long enough to stall workers. See [Inspecting runs](/guide/inspecting-runs#retention).
 ## `engine.resume(runId)`
 
 Re-queues a `failed` or `cancelled` run so the engine picks it up again. Completed steps are preserved and skipped on replay, so execution resumes at the step that failed; the failed step's result is discarded and re-run. Returns `true` if the run was resumable, `false` if it does not exist or is in any other state (`pending` / `running` / `completed`).

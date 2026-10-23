@@ -30,7 +30,10 @@ import type { ExecutionContext, RunSignals, StepRecord, UnitOutcome } from './ex
 import { waitForEventExecutor } from './execution/wait-for-event'
 import type {
   ClaimedRun,
+  CountRunsFilter,
   ListRunsFilter,
+  RunCounts,
+  TerminalRunStatus,
   PersistedValue,
   RunInfo,
   StepResult,
@@ -84,6 +87,14 @@ export interface EngineConfig<TWorkflows extends readonly AnyWorkflow[] = readon
   heartbeatIntervalMs?: number
 }
 
+/** Options for `engine.prune()`. */
+export interface PruneOptions {
+  /** Delete runs that finished longer ago than this: milliseconds, or a duration string such as `'30d'`. */
+  olderThan: number | string
+  /** Which finished statuses to delete. Defaults to all three: `completed`, `failed`, and `cancelled`. */
+  statuses?: readonly TerminalRunStatus[]
+}
+
 /** Options for `engine.enqueue()`. */
 export interface EnqueueOptions {
   /** Prevents duplicate runs. Same key + same input returns the existing run. Same key + different input throws. */
@@ -133,6 +144,17 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    * Filter by `status` and/or `workflow`, page with `limit` and `before`.
    */
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
+  /** How many runs are in each status, optionally for one workflow. */
+  countRuns(filter?: CountRunsFilter): Promise<RunCounts>
+  /**
+   * Delete finished runs older than `olderThan`, with their steps and events.
+   * Runs that can still progress are never touched. Resolves to how many runs
+   * were deleted.
+   *
+   * Deletes in small batches, so on SQLite it never holds the write lock long
+   * enough to stall workers sharing the database. Safe to call on a schedule.
+   */
+  prune(options: PruneOptions): Promise<number>
   /**
    * Re-queue a `failed` or `cancelled` run so the engine picks it up again,
    * resuming from the failed step (completed steps are skipped on replay).
@@ -337,6 +359,12 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       status: 'pending',
       createdAt: now,
       updatedAt: now,
+      startedAt: null,
+      finishedAt: null,
+      output: undefined,
+      error: null,
+      wakeAt: null,
+      waitingFor: null,
     }
 
     const { run: storedRun, created } = await storage.createRun(run)
@@ -368,6 +396,28 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       throw new ConfigError('listRuns limit must be a positive integer')
     }
     return storage.listRuns(filter)
+  }
+
+  async function prune(options: PruneOptions): Promise<number> {
+    const olderThanMs = parseDuration(options.olderThan)
+    const statuses = options.statuses ?? TERMINAL_STATUSES
+    // The types already forbid a live status; this guards JavaScript callers,
+    // for whom deleting a run mid-flight would be silent data loss.
+    for (const status of statuses) {
+      if (!TERMINAL_STATUSES.includes(status)) {
+        throw new ConfigError(`prune() only deletes finished runs; "${status}" is not a finished status`)
+      }
+    }
+
+    const finishedBefore = Date.now() - olderThanMs
+    let deleted = 0
+    for (;;) {
+      const batch = await storage.deleteRuns({ finishedBefore, statuses, limit: PRUNE_BATCH_SIZE })
+      deleted += batch
+      if (batch < PRUNE_BATCH_SIZE) {
+        return deleted
+      }
+    }
   }
 
   async function resume(runId: string): Promise<boolean> {
@@ -522,6 +572,9 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         attempts: record.attempts ?? 0,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
+        // A suspended sleep or wait finishing on a later claim keeps the time
+        // it began; an executor re-running a step passes a fresh one.
+        startedAt: record.startedAt ?? existing?.startedAt ?? now,
       }, run.leaseId)
     }
 
@@ -645,7 +698,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
   /** Mark a run completed and announce it. No-ops if the lease was lost. */
   async function finishRun(run: ClaimedRun, ctx: ExecutionContext, output: PersistedValue): Promise<void> {
-    const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
+    const completed = await storage.completeRun(run.id, run.leaseId, output)
     if (!completed) {
       return
     }
@@ -661,7 +714,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     stepName: string,
     error: Error,
   ): Promise<void> {
-    const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
+    const failed = await storage.failRun(run.id, run.leaseId, {
+      stepName,
+      message: error.message,
+      code: errorCode(error),
+    })
     if (!failed) {
       return
     }
@@ -680,12 +737,9 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   }
 
   async function cancel(runId: string): Promise<boolean> {
-    const run = await storage.getRun(runId)
-    if (!run || run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
-      return false
-    }
-
-    const cancelled = await storage.updateRunStatus(runId, 'cancelled')
+    // One conditional write rather than read-then-write, so a run finishing
+    // at the same moment is never reported as cancelled.
+    const cancelled = await storage.cancelRun(runId)
     if (cancelled) {
       abortActiveRun(runId, new RunCancelledError(runId))
     }
@@ -1080,6 +1134,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     enqueue,
     getRunStatus,
     listRuns,
+    countRuns: (filter?: CountRunsFilter) => storage.countRuns(filter),
+    prune,
     resume,
     cancel,
     sendEvent,
@@ -1219,6 +1275,16 @@ function normalizeIdempotencyKey(idempotencyKey?: string): string | null {
 function defaultHeartbeatInterval(runLeaseDurationMs: number): number {
   return Math.max(1, Math.min(runLeaseDurationMs - 1, Math.floor(runLeaseDurationMs / 3)))
 }
+
+/** The error's string `code` — a `ReflowErrorCode`, a Node system code like `ECONNREFUSED` — or `null`. */
+function errorCode(error: Error): string | null {
+  return 'code' in error && typeof error.code === 'string' ? error.code : null
+}
+
+const TERMINAL_STATUSES: readonly TerminalRunStatus[] = ['completed', 'failed', 'cancelled']
+
+/** Runs deleted per `deleteRuns` call during `prune()`: each batch is one short write transaction. */
+const PRUNE_BATCH_SIZE = 500
 
 function noop() {}
 

@@ -14,6 +14,8 @@ import {
   RunCancelledError,
   LeaseExpiredError,
   ParallelCompleteError,
+  RUN_STATUSES,
+  STEP_STATUSES,
 } from '../index'
 
 describe('public API', () => {
@@ -23,6 +25,13 @@ describe('public API', () => {
 
   it('exports createEngine', () => {
     expect(createEngine).toBeTypeOf('function')
+  })
+
+  it('exports every run and step status', () => {
+    expect(RUN_STATUSES).toStrictEqual(['pending', 'running', 'sleeping', 'waiting', 'completed', 'failed', 'cancelled'])
+    expect(STEP_STATUSES).toStrictEqual([
+      'pending', 'running', 'completed', 'completed-early', 'skipped', 'sleeping', 'waiting', 'failed',
+    ])
   })
 
   it('exports typed error classes with correct hierarchy', () => {

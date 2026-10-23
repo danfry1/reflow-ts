@@ -1,16 +1,23 @@
+/** Every lifecycle state of a workflow run. */
+export const RUN_STATUSES = ['pending', 'running', 'sleeping', 'waiting', 'completed', 'failed', 'cancelled'] as const
+
 /** Lifecycle state of a workflow run. */
-export type RunStatus = 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+export type RunStatus = (typeof RUN_STATUSES)[number]
+
+/** Every lifecycle state of a single step within a run. */
+export const STEP_STATUSES = [
+  'pending',
+  'running',
+  'completed',
+  'completed-early',
+  'skipped',
+  'sleeping',
+  'waiting',
+  'failed',
+] as const
 
 /** Lifecycle state of a single step within a run. */
-export type StepStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'completed-early'
-  | 'skipped'
-  | 'sleeping'
-  | 'waiting'
-  | 'failed'
+export type StepStatus = (typeof STEP_STATUSES)[number]
 
 /** Primitive values that can be persisted to storage. */
 export type PersistedPrimitive = string | number | boolean | null | undefined | Date
@@ -26,6 +33,21 @@ export interface PersistedObject {
  */
 export type PersistedValue = PersistedPrimitive | PersistedValue[] | PersistedObject
 
+/** A run status from which a run never moves on its own: only `resume()` re-queues it. */
+export type TerminalRunStatus = Extract<RunStatus, 'completed' | 'failed' | 'cancelled'>
+
+/** Why a run failed: the step that failed and the error it failed with. */
+export interface RunError {
+  /** The step, parallel branch, or wait whose failure ended the run. */
+  stepName: string
+  message: string
+  /**
+   * The error's string `code`, when it has one — a `ReflowErrorCode` such as
+   * `'STEP_TIMEOUT'`, or a system code such as `'ECONNREFUSED'` — otherwise `null`.
+   */
+  code: string | null
+}
+
 /** A persisted workflow run record. */
 export interface WorkflowRun {
   id: string
@@ -35,6 +57,18 @@ export interface WorkflowRun {
   status: RunStatus
   createdAt: number
   updatedAt: number
+  /** When the run was first claimed, or `null` if it has never started. Kept across reclaims. */
+  startedAt: number | null
+  /** When the run reached `completed`, `failed`, or `cancelled`; `null` while it can still progress. */
+  finishedAt: number | null
+  /** The final output of a `completed` run — the last step's output, or the `complete()` value. */
+  output: PersistedValue
+  /** Why a `failed` run failed; `null` otherwise. */
+  error: RunError | null
+  /** When a `sleeping` or `waiting` run is due to wake (a wait's timeout); `null` otherwise. */
+  wakeAt: number | null
+  /** The event a `waiting` run is waiting for; `null` otherwise. */
+  waitingFor: string | null
 }
 
 /** A workflow run that has been claimed by an engine instance for execution. */
@@ -53,6 +87,11 @@ export interface StepResult {
   attempts: number
   createdAt: number
   updatedAt: number
+  /**
+   * When the step's latest execution began. With `updatedAt`, gives how long a
+   * finished step took. A step re-run after `resume()` gets a fresh value.
+   */
+  startedAt: number | null
 }
 
 /** Configuration for automatic step retries. */
@@ -139,6 +178,25 @@ export interface ListRunsFilter {
   beforeId?: string
 }
 
+/** How many runs are in each status, from {@link StorageAdapter.countRuns}. */
+export type RunCounts = Record<RunStatus, number>
+
+/** Filter for {@link StorageAdapter.countRuns} and `engine.countRuns()`. */
+export interface CountRunsFilter {
+  /** Only count runs of this workflow. */
+  workflow?: string
+}
+
+/** Which finished runs {@link StorageAdapter.deleteRuns} removes. */
+export interface DeleteRunsFilter {
+  /** Only runs that finished strictly before this time (epoch ms). */
+  finishedBefore: number
+  /** Only runs in these statuses. Every status listed must be terminal. */
+  statuses: readonly TerminalRunStatus[]
+  /** Delete at most this many runs, oldest-finished first. */
+  limit: number
+}
+
 /**
  * Interface for durable workflow storage backends.
  *
@@ -159,6 +217,9 @@ export interface StorageAdapter {
    * from its wake time, and a stale run from when its lease expired. Ranking
    * by kind instead — say, every pending run first — lets a steady stream of
    * new work starve woken and crashed runs indefinitely.
+   *
+   * Claiming sets `startedAt` if it is still `null` (a reclaim keeps the
+   * original) and clears `wakeAt` and `waitingFor`.
    */
   claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
   /** Renew the lease on a running run. Returns false if the lease was lost. */
@@ -179,6 +240,9 @@ export interface StorageAdapter {
    * `waiting`, closing the race where an event is delivered between the caller's
    * {@link StorageAdapter.takeEvent} check and this call. Only succeeds if the
    * caller still holds the lease.
+   *
+   * A run left `waiting` records `eventName` as `waitingFor` and the deadline
+   * as `wakeAt`.
    */
   waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
   /**
@@ -202,16 +266,41 @@ export interface StorageAdapter {
    * discarding any `failed` step results so the failed step runs again.
    * Completed steps are preserved and skipped on replay. Returns false if the
    * run does not exist or is not in a resumable state.
+   *
+   * Clears `finishedAt`, `output`, and `error`; `startedAt` is kept.
    */
   requeueRun(runId: string): Promise<boolean>
   /** Fetch all step results for a run, ordered by creation time. */
   getStepResults(runId: string): Promise<StepResult[]>
   /** Persist a step result. If `leaseId` is provided, fails when the lease is no longer held. */
   saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
-  /** Update run status without a lease check (used for cancellation). Returns false if the run does not exist. */
-  updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
-  /** Update run status only if the caller still holds the lease. */
-  updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean>
+  /**
+   * Mark a held run `completed`, recording its final `output` and `finishedAt`
+   * and releasing the lease. Returns false, changing nothing, if the caller no
+   * longer holds the lease.
+   */
+  completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean>
+  /**
+   * Mark a held run `failed`, recording `error` and `finishedAt` and releasing
+   * the lease. Returns false, changing nothing, if the caller no longer holds
+   * the lease.
+   */
+  failRun(runId: string, leaseId: string, error: RunError): Promise<boolean>
+  /**
+   * Mark a run `cancelled` and record `finishedAt`, whoever holds it, unless it
+   * has already finished. The check and the write must be atomic, so a run
+   * completing concurrently is never reported cancelled. Returns false if the
+   * run does not exist or has already finished.
+   */
+  cancelRun(runId: string): Promise<boolean>
+  /** How many runs are in each status, optionally for one workflow. Every status is present, zero or not. */
+  countRuns(filter?: CountRunsFilter): Promise<RunCounts>
+  /**
+   * Delete finished runs matching `filter`, oldest-finished first, together
+   * with their step results and buffered events. Runs that can still progress
+   * are never deleted. Returns how many runs were removed.
+   */
+  deleteRuns(filter: DeleteRunsFilter): Promise<number>
   /**
    * Register a recurring schedule, or update the existing one with the same
    * `key`. Returns the stored schedule.
