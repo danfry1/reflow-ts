@@ -73,7 +73,7 @@ createServer(toNodeHandler(dashboard)).listen(4400)
 
 ## What it shows
 
-It goes from the general to the particular: workflows, then a workflow's runs, then one run.
+A sidebar lists every workflow, with how many of its runs have failed or are still in progress, so switching between them is one click. Pick one and its runs fill the middle; pick a run and its detail opens beside them, so moving to the next run — a click, or the arrow keys — never means going back. On a phone the panes show one at a time.
 
 - **Workflows.** Each workflow you defined, with its steps in order and how many of its runs are failed, waiting, sleeping, or completed. A workflow is the recipe; every `enqueue()` starts a new, independent run of it.
 - **A workflow's runs**, newest first. Each run is labelled by its input — *email: ada@example.com* — so runs of the same workflow can be told apart, with one line on where it stands (*Retrying capture in 3s, after 2 failed attempts*, *Waiting for approved, times out in 23h*) and its steps so far. Counts by status double as filters.
