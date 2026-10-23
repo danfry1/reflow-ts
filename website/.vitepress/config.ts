@@ -13,7 +13,10 @@ export default defineConfig({
   sitemap: { hostname: 'https://danfry1.github.io/reflow-ts/' },
   head: [
     ['link', { rel: 'icon', href: '/reflow-ts/favicon.svg', type: 'image/svg+xml' }],
-    ['meta', { name: 'theme-color', content: '#e46d2f' }],
+    ['meta', { name: 'theme-color', content: '#14213d' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' }],
+    ['link', { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&display=swap' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:site_name', content: 'Reflow' }],
     ['meta', { property: 'og:image', content: 'https://danfry1.github.io/reflow-ts/og-card.png' }],

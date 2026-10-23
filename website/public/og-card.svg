@@ -1,32 +1,45 @@
 <svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
   <rect width="1200" height="630" fill="#0E1626"/>
 
-  <!-- Mark -->
+  <!-- Mark and name -->
   <g transform="translate(80 72) scale(1.125)">
     <rect width="64" height="64" rx="16" fill="#14213D" stroke="#26334D" stroke-width="2"/>
     <path d="M12 42h16M36 22h16" stroke="#F4F6F9" stroke-width="7" stroke-linecap="round"/>
     <path d="M30.5 38.5l3-13" stroke="#E8A317" stroke-width="7" stroke-linecap="round" stroke-dasharray="0.01 10.5"/>
   </g>
-  <text x="168" y="122" fill="#E6EAF2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="700" letter-spacing="-0.5">Reflow</text>
+  <text x="168" y="122" fill="#E6EAF2" font-family="'DIN Alternate', Bahnschrift, 'Barlow Semi Condensed', 'Helvetica Neue', Arial, sans-serif" font-size="36" font-weight="700">Reflow</text>
 
-  <!-- Headline -->
-  <text x="80" y="268" fill="#E6EAF2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="68" font-weight="750" letter-spacing="-2">Workflows that pause, crash,</text>
-  <text x="80" y="346" fill="#E6EAF2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="68" font-weight="750" letter-spacing="-2">and carry on.</text>
-  <text x="80" y="408" fill="#A9B3C7" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="26">Durable execution for TypeScript, on a SQLite file.</text>
-
-  <!-- A run's flow: work, a durable hold, a crash, the reclaim, and finishing. -->
-  <g transform="translate(80 500)">
-    <line x1="0" y1="10" x2="60" y2="10" stroke="#26334D" stroke-width="3" stroke-dasharray="2 6" stroke-linecap="round"/>
-    <rect x="72" y="0" width="150" height="20" rx="5" fill="#4CC08A"/>
-    <rect x="230" y="0" width="96" height="20" rx="5" fill="#4CC08A"/>
-    <line x1="338" y1="10" x2="610" y2="10" stroke="#E8A317" stroke-width="5" stroke-dasharray="14 10"/>
-    <rect x="622" y="0" width="70" height="20" rx="5" fill="#6E9BFF"/>
-    <rect x="696" y="-10" width="6" height="40" rx="3" fill="#F06A5F"/>
-    <line x1="714" y1="10" x2="790" y2="10" stroke="#26334D" stroke-width="3" stroke-dasharray="2 6" stroke-linecap="round"/>
-    <rect x="802" y="0" width="120" height="20" rx="5" fill="#4CC08A"/>
-    <rect x="930" y="0" width="110" height="20" rx="5" fill="#4CC08A"/>
-    <text x="338" y="58" fill="#6E7A93" font-family="'Inter', 'Helvetica Neue', Arial, sans-serif" font-size="18">sleep('2h')</text>
-    <text x="664" y="58" fill="#6E7A93" font-family="'Inter', 'Helvetica Neue', Arial, sans-serif" font-size="18">crash</text>
-    <text x="802" y="58" fill="#6E7A93" font-family="'Inter', 'Helvetica Neue', Arial, sans-serif" font-size="18">resumed elsewhere</text>
+  <!-- Headline and line -->
+  <g font-family="'DIN Alternate', Bahnschrift, 'Barlow Semi Condensed', 'Helvetica Neue', Arial, sans-serif" font-weight="700" fill="#E6EAF2">
+    <text x="80" y="296" font-size="76">Steps that survive</text>
+    <text x="80" y="380" font-size="76">a crash.</text>
   </g>
+  <g font-family="Inter, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif" font-size="27" fill="#A9B3C7">
+    <text x="80" y="458">Durable workflows for TypeScript, on a SQLite file.</text>
+    <text x="80" y="498">A run killed half-way carries on from the next step.</text>
+  </g>
+
+  <!-- One run after a crash, as the dashboard and the demo show it -->
+  <g transform="translate(800 196)" font-family="Inter, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif">
+    <rect width="320" height="292" rx="12" fill="#131D31" stroke="#24314A" stroke-width="2"/>
+    <text x="24" y="44" fill="#E6EAF2" font-family="'DIN Alternate', Bahnschrift, 'Barlow Semi Condensed', Arial, sans-serif" font-size="24" font-weight="700">order ORD-1001</text>
+    <line x1="0" y1="66" x2="320" y2="66" stroke="#24314A" stroke-width="2"/>
+
+    <circle cx="32" cy="100" r="7" fill="#4CC08A"/>
+    <text x="54" y="107" fill="#E6EAF2" font-size="21" font-weight="600">charge</text>
+    <text x="296" y="107" fill="#4CC08A" font-size="19" text-anchor="end">done</text>
+
+    <circle cx="32" cy="150" r="7" fill="#F06A5F"/>
+    <text x="54" y="157" fill="#E6EAF2" font-size="21" font-weight="600">ship</text>
+    <text x="296" y="157" fill="#F06A5F" font-size="19" text-anchor="end">killed</text>
+
+    <circle cx="32" cy="200" r="7" fill="#4CC08A"/>
+    <text x="54" y="207" fill="#E6EAF2" font-size="21" font-weight="600">ship, again</text>
+    <text x="296" y="207" fill="#4CC08A" font-size="19" text-anchor="end">done</text>
+
+    <circle cx="32" cy="250" r="7" fill="#4CC08A"/>
+    <text x="54" y="257" fill="#E6EAF2" font-size="21" font-weight="600">notify</text>
+    <text x="296" y="257" fill="#4CC08A" font-size="19" text-anchor="end">done</text>
+  </g>
+  <text x="800" y="530" fill="#A9B3C7" font-family="Inter, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif" font-size="19">Charged once. Nothing ran twice.</text>
 </svg>

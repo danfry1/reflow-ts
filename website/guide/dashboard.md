@@ -2,6 +2,9 @@
 
 A web view of your runs: what is running, what is waiting and on what, what failed and why, and how each run spent its time. It runs inside your own app, against the storage your engine already uses, with no extra services.
 
+<img class="dashboard-shot shot-light" src="/dashboard-light.jpg" alt="The Reflow dashboard: workflows in a sidebar, a charge-invoice workflow's runs in a list, and one run open showing its capture step failing after four attempts, with the wait before each retry" width="2000" height="1194" />
+<img class="dashboard-shot shot-dark" src="/dashboard-dark.jpg" alt="The Reflow dashboard: workflows in a sidebar, a charge-invoice workflow's runs in a list, and one run open showing its capture step failing after four attempts, with the wait before each retry" width="2000" height="1194" />
+
 ## From the command line
 
 Point it at a SQLite database to look around:

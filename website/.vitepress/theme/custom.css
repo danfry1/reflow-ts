@@ -18,7 +18,6 @@
   --vp-c-text-2: #4a5672;
 
   --vp-home-hero-name-color: #14213d;
-  --vp-home-hero-image-background-image: none;
 
   --vp-custom-block-tip-border: transparent;
   --vp-custom-block-tip-bg: var(--vp-c-brand-soft);
@@ -39,7 +38,17 @@
   --vp-home-hero-name-color: #e6eaf2;
 }
 
-/* Typography ---------------------------------------------------- */
+/* Typography ----------------------------------------------------
+   Headings and figures in a DIN signage face, as in the dashboard;
+   Barlow Semi Condensed, an open DIN-like face, where DIN is not
+   installed. Body text stays Inter. */
+:root {
+  --rf-sign: "DIN Alternate", Bahnschrift, "Barlow Semi Condensed", "Helvetica Neue", Arial, sans-serif;
+}
+.vp-doc h1, .vp-doc h2, .vp-doc h3, .VPNavBarTitle .title {
+  font-family: var(--rf-sign);
+  font-weight: 700;
+}
 .vp-doc h1,
 .vp-doc h2 {
   letter-spacing: -0.02em;
@@ -61,6 +70,59 @@
   font-weight: 600;
 }
 
-/* The hero image is a wide illustration, not a square logo. */
-.VPHero .image-container { width: 100%; max-width: 480px; height: auto; }
-.VPHero .image-src { position: static; transform: none; width: 100%; max-width: 480px; max-height: none; }
+/* Home ------------------------------------------------------------
+   One column, left aligned, read top to bottom: what it is, the demo,
+   the code, the dashboard, the rest. No hero, no feature cards. */
+.home { max-width: 980px; margin: 0 auto; padding: 104px 24px 96px; }
+.home .home-intro { max-width: 720px; }
+.home .home-intro h1 {
+  margin: 0 0 20px;
+  font-size: clamp(2.6rem, 6vw, 4.2rem);
+  line-height: 1.02;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+  color: var(--vp-c-text-1);
+}
+.home .home-lede { margin: 0 0 24px; font-size: 1.2rem; line-height: 1.65; color: var(--vp-c-text-2); }
+.home .home-intro div[class*='language-'] { max-width: 420px; margin: 0 0 18px; }
+.home .home-links { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 0; font-weight: 600; }
+.home .home-links a { text-decoration: underline; text-underline-offset: 4px; text-decoration-thickness: 1px; }
+.home .home-section { margin-top: 88px; }
+.home .home-section > h2 {
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+  font-size: 2rem;
+  letter-spacing: -0.005em;
+}
+.home .home-section > p { max-width: 680px; color: var(--vp-c-text-2); }
+
+/* Long lines scroll inside their block rather than widening the page. */
+.home div[class*='language-'], .home pre { max-width: 100%; overflow-x: auto; }
+.home table { display: block; max-width: 100%; overflow-x: auto; }
+
+.home .home-shot { margin: 28px 0 0; }
+.home .home-shot img {
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+  border: 1px solid var(--vp-c-divider);
+}
+/* Screenshots come in both themes; each shows with its own. */
+.shot-dark { display: none; }
+.dark .shot-dark { display: block; }
+.dark .shot-light { display: none; }
+.vp-doc .dashboard-shot { width: 100%; height: auto; margin: 20px 0 8px; border-radius: 8px; border: 1px solid var(--vp-c-divider); }
+
+.home .home-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 40px; margin: 24px 0 0; }
+.home .home-list div { border-top: 1px solid var(--vp-c-divider); padding-top: 14px; }
+.home .home-list dt { margin: 0 0 4px; font-family: var(--rf-sign); font-size: 1.15rem; font-weight: 700; }
+.home .home-list dt a { color: var(--vp-c-text-1); text-decoration: none; }
+.home .home-list dt a:hover { color: var(--vp-c-brand-1); }
+.home .home-list dd { margin: 0; color: var(--vp-c-text-2); line-height: 1.55; }
+@media (max-width: 640px) {
+  .home { padding-top: 40px; }
+  .home .home-lede { font-size: 1.05rem; }
+  .home .home-list { grid-template-columns: minmax(0, 1fr); }
+  .home .home-section { margin-top: 64px; }
+}
