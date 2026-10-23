@@ -92,7 +92,7 @@ export class SqliteStorageBase implements StorageAdapter {
     this.driver = driver
     // First, so that even switching the journal mode waits for a lock held by
     // another process opening the same file, instead of failing at once.
-    this.driver.exec('PRAGMA busy_timeout = 5000')
+    this.driver.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`)
     if (options.readOnly) {
       // Refuses every write on this connection, whatever the binding's own
       // read-only flag does or does not honour. The journal-mode pragma below
@@ -113,6 +113,18 @@ export class SqliteStorageBase implements StorageAdapter {
    * between them rather than racing to repeat it.
    */
   async initialize(): Promise<void> {
+    // Another process may be migrating a large database, which holds the
+    // write lock for seconds — building version 4's indexes takes a few per
+    // million runs — so starting up waits longer for it than a claim would.
+    this.driver.exec(`PRAGMA busy_timeout = ${MIGRATION_BUSY_TIMEOUT_MS}`)
+    try {
+      await this.migrate()
+    } finally {
+      this.driver.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`)
+    }
+  }
+
+  private async migrate(): Promise<void> {
     for (;;) {
       const applied = this.transaction(() => {
         const [next] = pendingMigrations(this.currentSchemaVersion())
@@ -279,44 +291,40 @@ export class SqliteStorageBase implements StorageAdapter {
    * steady stream of new pending runs cannot starve a woken sleeper or a
    * crashed run. A stale run became due when its lease expired,
    * `now - staleBefore` after its last heartbeat.
+   *
+   * The workflows arrive as one JSON array, so the statement's text is the
+   * same however many there are: compiling it does not grow with them.
    */
-  private oldestClaimable(workflowNames: readonly string[], now: number, staleBefore?: number): ClaimCandidateRow | undefined {
-    // Ordered by the indexed column itself — an expression would not use
-    // the index — which orders the same as `due`.
+  private oldestClaimable(workflowNames: readonly string[], now: number, staleBefore?: number): WorkflowRunRow | null {
+    const names = JSON.stringify(workflowNames)
+    // For each workflow, the rowid of its oldest run of one kind: a seek on
+    // the index, ordered by the indexed column itself (an expression would
+    // not use the index), which orders the same as `due`.
     const oldest = (due: string, order: string, where: string): string =>
-      `SELECT * FROM (SELECT *, rowid AS claim_order, ${due} AS due FROM workflow_runs
-         WHERE ${where} ORDER BY ${order}, created_at, rowid LIMIT 1)`
-
-    // SQLite allows 500 terms in one compound query, so many workflows are
-    // read in chunks and the earliest candidate kept.
-    let best: ClaimCandidateRow | undefined
-    for (let offset = 0; offset < workflowNames.length; offset += CLAIM_CHUNK) {
-      const branches: string[] = []
-      const params: SqlParam[] = []
-      for (const name of workflowNames.slice(offset, offset + CLAIM_CHUNK)) {
-        branches.push(oldest('updated_at', 'updated_at', `status = 'pending' AND workflow = ?`))
-        params.push(name)
-        for (const status of ['sleeping', 'waiting']) {
-          branches.push(oldest('wake_at', 'wake_at', `status = '${status}' AND workflow = ? AND wake_at IS NOT NULL AND wake_at <= ?`))
-          params.push(name, now)
-        }
-        if (staleBefore !== undefined) {
-          branches.push(oldest('updated_at + ?', 'updated_at', `status = 'running' AND workflow = ? AND updated_at <= ?`))
-          params.push(now - staleBefore, name, staleBefore)
-        }
-      }
-
-      const candidate = this.get<ClaimCandidateRow>(
-        `SELECT * FROM (${branches.join(' UNION ALL ')})
-         ORDER BY due, created_at, claim_order
-         LIMIT 1`,
-        ...params,
-      )
-      if (candidate && (!best || claimsBefore(candidate, best))) {
-        best = candidate
-      }
+      `SELECT runs.*, runs.rowid AS claim_order, ${due} AS due
+       FROM json_each(?) AS w
+       JOIN workflow_runs AS runs ON runs.rowid = (
+         SELECT rowid FROM workflow_runs
+         WHERE workflow = w.value AND ${where}
+         ORDER BY ${order}, created_at, rowid LIMIT 1
+       )`
+    const branches = [
+      oldest('runs.updated_at', 'updated_at', `status = 'pending'`),
+      oldest('runs.wake_at', 'wake_at', `status = 'sleeping' AND wake_at IS NOT NULL AND wake_at <= ?`),
+      oldest('runs.wake_at', 'wake_at', `status = 'waiting' AND wake_at IS NOT NULL AND wake_at <= ?`),
+    ]
+    const params: SqlParam[] = [names, names, now, names, now]
+    if (staleBefore !== undefined) {
+      branches.push(oldest('runs.updated_at + ?', 'updated_at', `status = 'running' AND updated_at <= ?`))
+      params.push(now - staleBefore, names, staleBefore)
     }
-    return best
+
+    return this.get<WorkflowRunRow>(
+      `SELECT * FROM (${branches.join(' UNION ALL ')})
+       ORDER BY due, created_at, claim_order
+       LIMIT 1`,
+      ...params,
+    )
   }
 
   async heartbeatRun(runId: string, leaseId: string): Promise<boolean> {
@@ -431,54 +439,76 @@ export class SqliteStorageBase implements StorageAdapter {
 
   async listRuns(filter: ListRunsFilter = {}): Promise<WorkflowRun[]> {
     const { status, workflow, limit = 100, before, beforeId } = filter
-    const conditions: string[] = []
-    const args: SqlParam[] = []
-    let source = 'workflow_runs'
-
-    if (status !== undefined) {
-      // Newest first within one status, two ways: a few runs are read through
-      // the status index and sorted; many are found by walking the
-      // newest-first index and skipping the rest, which reads little because
-      // they are dense. The planner, left to itself, sorts every run in the
-      // status however many there are.
-      const matching = this.get<{ n: number }>(
-        `SELECT COUNT(*) AS n FROM workflow_runs WHERE status = ?${workflow === undefined ? '' : ' AND workflow = ?'}`,
-        ...(workflow === undefined ? [status] : [status, workflow]),
-      )?.n ?? 0
-      if (matching <= SORT_AT_MOST) {
-        source = 'workflow_runs INDEXED BY idx_runs_status'
-        conditions.push('status = ?')
-      } else {
-        conditions.push('+status = ?')
-      }
-      args.push(status)
+    if (status !== undefined && !RUN_STATUSES.includes(status)) {
+      return []
     }
+
+    // What every way of reading shares: the workflow and the page cursor.
+    const scope: string[] = []
+    const scopeArgs: SqlParam[] = []
     if (workflow !== undefined) {
-      conditions.push('workflow = ?')
-      args.push(workflow)
+      scope.push('workflow = ?')
+      scopeArgs.push(workflow)
     }
     if (before !== undefined) {
       // Keyset cursor over the (created_at DESC, id DESC) order.
       if (beforeId !== undefined) {
-        conditions.push('(created_at < ? OR (created_at = ? AND id < ?))')
-        args.push(before, before, beforeId)
+        scope.push('(created_at < ? OR (created_at = ? AND id < ?))')
+        scopeArgs.push(before, before, beforeId)
       } else {
-        conditions.push('created_at < ?')
-        args.push(before)
+        scope.push('created_at < ?')
+        scopeArgs.push(before)
       }
     }
+    const page = (conditions: readonly string[], args: readonly SqlParam[]): WorkflowRun[] => {
+      const all = [...conditions, ...scope]
+      return this.all<WorkflowRunRow>(
+        `SELECT * FROM workflow_runs ${all.length > 0 ? `WHERE ${all.join(' AND ')}` : ''}
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?`,
+        ...args, ...scopeArgs, limit,
+      ).map(mapWorkflowRunRow)
+    }
 
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
-    args.push(limit)
+    if (status === undefined) {
+      return page([], [])
+    }
+    if (status === 'failed' || status === 'cancelled') {
+      // Spelled out, not bound, so the planner can use the partial index that
+      // holds only this status, newest first, however long ago they stopped.
+      return page([`status = '${status}'`], [])
+    }
 
-    const rows = this.all<WorkflowRunRow>(
-      `SELECT * FROM ${source} ${where}
-       ORDER BY created_at DESC, id DESC
-       LIMIT ?`,
-      ...args,
-    )
-
-    return rows.map(mapWorkflowRunRow)
+    // Any other status: when it has few runs, read them through the status
+    // index and sort them. When it has many, look among the newest runs
+    // first, walking the newest-first index: a full page there is the
+    // newest page. Short of one, the matches are sparse among recent runs —
+    // an old backlog — and sorting them through the status index is cheaper
+    // than walking further. Either way the read is bounded by the window
+    // or by the status, never the whole table.
+    const counted = this.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT 1 FROM workflow_runs WHERE status = ?${workflow === undefined ? '' : ' AND workflow = ?'} LIMIT ?
+       )`,
+      ...(workflow === undefined ? [status] : [status, workflow]),
+      SORT_AT_MOST + 1,
+    )?.n ?? 0
+    if (counted > SORT_AT_MOST) {
+      const edge = this.get<{ created_at: number }>(
+        `SELECT created_at FROM workflow_runs ${scope.length > 0 ? `WHERE ${scope.join(' AND ')}` : ''}
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1 OFFSET ?`,
+        ...scopeArgs, WALK_AT_MOST - 1,
+      )
+      const recent = page(
+        edge ? ['+status = ?', 'created_at >= ?'] : ['+status = ?'],
+        edge ? [status, edge.created_at] : [status],
+      )
+      if (recent.length >= limit || !edge) {
+        return recent
+      }
+    }
+    return page(['status = ?'], [status])
   }
 
   async requeueRun(runId: string): Promise<boolean> {
@@ -860,21 +890,13 @@ export class SqliteStorageBase implements StorageAdapter {
  */
 const SORT_AT_MOST = 10_000
 
-/** Workflows per claim query: four branches each, within SQLite's 500. */
-const CLAIM_CHUNK = 100
+/** How long a statement waits for another connection's write lock. */
+const BUSY_TIMEOUT_MS = 5_000
+/** How long starting up waits, for a migration another process is applying. */
+const MIGRATION_BUSY_TIMEOUT_MS = 60_000
 
-/** A claimable run as the claim query returns it, with when it became due. */
-interface ClaimCandidateRow extends WorkflowRunRow {
-  due: number
-  claim_order: number
-}
-
-/** Whether `a` became claimable before `b`, in the claim query's order. */
-function claimsBefore(a: ClaimCandidateRow, b: ClaimCandidateRow): boolean {
-  if (a.due !== b.due) return a.due < b.due
-  if (a.created_at !== b.created_at) return a.created_at < b.created_at
-  return a.claim_order < b.claim_order
-}
+/** How many of the newest runs a listing looks among before sorting instead. */
+const WALK_AT_MOST = 5_000
 
 function mapStepRow(row: WorkflowStepRow): StepResult {
   return {

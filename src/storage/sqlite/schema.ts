@@ -170,6 +170,15 @@ export const MIGRATIONS: readonly Migration[] = [
         CREATE INDEX idx_runs_created ON workflow_runs(created_at, id);
         CREATE INDEX idx_runs_workflow_created ON workflow_runs(workflow, created_at, id);
         CREATE INDEX idx_runs_workflow_finished ON workflow_runs(workflow, finished_at) WHERE finished_at IS NOT NULL;
+
+        -- Failed and cancelled runs listed newest first, however long ago they
+        -- stopped. Written only when a run fails, is cancelled, or resumes.
+        -- Led by status so the planner, given status = 'failed', prefers them
+        -- to sorting the status index.
+        CREATE INDEX idx_runs_failed_created ON workflow_runs(status, created_at, id) WHERE status = 'failed';
+        CREATE INDEX idx_runs_failed_workflow_created ON workflow_runs(status, workflow, created_at, id) WHERE status = 'failed';
+        CREATE INDEX idx_runs_cancelled_created ON workflow_runs(status, created_at, id) WHERE status = 'cancelled';
+        CREATE INDEX idx_runs_cancelled_workflow_created ON workflow_runs(status, workflow, created_at, id) WHERE status = 'cancelled';
       `)
     },
   },

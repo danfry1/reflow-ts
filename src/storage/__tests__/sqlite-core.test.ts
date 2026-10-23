@@ -133,6 +133,26 @@ describe('SqliteStorageBase connection setup and recovery', () => {
     expect(statements[0]).toBe('PRAGMA busy_timeout = 5000')
   })
 
+  // A large database takes seconds to migrate, holding the write lock; a
+  // process starting alongside waits it out rather than failing to start.
+  it('waits longer for the write lock while migrating, then as long as before', async () => {
+    const statements: string[] = []
+    const recording = driverWithReadHook(DB_PATH, () => {})
+    const exec = recording.exec
+    recording.exec = (sql) => {
+      statements.push(sql)
+      exec(sql)
+    }
+    const storage = new SqliteStorageBase(recording)
+
+    await storage.initialize()
+
+    const timeouts = statements.filter((sql) => sql.startsWith('PRAGMA busy_timeout'))
+    expect(timeouts).toStrictEqual(['PRAGMA busy_timeout = 5000', 'PRAGMA busy_timeout = 60000', 'PRAGMA busy_timeout = 5000'])
+    expect(statements.indexOf('PRAGMA busy_timeout = 60000')).toBeLessThan(statements.findIndex((sql) => sql.startsWith('PRAGMA user_version =')))
+    storage.close()
+  })
+
   it('stays usable after a COMMIT fails', async () => {
     const driver = driverWithReadHook(DB_PATH, () => {})
     const exec = driver.exec
@@ -218,6 +238,41 @@ describe('SqliteStorageBase query plans', () => {
   })
 })
 
+describe('SqliteStorageBase listing plans', () => {
+  beforeEach(removeDatabase)
+  afterEach(removeDatabase)
+
+  // However long ago runs failed, the newest are read in order from their own
+  // index, not found by sorting every failed run.
+  it('lists failed and cancelled runs from their own index, without sorting', async () => {
+    const db = new Database(DB_PATH)
+    const statements: { sql: string; params: readonly unknown[] }[] = []
+    const driver: SqliteDriver = {
+      exec: (sql) => { db.exec(sql) },
+      get: <T>(sql: string, params: readonly unknown[]) => db.prepare(sql).get(...params) as T | undefined,
+      all: <T>(sql: string, params: readonly unknown[]) => {
+        if (sql.includes('ORDER BY created_at DESC')) statements.push({ sql, params })
+        return db.prepare(sql).all(...params) as T[]
+      },
+      run: (sql, params) => db.prepare(sql).run(...params).changes,
+      close: () => { db.close() },
+    }
+    const storage = new SqliteStorageBase(driver)
+    await storage.initialize()
+
+    for (const filter of [{ status: 'failed' }, { status: 'failed', workflow: 'w' }, { status: 'cancelled', workflow: 'w' }] as const) {
+      statements.length = 0
+      await storage.listRuns({ ...filter, limit: 50 })
+      const last = statements.at(-1)
+      const plan: unknown[] = last ? db.prepare(`EXPLAIN QUERY PLAN ${last.sql}`).all(...last.params) : []
+      const details = plan.map((row) => typeof row === 'object' && row !== null && 'detail' in row ? String(row.detail) : '')
+      expect(details.join(' | ')).toMatch(new RegExp(`USING (COVERING )?INDEX idx_runs_${filter.status}_`))
+      expect(details.some((detail) => detail.includes('TEMP B-TREE'))).toBe(false)
+    }
+    storage.close()
+  })
+})
+
 describe('SqliteStorageBase claiming across many workflows', () => {
   beforeEach(removeDatabase)
   afterEach(removeDatabase)
@@ -243,18 +298,19 @@ describe('SqliteStorageBase listing by status', () => {
   beforeEach(removeDatabase)
   afterEach(removeDatabase)
 
-  // A few runs in a status are sorted; many are found by walking the
-  // newest-first index. Either way the page must be the same.
+  // Failed runs come from their own index; in other statuses a few runs are
+  // sorted and many are found by walking the newest-first index. Whichever
+  // way, the page must be the same.
   it('returns the same newest runs whether a status has few runs or many', async () => {
     const storage = new SQLiteStorage(DB_PATH)
     await storage.initialize()
     const db = new Database(DB_PATH)
     const insert = db.prepare(`INSERT INTO workflow_runs (id, workflow, input, status, created_at, updated_at) VALUES (?, ?, '{}', ?, ?, ?)`)
     db.transaction(() => {
-      // 12,000 failed runs (more than are sorted) and 30 waiting ones,
-      // interleaved in time, across two workflows.
+      // 12,000 completed runs (more than are sorted), 30 waiting and some
+      // failed ones, interleaved in time, across two workflows.
       for (let index = 0; index < 12_030; index++) {
-        const status = index % 401 === 0 && index / 401 < 30 ? 'waiting' : 'failed'
+        const status = index % 401 === 0 && index / 401 < 30 ? 'waiting' : index % 97 === 0 ? 'failed' : 'completed'
         insert.run(`r${String(index).padStart(5, '0')}`, index % 2 ? 'a' : 'b', status, 1_000 + Math.floor(index / 3), 1_000)
       }
     })()
@@ -270,9 +326,11 @@ describe('SqliteStorageBase listing by status', () => {
       all.close()
       return rows
     }
-    const ids = async (filter: { status: 'failed' | 'waiting'; workflow?: string }) =>
+    const ids = async (filter: { status: 'failed' | 'waiting' | 'completed'; workflow?: string }) =>
       (await storage.listRuns({ ...filter, limit: 7 })).map((run) => run.id)
 
+    expect(await ids({ status: 'completed' })).toStrictEqual(expected('completed'))
+    expect(await ids({ status: 'completed', workflow: 'a' })).toStrictEqual(expected('completed', 'a'))
     expect(await ids({ status: 'failed' })).toStrictEqual(expected('failed'))
     expect(await ids({ status: 'failed', workflow: 'a' })).toStrictEqual(expected('failed', 'a'))
     expect(await ids({ status: 'waiting' })).toStrictEqual(expected('waiting'))
