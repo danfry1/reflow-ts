@@ -15,7 +15,7 @@ import type {
   ScheduleRecurrence,
 } from '../../core/types'
 import { emptyRunCounts, parseRunError, parseRunStatus, parseStepStatus } from '../records'
-import { pendingMigrations } from './schema'
+import { pendingMigrations, SCHEMA_VERSION } from './schema'
 import { deserializePersistedValue, serializePersistedValue } from '../codec'
 import { nextOccurrence } from '../../core/schedule-timing'
 import { InternalError } from '../../core/errors'
@@ -93,7 +93,7 @@ export class SqliteStorageBase implements StorageAdapter {
   async initialize(): Promise<void> {
     for (;;) {
       const applied = this.transaction(() => {
-        const [next] = pendingMigrations(this.schemaVersion())
+        const [next] = pendingMigrations(this.currentSchemaVersion())
         if (!next) {
           return false
         }
@@ -112,7 +112,15 @@ export class SqliteStorageBase implements StorageAdapter {
     }
   }
 
-  private schemaVersion(): number {
+  /**
+   * The database's schema version and the version this build writes. When
+   * `current` is behind `latest`, `initialize()` will migrate the database.
+   */
+  schemaVersion(): { current: number; latest: number } {
+    return { current: this.currentSchemaVersion(), latest: SCHEMA_VERSION }
+  }
+
+  private currentSchemaVersion(): number {
     return this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0
   }
 

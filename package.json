@@ -17,6 +17,9 @@
   "engines": {
     "node": ">=18.18.0"
   },
+  "bin": {
+    "reflow-ts": "./dist/cli.mjs"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",
@@ -41,6 +44,10 @@
     "./conformance": {
       "types": "./dist/conformance.d.mts",
       "import": "./dist/conformance.mjs"
+    },
+    "./dashboard": {
+      "types": "./dist/dashboard.d.mts",
+      "import": "./dist/dashboard.mjs"
     }
   },
   "publishConfig": {
@@ -56,6 +63,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:bun": "bun scripts/smoke-bun-adapter.ts",
+    "test:cli": "node scripts/smoke-cli.mjs",
     "bench": "bun benchmarks/index.ts",
     "typecheck": "tsc --noEmit",
     "lint:deps": "syncpack lint",

@@ -411,6 +411,25 @@ await engine.countRuns()               // { pending: 3, running: 1, ..., failed:
 await engine.prune({ olderThan: '30d' }) // delete runs that finished over 30 days ago
 ```
 
+### Dashboard
+
+See what your runs are doing — what is waiting and on what, what failed and why, where each run spent its time:
+
+```bash
+npx reflow-ts dashboard ./reflow.db   # read-only, on 127.0.0.1
+```
+
+Or serve it from your app, with cancel, resume, and live updates:
+
+```typescript
+import { createDashboard } from 'reflow-ts/dashboard'
+
+const dashboard = createDashboard({ storage, engine, authorize: (req) => isAdmin(req) })
+Bun.serve({ port: 4400, fetch: dashboard }) // or Hono, Next.js, toNodeHandler() for Express
+```
+
+See the [dashboard guide](https://danfry1.github.io/reflow-ts/guide/dashboard).
+
 ### Hooks
 
 Add observability with lifecycle hooks:

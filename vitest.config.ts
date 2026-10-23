@@ -19,6 +19,9 @@ export default defineConfig({
         'src/storage/sqlite-bun.ts',
         'src/storage/sqlite-node-builtin.ts',
         'src/index.ts',
+        // A process entry point: exercised end to end against the built bin by
+        // `bun run test:cli` in CI, which an in-process coverage run cannot see.
+        'src/cli.ts',
         // Type-only modules: these compile to nothing, so the instrumenter
         // reports them as 0% covered no matter how thoroughly the types are used.
         'src/core/types.ts',
