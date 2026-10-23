@@ -76,6 +76,8 @@ export type {
   StepAttempt,
   StepResult,
   RunCounts,
+  RunActivity,
+  RunActivityFilter,
   RunError,
   RunStatus,
   StepStatus,

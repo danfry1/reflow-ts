@@ -71,6 +71,13 @@ Implement the [`StorageAdapter`](/api/storage) interface to back Reflow with any
 
 See the [Storage API reference](/api/storage) for the full interface and each method's contract.
 
+Two methods are optional, and only make the [dashboard](/guide/dashboard) cheaper to run against your storage; it works without them:
+
+- `getStepResultsForRuns(runIds)` — several runs' steps in one read, rather than one `getStepResults` call per listed run.
+- `runActivity({ workflow?, since, bucketMs, buckets })` — runs started, completed, and failed per time bucket. Without it the dashboard counts a sample of recent runs and shows only the stretch of time that sample covers.
+
+Index your runs by creation time — overall and per workflow — and by workflow and finish time, so listing the newest runs reads a few rows rather than sorting the table. Keep the query that claims runs on your status indexes: an index that leads with workflow, chosen for a claim, reads every finished run of the workflow and gets slower as history grows.
+
 ### Verifying your adapter
 
 Rather than inferring the contract from prose, run it. The suite the built-in adapters are held to ships with the package:

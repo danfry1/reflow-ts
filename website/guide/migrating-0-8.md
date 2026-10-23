@@ -44,6 +44,7 @@ A database written by a **newer** version of Reflow is refused with a `ConfigErr
 
 - `countRuns(filter?)` — runs per status, every status present. Backs `engine.countRuns()`.
 - `deleteRuns({ finishedBefore, statuses, limit })` — delete finished runs, oldest-finished first, with their steps and events. Backs `engine.prune()`.
+- Optional: `getStepResultsForRuns(runIds)` and `runActivity(filter)`, which the dashboard uses when present to read less. See [Custom adapters](/guide/storage#custom-adapters).
 
 ### New fields
 

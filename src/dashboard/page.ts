@@ -311,6 +311,7 @@ h2 { margin: 34px 0 10px; font: 700 18px var(--sign); }
 .failure .last { font-size: 13px; color: var(--ink-faint); white-space: nowrap; }
 .activity .cols { display: flex; align-items: flex-end; gap: 2px; height: 72px; padding: 0 1px; border-bottom: 1px solid var(--rule); }
 .activity .col { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.activity .col.unknown { background: repeating-linear-gradient(135deg, var(--rule) 0 2px, transparent 2px 6px); opacity: 0.6; }
 .activity .bar { position: relative; display: block; width: 100%; min-height: 0; background: var(--proceed); border-radius: 2px 2px 0 0; opacity: 0.85; }
 .activity .bar .bad { position: absolute; left: 0; right: 0; bottom: 0; background: var(--stop); }
 .activity .axis { margin-top: 4px; font-size: 12px; }
@@ -921,6 +922,10 @@ const SCRIPT = String.raw`
     var columns = activity.started.map(function (started, minute) {
       var failed = activity.failed[minute];
       var done = activity.completed[minute];
+      // Minutes before the counts begin are unknown, not quiet.
+      if (activity.start + (minute + 1) * activity.bucketMs <= activity.coveredFrom) {
+        return h('span', { class: 'col unknown', title: 'Not counted' });
+      }
       var col = h('span', { class: 'col', title: clock(activity.start + minute * activity.bucketMs) + ': ' + started + ' started, ' + done + ' completed, ' + failed + ' failed' });
       var bar = h('span', { class: 'bar' });
       bar.style.height = Math.round(100 * Math.max(started, done + failed) / peak) + '%';
@@ -933,6 +938,9 @@ const SCRIPT = String.raw`
     return h('div', { class: 'activity' }, [
       h('div', { class: 'cols', role: 'img', 'aria-label': total(activity.started) + ' runs started, ' + total(activity.completed) + ' completed, and ' + total(activity.failed) + ' failed in the last hour' }, columns),
       h('div', { class: 'axis' }, [h('span', { text: '60 min ago' }), h('span', { text: 'now' })]),
+      activity.coveredFrom > activity.start
+        ? h('p', { class: 'note', text: 'Counted from the latest runs, which go back ' + duration(Date.now() - activity.coveredFrom) + '; earlier minutes are shaded.' })
+        : null,
       h('p', { class: 'legend' }, [
         h('span', null, [h('span', { class: 'n', text: String(total(activity.started)) }), ' started']),
         h('span', null, [lamp('completed'), h('span', { class: 'n', text: String(total(activity.completed)) }), ' completed']),
@@ -1120,10 +1128,14 @@ const SCRIPT = String.raw`
   }
 
   // --- Updates: live from the engine when available, otherwise polling.
+  // Changes are folded into at most one refresh a second, however busy the
+  // engine is, so the dashboard's reads stay small next to its writes.
   var pending = null;
+  var lastRefresh = 0;
   function soon() {
     if (pending) return;
-    pending = setTimeout(function () { pending = null; refresh(); }, 300);
+    var wait = Math.max(300, 1000 - (Date.now() - lastRefresh));
+    pending = setTimeout(function () { pending = null; lastRefresh = Date.now(); refresh(); }, wait);
   }
 
   function connect() {
@@ -1135,9 +1147,10 @@ const SCRIPT = String.raw`
     source.onopen = function () { liveBadge.hidden = false; };
     source.onerror = function () { liveBadge.hidden = true; };
     source.onmessage = soon;
-    // A safety net: if the stream goes quiet without closing — an engine that
-    // stopped, a proxy holding the connection — the view still catches up.
-    setInterval(function () { if (document.visibilityState === 'visible') refresh(); }, 30000);
+    // The stream carries this engine's changes only. Runs moved on by other
+    // processes — workers deployed separately — appear through this poll,
+    // which also covers a stream that went quiet without closing.
+    setInterval(function () { if (document.visibilityState === 'visible') soon(); }, 5000);
   }
 
   // The current view stays up until the next one has loaded, so moving

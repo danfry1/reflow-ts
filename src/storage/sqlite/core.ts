@@ -6,6 +6,8 @@ import type {
   DeleteRunsFilter,
   PersistedValue,
   ListRunsFilter,
+  RunActivity,
+  RunActivityFilter,
   RunCounts,
   RunError,
   StepResult,
@@ -238,9 +240,13 @@ export class SqliteStorageBase implements StorageAdapter {
       // its last heartbeat.
       const staleLeaseMs = staleBefore === undefined ? 0 : now - staleBefore
 
+      // `+workflow` keeps the planner off the indexes that lead with workflow,
+      // which would scan every run of the workflow, finished ones included;
+      // the status indexes reach only the runs that could be claimed, so a
+      // claim costs the size of the queue, not of the history.
       const row = this.get<WorkflowRunRow>(
         `SELECT * FROM workflow_runs
-         WHERE workflow IN (${placeholders}) AND ${reclaimClause}
+         WHERE +workflow IN (${placeholders}) AND ${reclaimClause}
          ORDER BY CASE status
                     WHEN 'pending' THEN updated_at
                     WHEN 'running' THEN updated_at + ?
@@ -462,19 +468,53 @@ export class SqliteStorageBase implements StorageAdapter {
       runId,
     )
 
-    return rows.map((row): StepResult => ({
-      id: row.id,
-      runId: row.run_id,
-      name: row.name,
-      status: parseStepStatus(row.status),
-      output: row.output === null ? null : deserializePersistedValue(row.output),
-      error: row.error,
-      attempts: row.attempts,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      startedAt: row.started_at,
-      history: row.history === null ? [] : parseStepHistory(row.history),
-    }))
+    return rows.map(mapStepRow)
+  }
+
+  async getStepResultsForRuns(runIds: readonly string[]): Promise<Map<string, StepResult[]>> {
+    const byRun = new Map<string, StepResult[]>(runIds.map((id) => [id, []]))
+    // In chunks, well under SQLite's limit on bound parameters.
+    for (let offset = 0; offset < runIds.length; offset += 500) {
+      const chunk = runIds.slice(offset, offset + 500)
+      const rows = this.all<WorkflowStepRow>(
+        `SELECT * FROM workflow_steps WHERE run_id IN (${chunk.map(() => '?').join(', ')})
+         ORDER BY run_id, created_at ASC`,
+        ...chunk,
+      )
+      for (const row of rows) {
+        byRun.get(row.run_id)?.push(mapStepRow(row))
+      }
+    }
+    return byRun
+  }
+
+  async runActivity(filter: RunActivityFilter): Promise<RunActivity> {
+    const { since, bucketMs, buckets } = filter
+    const until = since + bucketMs * buckets
+    const scope = filter.workflow === undefined ? '' : 'AND workflow = ?'
+    const scoped = (...args: SqlParam[]): SqlParam[] => filter.workflow === undefined ? args : [...args, filter.workflow]
+    const activity: RunActivity = {
+      started: new Array<number>(buckets).fill(0),
+      completed: new Array<number>(buckets).fill(0),
+      failed: new Array<number>(buckets).fill(0),
+    }
+    const started = this.all<{ bucket: number; n: number }>(
+      `SELECT CAST((created_at - ?) / ? AS INTEGER) AS bucket, COUNT(*) AS n FROM workflow_runs
+       WHERE created_at >= ? AND created_at < ? ${scope} GROUP BY bucket`,
+      ...scoped(since, bucketMs, since, until),
+    )
+    for (const row of started) activity.started[row.bucket] = row.n
+    const finished = this.all<{ bucket: number; status: string; n: number }>(
+      `SELECT CAST((finished_at - ?) / ? AS INTEGER) AS bucket, status, COUNT(*) AS n FROM workflow_runs
+       WHERE finished_at >= ? AND finished_at < ? AND status IN ('completed', 'failed') ${scope}
+       GROUP BY bucket, status`,
+      ...scoped(since, bucketMs, since, until),
+    )
+    for (const row of finished) {
+      const counts = row.status === 'completed' ? activity.completed : activity.failed
+      counts[row.bucket] = row.n
+    }
+    return activity
   }
 
   async saveStepResult(result: StepResult, leaseId?: string): Promise<boolean> {
@@ -763,6 +803,22 @@ export class SqliteStorageBase implements StorageAdapter {
         { cause },
       )
     }
+  }
+}
+
+function mapStepRow(row: WorkflowStepRow): StepResult {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    name: row.name,
+    status: parseStepStatus(row.status),
+    output: row.output === null ? null : deserializePersistedValue(row.output),
+    error: row.error,
+    attempts: row.attempts,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.started_at,
+    history: row.history === null ? [] : parseStepHistory(row.history),
   }
 }
 

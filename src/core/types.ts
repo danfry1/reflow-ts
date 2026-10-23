@@ -205,6 +205,30 @@ export interface ListRunsFilter {
 /** How many runs are in each status, from {@link StorageAdapter.countRuns}. */
 export type RunCounts = Record<RunStatus, number>
 
+/** Filter for {@link StorageAdapter.runActivity}. */
+export interface RunActivityFilter {
+  /** Only count runs of this workflow. */
+  workflow?: string
+  /** Start of the first bucket (epoch ms). */
+  since: number
+  /** Width of each bucket in milliseconds. */
+  bucketMs: number
+  /** How many buckets, from `since` on. */
+  buckets: number
+}
+
+/**
+ * Runs started, completed, and failed in each of a run of equal time buckets,
+ * from {@link StorageAdapter.runActivity}. Each array has one entry per
+ * bucket; a run counts as started in the bucket holding its `createdAt`, and
+ * as completed or failed in the one holding its `finishedAt`.
+ */
+export interface RunActivity {
+  started: number[]
+  completed: number[]
+  failed: number[]
+}
+
 /** Filter for {@link StorageAdapter.countRuns} and `engine.countRuns()`. */
 export interface CountRunsFilter {
   /** Only count runs of this workflow. */
@@ -297,6 +321,19 @@ export interface StorageAdapter {
   requeueRun(runId: string): Promise<boolean>
   /** Fetch all step results for a run, ordered by creation time. */
   getStepResults(runId: string): Promise<StepResult[]>
+  /**
+   * Optional. The step results of several runs at once, keyed by run id, each
+   * list ordered as {@link StorageAdapter.getStepResults} orders it; a run
+   * with no steps, or that does not exist, maps to an empty list. Readers
+   * such as the dashboard fall back to one `getStepResults` call per run.
+   */
+  getStepResultsForRuns?(runIds: readonly string[]): Promise<Map<string, StepResult[]>>
+  /**
+   * Optional. How many runs started, completed, and failed in each of a run of
+   * time buckets — see {@link RunActivity}. Readers such as the dashboard
+   * fall back to counting a sample of recent runs, and say so.
+   */
+  runActivity?(filter: RunActivityFilter): Promise<RunActivity>
   /** Persist a step result. If `leaseId` is provided, fails when the lease is no longer held. */
   saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
   /**

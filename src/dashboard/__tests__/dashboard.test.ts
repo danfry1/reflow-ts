@@ -262,6 +262,54 @@ describe('createDashboard', () => {
       expect(body.activity.failed.reduce((sum: number, n: number) => sum + n, 0)).toBe(3)
     })
 
+    it("reads every listed run's steps in one call when the storage offers it", async () => {
+      await engine.enqueue('order', { id: 'o1' })
+      await engine.enqueue('order', { id: 'o2' })
+      await engine.tick()
+      let single = 0
+      let batched = 0
+      const counting = delegatingAdapter(storage, {
+        getStepResults: (runId) => { single++; return storage.getStepResults(runId) },
+        getStepResultsForRuns: (runIds) => { batched++; return storage.getStepResultsForRuns(runIds) },
+      })
+
+      const body = await (await createDashboard({ storage: counting, authorize: () => true })(get('/api/runs'))).json()
+
+      expect(body.runs).toHaveLength(2)
+      expect({ single, batched }).toStrictEqual({ single: 0, batched: 1 })
+    })
+
+    it('shares one computation of insights between requests close together', async () => {
+      await engine.enqueue('order', { id: 'o1' })
+      let lists = 0
+      const counting = delegatingAdapter(storage, { listRuns: (filter) => { lists++; return storage.listRuns(filter) } })
+      const handler = createDashboard({ storage: counting, authorize: () => true, workflows: [wf] })
+
+      await handler(get('/api/workflows/order/insights'))
+      await handler(get('/api/workflows/order/insights'))
+
+      expect(lists).toBe(1)
+    })
+
+    it('marks the minutes a sample of runs does not reach as uncounted, without runActivity', async () => {
+      const now = Date.now()
+      for (let index = 0; index < 210; index++) {
+        await storage.createRun({
+          id: `r${index}`, workflow: 'order', input: { id: String(index) }, idempotencyKey: null, status: 'completed',
+          createdAt: now - (210 - index) * 1_000, updatedAt: now, startedAt: null, finishedAt: now - (210 - index) * 1_000,
+          output: undefined, error: null, wakeAt: null, waitingFor: null,
+        })
+      }
+      // The helper adapter forwards only the required methods, so no runActivity.
+      const plain = delegatingAdapter(storage)
+
+      const body = await (await createDashboard({ storage: plain, authorize: () => true, workflows: [wf] })(get('/api/workflows/order/insights'))).json()
+
+      const oldestSampled = now - 200 * 1_000
+      expect(body.activity.coveredFrom).toBe(oldestSampled)
+      expect(body.activity.started.reduce((sum: number, n: number) => sum + n, 0)).toBe(200)
+    })
+
     it('filters runs by status and workflow', async () => {
       await engine.enqueue('order', { id: 'ok' })
       await engine.enqueue('order', { id: 'bad' })

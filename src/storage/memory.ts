@@ -6,6 +6,8 @@ import type {
   DeleteRunsFilter,
   PersistedValue,
   ListRunsFilter,
+  RunActivity,
+  RunActivityFilter,
   RunCounts,
   RunError,
   RunStatus,
@@ -240,7 +242,9 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   async getStepResults(runId: string): Promise<StepResult[]> {
-    return (this.steps.get(runId) ?? []).map((step) => ({
+    // Ordered by creation time, as the contract says; insertion order only
+    // matches it when steps are first saved in the order they began.
+    return [...(this.steps.get(runId) ?? [])].sort((a, b) => a.createdAt - b.createdAt).map((step) => ({
       ...step,
       output: clonePersistedValue(step.output, 'Step output'),
       history: step.history.map((attempt) => ({ ...attempt })),
@@ -306,6 +310,38 @@ export class MemoryStorage implements StorageAdapter {
 
     finish(run, 'cancelled')
     return true
+  }
+
+  async getStepResultsForRuns(runIds: readonly string[]): Promise<Map<string, StepResult[]>> {
+    const byRun = new Map<string, StepResult[]>()
+    for (const runId of runIds) {
+      byRun.set(runId, await this.getStepResults(runId))
+    }
+    return byRun
+  }
+
+  async runActivity(filter: RunActivityFilter): Promise<RunActivity> {
+    const { since, bucketMs, buckets } = filter
+    const activity: RunActivity = {
+      started: new Array<number>(buckets).fill(0),
+      completed: new Array<number>(buckets).fill(0),
+      failed: new Array<number>(buckets).fill(0),
+    }
+    const bucketOf = (at: number | null): number | null => {
+      if (at === null || at < since) return null
+      const bucket = Math.floor((at - since) / bucketMs)
+      return bucket < buckets ? bucket : null
+    }
+    for (const run of this.runs.values()) {
+      if (filter.workflow !== undefined && run.workflow !== filter.workflow) continue
+      const started = bucketOf(run.createdAt)
+      if (started !== null) activity.started[started] = (activity.started[started] ?? 0) + 1
+      const finished = bucketOf(run.finishedAt)
+      if (finished === null) continue
+      if (run.status === 'completed') activity.completed[finished] = (activity.completed[finished] ?? 0) + 1
+      if (run.status === 'failed') activity.failed[finished] = (activity.failed[finished] ?? 0) + 1
+    }
+    return activity
   }
 
   async countRuns(filter: CountRunsFilter = {}): Promise<RunCounts> {

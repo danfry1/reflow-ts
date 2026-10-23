@@ -150,6 +150,21 @@ export const MIGRATIONS: readonly Migration[] = [
       db.exec(`ALTER TABLE workflow_steps ADD COLUMN history TEXT`)
     },
   },
+  {
+    version: 4,
+    description: 'indexes for listing runs newest first, and counting them by workflow, status, or time',
+    // Without them listing runs sorts the whole table, which a dashboard
+    // refreshing on every change would do continuously. None changes when a
+    // run's status does, so they add nothing to claiming or finishing runs;
+    // an index on (status, created_at) would, and was left out for that.
+    up(db) {
+      db.exec(`
+        CREATE INDEX idx_runs_created ON workflow_runs(created_at, id);
+        CREATE INDEX idx_runs_workflow_created ON workflow_runs(workflow, created_at, id);
+        CREATE INDEX idx_runs_workflow_finished ON workflow_runs(workflow, finished_at) WHERE finished_at IS NOT NULL;
+      `)
+    },
+  },
 ]
 
 /** The schema version this build of Reflow writes. */

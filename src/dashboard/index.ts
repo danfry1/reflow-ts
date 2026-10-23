@@ -28,6 +28,7 @@ import {
   RUN_STATUSES,
   type ListRunsFilter,
   type PersistedValue,
+  type RunCounts,
   type RunStatus,
   type StepResult,
   type StorageAdapter,
@@ -107,6 +108,33 @@ const RECENT_RUNS_FOR_NAMES = 500
 /** How many of a workflow's latest runs its insights are read from. */
 const INSIGHT_SAMPLE = 200
 const ACTIVITY_MINUTES = 60
+/** How long one computation of a workflow's insights is shared between requests. */
+const INSIGHT_TTL_MS = 2_000
+/** How long run counts are shared between requests. */
+const COUNTS_TTL_MS = 1_000
+
+/** One page of the run list, as the API sends it. */
+interface RunPage {
+  readonly runs: readonly (Omit<WorkflowRun, 'input' | 'output'> & {
+    readonly label: string | null
+    readonly steps: readonly Omit<StepResult, 'output' | 'id' | 'runId'>[]
+  })[]
+  readonly next: { readonly before: number; readonly beforeId: string } | null
+}
+
+/** Reads made recently, by key, with when each began. */
+type RecentReads<T> = Map<string, { at: number; value: Promise<T> }>
+
+/** The read under `key` if it began within `ttlMs`, otherwise a fresh one. */
+function shared<T>(reads: RecentReads<T>, key: string, ttlMs: number, read: () => Promise<T>): Promise<T> {
+  const recent = reads.get(key)
+  if (recent && Date.now() - recent.at < ttlMs) return recent.value
+  const value = read()
+  reads.set(key, { at: Date.now(), value })
+  // A failed read is not kept, so the next request tries again.
+  value.catch(() => reads.delete(key))
+  return value
+}
 const MINUTE_MS = 60_000
 
 /** One step of a workflow, and how its recent runs fared there. */
@@ -149,6 +177,8 @@ interface WorkflowInsights {
     readonly started: number[]
     readonly completed: number[]
     readonly failed: number[]
+    /** The counts are complete from this time on; before it they are unknown, not zero. */
+    readonly coveredFrom: number
   }
 }
 
@@ -177,6 +207,12 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
   const title = options.title ?? 'Reflow'
   const outlines = new Map((options.workflows ?? []).map((workflow) => [workflow.name, outlineOf(workflow)]))
   const labellers = new Map((options.workflows ?? []).map((workflow) => [workflow.name, workflow]))
+  // Counts and insights scan many rows; several viewers, or one refreshing
+  // on every change, share a recent result rather than each reading again.
+  const insightCache: RecentReads<WorkflowInsights> = new Map()
+  const countCache: RecentReads<RunCounts> = new Map()
+  // A page of runs, shared between identical requests the same way.
+  const pageCache: RecentReads<RunPage> = new Map()
 
   /**
    * A run's name for people: what its workflow's `label` returns, else its
@@ -255,7 +291,7 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       if (method !== 'GET') return methodNotAllowed('GET')
       return json(200, {
         title,
-        counts: await storage.countRuns(),
+        counts: await shared(countCache, '', COUNTS_TTL_MS, () => storage.countRuns()),
         actions: engine !== undefined,
         live: engine !== undefined,
       })
@@ -326,7 +362,7 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
     const workflows = await Promise.all(names.map(async (name) => ({
       name,
       steps: outlines.get(name) ?? null,
-      counts: await storage.countRuns({ workflow: name }),
+      counts: await shared(countCache, name, COUNTS_TTL_MS, () => storage.countRuns({ workflow: name })),
     })))
     return json(200, { workflows, source: known ? 'definitions' : 'recent-runs' })
   }
@@ -339,9 +375,23 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
    * Read from the latest {@link INSIGHT_SAMPLE} runs rather than aggregated
    * in storage, which keeps no per-step counts; the page says so.
    */
-  async function insightsFor(name: string): Promise<WorkflowInsights> {
+  /** Several runs' steps: in one read where the storage offers it. */
+  async function stepsOf(runs: readonly WorkflowRun[]): Promise<Map<string, StepResult[]>> {
+    if (storage.getStepResultsForRuns) {
+      return storage.getStepResultsForRuns(runs.map((run) => run.id))
+    }
+    const lists = await Promise.all(runs.map((run) => storage.getStepResults(run.id)))
+    return new Map(runs.map((run, index) => [run.id, lists[index] ?? []]))
+  }
+
+  function insightsFor(name: string): Promise<WorkflowInsights> {
+    return shared(insightCache, name, INSIGHT_TTL_MS, () => computeInsights(name))
+  }
+
+  async function computeInsights(name: string): Promise<WorkflowInsights> {
     const runs = await storage.listRuns({ workflow: name, limit: INSIGHT_SAMPLE })
-    const stepsByRun = await Promise.all(runs.map((run) => storage.getStepResults(run.id)))
+    const stepMap = await stepsOf(runs)
+    const stepsByRun = runs.map((run) => stepMap.get(run.id) ?? [])
     const outlined = outlines.get(name)
     const units = outlined ? outlined.map(unitNames) : namesInOrder(stepsByRun)
     const now = Date.now()
@@ -387,23 +437,7 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       }
     })
 
-    const start = now - ACTIVITY_MINUTES * MINUTE_MS
-    const bucket = (at: number | null): number => at === null || at < start ? -1 : Math.min(ACTIVITY_MINUTES - 1, Math.floor((at - start) / MINUTE_MS))
-    const activity = {
-      start,
-      bucketMs: MINUTE_MS,
-      started: new Array<number>(ACTIVITY_MINUTES).fill(0),
-      completed: new Array<number>(ACTIVITY_MINUTES).fill(0),
-      failed: new Array<number>(ACTIVITY_MINUTES).fill(0),
-    }
-    for (const run of runs) {
-      const started = bucket(run.createdAt)
-      if (started >= 0) activity.started[started] = (activity.started[started] ?? 0) + 1
-      const finished = bucket(run.finishedAt)
-      if (finished >= 0 && run.status === 'completed') activity.completed[finished] = (activity.completed[finished] ?? 0) + 1
-      if (finished >= 0 && run.status === 'failed') activity.failed[finished] = (activity.failed[finished] ?? 0) + 1
-    }
-
+    const activity = await activityFor(name, runs, now)
     return {
       sample: runs.length,
       complete: runs.length < INSIGHT_SAMPLE,
@@ -412,6 +446,37 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       failures: [...failures.values()].sort((a, b) => b.count - a.count || b.lastAt - a.lastAt),
       activity,
     }
+  }
+
+  /**
+   * Runs started, completed, and failed per minute over the last hour. Exact
+   * when the storage counts them; otherwise counted from the sample, and
+   * marked as covering only the stretch of time the sample spans, so a busy
+   * workflow's chart is not read as an hour with nothing in it.
+   */
+  async function activityFor(name: string, runs: readonly WorkflowRun[], now: number): Promise<WorkflowInsights['activity']> {
+    const start = Math.floor(now / MINUTE_MS) * MINUTE_MS - (ACTIVITY_MINUTES - 1) * MINUTE_MS
+    const window = { start, bucketMs: MINUTE_MS }
+    if (storage.runActivity) {
+      const counts = await storage.runActivity({ workflow: name, since: start, bucketMs: MINUTE_MS, buckets: ACTIVITY_MINUTES })
+      return { ...window, ...counts, coveredFrom: start }
+    }
+    const oldest = runs.at(-1)?.createdAt ?? now
+    const coveredFrom = runs.length < INSIGHT_SAMPLE ? start : Math.max(start, oldest)
+    const bucket = (at: number | null): number => at === null || at < coveredFrom ? -1 : Math.min(ACTIVITY_MINUTES - 1, Math.floor((at - start) / MINUTE_MS))
+    const counts = {
+      started: new Array<number>(ACTIVITY_MINUTES).fill(0),
+      completed: new Array<number>(ACTIVITY_MINUTES).fill(0),
+      failed: new Array<number>(ACTIVITY_MINUTES).fill(0),
+    }
+    for (const run of runs) {
+      const started = bucket(run.createdAt)
+      if (started >= 0) counts.started[started] = (counts.started[started] ?? 0) + 1
+      const finished = bucket(run.finishedAt)
+      if (finished >= 0 && run.status === 'completed') counts.completed[finished] = (counts.completed[finished] ?? 0) + 1
+      if (finished >= 0 && run.status === 'failed') counts.failed[finished] = (counts.failed[finished] ?? 0) + 1
+    }
+    return { ...window, ...counts, coveredFrom }
   }
 
   async function listRuns(params: URLSearchParams): Promise<Response> {
@@ -446,24 +511,28 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       if (beforeId !== null) filter.beforeId = beforeId
     }
 
+    return json(200, await shared(pageCache, JSON.stringify(filter), COUNTS_TTL_MS, () => readPage(filter)))
+  }
+
+  async function readPage(filter: ListRunsFilter): Promise<RunPage> {
     const runs = await storage.listRuns(filter)
     const last = runs.at(-1)
     const next = last !== undefined && runs.length === filter.limit
       ? { before: last.createdAt, beforeId: last.id }
       : null
 
-    // Each row draws its run as a line, which needs the steps' timing but not
-    // their outputs. Inputs and outputs can be large; the list sends neither,
-    // and the detail endpoint returns them for the one run being looked at.
-    const steps = await Promise.all(runs.map((run) => storage.getStepResults(run.id)))
-    return json(200, {
-      runs: runs.map((run, index) => ({
+    // A run's row and detail need its steps' timing but not their outputs.
+    // Inputs and outputs can be large; the list sends neither, and the detail
+    // endpoint returns them for the one run being looked at.
+    const steps = await stepsOf(runs)
+    return {
+      runs: runs.map((run) => ({
         ...summarize(run),
         label: labelOf(run),
-        steps: (steps[index] ?? []).map(outline),
+        steps: (steps.get(run.id) ?? []).map(outline),
       })),
       next,
-    })
+    }
   }
 
   function page(): Response {

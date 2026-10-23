@@ -179,6 +179,40 @@ const SCHEMA_0_7 = `
   );
 `
 
+describe('SqliteStorageBase query plans', () => {
+  beforeEach(removeDatabase)
+  afterEach(removeDatabase)
+
+  // The dashboard's indexes lead with workflow. Chosen for a claim, one scans
+  // every run of the workflow, finished ones included, so claims slow down as
+  // history grows; the claim must reach only the claimable runs.
+  it('claims through the status indexes, never an index that leads with workflow', async () => {
+    const db = new Database(DB_PATH)
+    const seen: { claim?: { sql: string; params: readonly unknown[] } } = {}
+    const driver: SqliteDriver = {
+      exec: (sql) => { db.exec(sql) },
+      get: <T>(sql: string, params: readonly unknown[]) => {
+        if (sql.includes('ORDER BY CASE status')) seen.claim = { sql, params }
+        return db.prepare(sql).get(...params) as T | undefined
+      },
+      all: <T>(sql: string, params: readonly unknown[]) => db.prepare(sql).all(...params) as T[],
+      run: (sql, params) => db.prepare(sql).run(...params).changes,
+      close: () => { db.close() },
+    }
+    const storage = new SqliteStorageBase(driver)
+    await storage.initialize()
+    await storage.claimNextRun(['w'], Date.now() - 60_000)
+
+    const claim = seen.claim
+    expect(claim).toBeDefined()
+    const plan: unknown[] = claim ? db.prepare(`EXPLAIN QUERY PLAN ${claim.sql}`).all(...claim.params) : []
+    const details = plan.map((row) => typeof row === 'object' && row !== null && 'detail' in row ? String(row.detail) : '')
+    expect(details.some((detail) => /idx_runs_workflow_/.test(detail))).toBe(false)
+    expect(details.some((detail) => /idx_runs_(status|wake)/.test(detail))).toBe(true)
+    storage.close()
+  })
+})
+
 describe('SqliteStorageBase migrations', () => {
   beforeEach(removeDatabase)
   afterEach(removeDatabase)

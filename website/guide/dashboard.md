@@ -81,6 +81,12 @@ A sidebar lists every workflow, with how many of its runs have failed or are sti
 - **All runs**, across workflows, for triage — every failed run, say.
 - **Schedules**, with when each next fires.
 
+## Live updates and load
+
+With `engine`, the page updates as that engine moves runs on. Changes made by other processes — workers deployed separately from the app serving the dashboard — show up within five seconds, through polling. Without `engine`, everything arrives that way.
+
+However busy the engine, an open dashboard refreshes at most once a second, and the counts, run pages, and insights it reads are shared between viewers for a second or two, so several open tabs cost about as much as one. Against SQLite, every read it makes is an index range rather than a scan; on a database of a million runs, each answers in a few milliseconds, except listing runs of every workflow filtered by status, which takes on the order of 100ms.
+
 ## Naming runs
 
 Ten runs of `user-signup` are easier to tell apart by who signed up than by id. Give the workflow a `label`, computed from each run's typed input:
