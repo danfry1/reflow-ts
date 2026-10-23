@@ -74,9 +74,12 @@ for (const adapter of adapters) {
     })
 
     for (const testCase of storageConformanceCases) {
-      it(testCase.name, async () => {
+      it(testCase.name, async (context) => {
         const storage = await adapter.create()
         open = storage
+        if (testCase.appliesTo && !testCase.appliesTo(storage)) {
+          context.skip()
+        }
         await testCase.run(storage)
       })
     }

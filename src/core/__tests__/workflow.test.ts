@@ -12,6 +12,21 @@ function getStepDef(wf: { executionUnits: readonly ExecutionUnit[] }, index: num
 }
 
 describe('createWorkflow', () => {
+  it('keeps its run label through every builder call', () => {
+    const wf = createWorkflow({ name: 'labelled', input: z.object({ orderId: z.string() }), label: (input) => `order ${input.orderId}` })
+      .step('a', async () => ({}))
+      .parallel({ b: async () => ({}) })
+      .sleep('nap', 1)
+      .waitForEvent('go')
+      .onFailure(async () => {})
+
+    expect(wf.label?.({ orderId: '1001' })).toBe('order 1001')
+  })
+
+  it('has no run label unless given one', () => {
+    expect(createWorkflow({ name: 'plain', input: z.object({}) }).step('a', async () => ({})).label).toBeUndefined()
+  })
+
   describe('builder basics', () => {
     it('creates a workflow with a name and input schema', () => {
       const wf = createWorkflow({

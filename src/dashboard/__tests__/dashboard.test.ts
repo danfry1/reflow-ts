@@ -164,6 +164,215 @@ describe('createDashboard', () => {
       expect(body.next).toBeNull()
     })
 
+    it("lists each run with its steps' timing, but not their outputs", async () => {
+      await engine.enqueue('order', { id: 'o1' })
+      await engine.tick()
+
+      const body = await (await dashboard()(get('/api/runs'))).json()
+      const steps = body.runs[0].steps
+
+      expect(steps.map((step: { name: string; status: string }) => [step.name, step.status]))
+        .toStrictEqual([['charge', 'completed']])
+      expect(steps[0].history).toHaveLength(1)
+      expect(steps[0]).toHaveProperty('startedAt')
+      expect(steps[0]).not.toHaveProperty('output')
+    })
+
+    it('lists the given workflows with their steps in order and their run counts', async () => {
+      const staged = createWorkflow({ name: 'staged', input: z.object({}) })
+        .step('first', async () => ({}))
+        .parallel({ left: async () => ({}), right: async () => ({}) })
+        .sleep('pause', 60_000)
+        .waitForEvent('approved', { timeoutMs: 5_000 })
+      await engine.enqueue('order', { id: 'o1' })
+      await engine.tick()
+
+      const body = await (await dashboard({ workflows: [wf, staged] })(get('/api/workflows'))).json()
+
+      expect(body.source).toBe('definitions')
+      expect(body.workflows.map((workflow: { name: string }) => workflow.name)).toStrictEqual(['order', 'staged'])
+      expect(body.workflows[0].counts.completed).toBe(1)
+      expect(body.workflows[1].steps).toStrictEqual([
+        { kind: 'step', name: 'first' },
+        { kind: 'parallel', branches: ['left', 'right'] },
+        { kind: 'sleep', name: 'pause', durationMs: 60_000 },
+        { kind: 'wait', name: 'approved', timeoutMs: 5_000 },
+      ])
+    })
+
+    it('lists the workflows seen in recent runs when given no definitions', async () => {
+      await engine.enqueue('order', { id: 'o1' })
+      await engine.enqueue('approval', {})
+
+      const body = await (await dashboard()(get('/api/workflows'))).json()
+
+      expect(body.source).toBe('recent-runs')
+      expect(body.workflows.map((workflow: { name: string; steps: unknown }) => [workflow.name, workflow.steps]))
+        .toStrictEqual([['approval', null], ['order', null]])
+    })
+
+    it("names runs by their workflow's label, else their idempotency key, else not at all", async () => {
+      const labelled = createWorkflow({ name: 'labelled', input: z.object({ userId: z.string() }), label: (input) => `user ${input.userId}` })
+        .step('a', async () => ({}))
+      const broken = createWorkflow({ name: 'broken', input: z.object({}), label: () => { throw new Error('no name') } })
+        .step('a', async () => ({}))
+      const labelling = createEngine({ storage, workflows: [wf, labelled, broken] })
+      const named = await labelling.enqueue('labelled', { userId: 'u_42' })
+      const keyed = await labelling.enqueue('order', { id: 'secret' }, { idempotencyKey: 'order-1001' })
+      const plain = await labelling.enqueue('order', { id: 'secret' })
+      const failing = await labelling.enqueue('broken', {})
+      const long = await labelling.enqueue('labelled', { userId: 'x'.repeat(200) })
+
+      const handler = dashboard({ workflows: [wf, labelled, broken] })
+      const listed = await (await handler(get('/api/runs'))).json()
+      const labels = new Map(listed.runs.map((run: { id: string; label: string | null }) => [run.id, run.label]))
+      const detail = await (await handler(get(`/api/runs/${named.id}`))).json()
+
+      expect(labels.get(named.id)).toBe('user u_42')
+      expect(labels.get(keyed.id)).toBe('order-1001')
+      expect(labels.get(plain.id)).toBeNull()
+      expect(labels.get(failing.id)).toBe('label() threw: no name')
+      expect(labels.get(long.id)).toHaveLength(80)
+      expect(detail.label).toBe('user u_42')
+      expect(detail.outline).toStrictEqual([{ kind: 'step', name: 'a' }])
+    })
+
+    it("sums up a workflow's recent runs: how far they got, what they failed with, and when", async () => {
+      const pipeline = createWorkflow({ name: 'pipeline', input: z.object({ fail: z.string().optional() }) })
+        .step('fetch', async () => ({}))
+        .step('charge', async ({ input }) => {
+          if (input.fail) throw new Error(input.fail)
+          return {}
+        })
+        .waitForEvent('shipped')
+      const local = createEngine({ storage, workflows: [pipeline] })
+      for (const fail of [undefined, undefined, 'card declined', 'card declined', 'gateway down']) {
+        await local.enqueue('pipeline', fail ? { fail } : {})
+      }
+      for (let index = 0; index < 5; index++) await local.tick()
+
+      const body = await (await dashboard({ workflows: [pipeline] })(get('/api/insights?workflow=pipeline'))).json()
+
+      expect({ sample: body.sample, complete: body.complete }).toStrictEqual({ sample: 5, complete: true })
+      expect(body.pipeline.map((stage: Record<string, unknown>) => [stage.name, stage.reached, stage.completed, stage.failed, stage.here]))
+        .toStrictEqual([['fetch', 5, 5, 0, 0], ['charge', 5, 2, 3, 0], ['shipped', 2, 0, 0, 2]])
+      expect(body.failures.map((group: Record<string, unknown>) => [group.stepName, group.message, group.count]))
+        .toStrictEqual([['charge', 'card declined', 2], ['charge', 'gateway down', 1]])
+      expect(body.activity.started.reduce((sum: number, n: number) => sum + n, 0)).toBe(5)
+      expect(body.activity.failed.reduce((sum: number, n: number) => sum + n, 0)).toBe(3)
+    })
+
+    it("reads every listed run's steps in one call when the storage offers it", async () => {
+      await engine.enqueue('order', { id: 'o1' })
+      await engine.enqueue('order', { id: 'o2' })
+      await engine.tick()
+      let single = 0
+      let batched = 0
+      const counting = delegatingAdapter(storage, {
+        getStepResults: (runId) => { single++; return storage.getStepResults(runId) },
+        getStepResultsForRuns: (runIds) => { batched++; return storage.getStepResultsForRuns(runIds) },
+      })
+
+      const body = await (await createDashboard({ storage: counting, authorize: () => true })(get('/api/runs'))).json()
+
+      expect(body.runs).toHaveLength(2)
+      expect({ single, batched }).toStrictEqual({ single: 0, batched: 1 })
+    })
+
+    it('shares one computation of insights between requests close together', async () => {
+      await engine.enqueue('order', { id: 'o1' })
+      let lists = 0
+      const counting = delegatingAdapter(storage, { listRuns: (filter) => { lists++; return storage.listRuns(filter) } })
+      const handler = createDashboard({ storage: counting, authorize: () => true, workflows: [wf] })
+
+      await handler(get('/api/insights?workflow=order'))
+      await handler(get('/api/insights?workflow=order'))
+
+      expect(lists).toBe(1)
+    })
+
+    it('marks the minutes a sample of runs does not reach as uncounted, without runActivity', async () => {
+      const now = Date.now()
+      for (let index = 0; index < 210; index++) {
+        await storage.createRun({
+          id: `r${index}`, workflow: 'order', input: { id: String(index) }, idempotencyKey: null, status: 'completed',
+          createdAt: now - (210 - index) * 1_000, updatedAt: now, startedAt: null, finishedAt: now - (210 - index) * 1_000,
+          output: undefined, error: null, wakeAt: null, waitingFor: null,
+        })
+      }
+      // The helper adapter forwards only the required methods, so no runActivity.
+      const plain = delegatingAdapter(storage)
+
+      const body = await (await createDashboard({ storage: plain, authorize: () => true, workflows: [wf] })(get('/api/insights?workflow=order'))).json()
+
+      const oldestSampled = now - 200 * 1_000
+      expect(body.activity.coveredFrom).toBe(oldestSampled)
+      expect(body.activity.started.reduce((sum: number, n: number) => sum + n, 0)).toBe(200)
+    })
+
+    it('counts only runs that can still move on as being at a step now', async () => {
+      const napper = createWorkflow({ name: 'napper', input: z.object({}) }).step('first', async () => ({})).sleep('nap', 60_000)
+      const local = createEngine({ storage, workflows: [napper] })
+      const kept = await local.enqueue('napper', {})
+      const cancelled = await local.enqueue('napper', {})
+      await local.tick()
+      await local.tick()
+      await local.cancel(cancelled.id)
+
+      const body = await (await dashboard({ workflows: [napper] })(get('/api/insights?workflow=napper'))).json()
+
+      expect(kept.id).not.toBe(cancelled.id)
+      expect(body.pipeline.map((stage: { name: string; here: number }) => [stage.name, stage.here])).toStrictEqual([['first', 0], ['nap', 1]])
+    })
+
+    it('places a running run at a parallel group a branch of which is still going', async () => {
+      const fanout = createWorkflow({ name: 'fanout', input: z.object({}) })
+        .step('first', async () => ({}))
+        .parallel({ left: async () => ({}), right: async () => ({}) })
+        .step('last', async () => ({}))
+      const now = Date.now()
+      await storage.createRun({
+        id: 'r1', workflow: 'fanout', input: {}, idempotencyKey: null, status: 'running',
+        createdAt: now, updatedAt: now, startedAt: now, finishedAt: null, output: undefined, error: null, wakeAt: null, waitingFor: null,
+      })
+      const step = (name: string) => ({
+        id: `r1-${name}`, runId: 'r1', name, status: 'completed' as const, output: {}, error: null, attempts: 1,
+        createdAt: now, updatedAt: now, startedAt: now, history: [],
+      })
+      await storage.saveStepResult(step('first'))
+      await storage.saveStepResult(step('left'))
+
+      const body = await (await dashboard({ workflows: [fanout] })(get('/api/insights?workflow=fanout'))).json()
+
+      expect(body.pipeline.map((stage: { name: string; here: number }) => [stage.name, stage.here]))
+        .toStrictEqual([['first', 0], ['left + right', 1], ['last', 0]])
+      expect(body.pipeline[1].steps).toStrictEqual(['left', 'right'])
+    })
+
+    it('says so when a label() returns a Promise instead of a string', async () => {
+      // The types forbid an async label; JavaScript callers are not held to them.
+      const promising = Object.defineProperty(
+        createWorkflow({ name: 'promising', input: z.object({}) }).step('a', async () => ({})),
+        'label',
+        { value: async () => 'never shown' },
+      )
+      await createEngine({ storage, workflows: [promising] }).enqueue('promising', {})
+
+      const body = await (await dashboard({ workflows: [promising] })(get('/api/runs'))).json()
+
+      expect(body.runs[0].label).toBe('label() returned a Promise; it must return a string')
+    })
+
+    it('serves insights for a workflow whose name a path would resolve away', async () => {
+      const dots = createWorkflow({ name: '..', input: z.object({}) }).step('a', async () => ({}))
+      await createEngine({ storage, workflows: [dots] }).enqueue('..', {})
+
+      const response = await dashboard({ workflows: [dots] })(get(`/api/insights?workflow=${encodeURIComponent('..')}`))
+
+      expect(response.status).toBe(200)
+      expect((await response.json()).sample).toBe(1)
+    })
+
     it('filters runs by status and workflow', async () => {
       await engine.enqueue('order', { id: 'ok' })
       await engine.enqueue('order', { id: 'bad' })

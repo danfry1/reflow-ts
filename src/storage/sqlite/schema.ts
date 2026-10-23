@@ -150,6 +150,38 @@ export const MIGRATIONS: readonly Migration[] = [
       db.exec(`ALTER TABLE workflow_steps ADD COLUMN history TEXT`)
     },
   },
+  {
+    version: 4,
+    description: 'indexes for claiming by due time, and for listing and counting runs by workflow, status, or time',
+    // Without them listing runs sorts the whole table, which a dashboard
+    // refreshing on every change would do continuously. None changes when a
+    // run's status does, so they add nothing to claiming or finishing runs;
+    // an index on (status, created_at) would, and was left out for that.
+    up(db) {
+      db.exec(`
+        -- The claim seeks the oldest due run per workflow and status, so the
+        -- status indexes carry when runs became due. They are the indexes a
+        -- status change already updated, now one column wider.
+        DROP INDEX IF EXISTS idx_runs_status;
+        DROP INDEX IF EXISTS idx_runs_wake;
+        CREATE INDEX idx_runs_status ON workflow_runs(status, workflow, updated_at, created_at);
+        CREATE INDEX idx_runs_wake ON workflow_runs(status, workflow, wake_at, created_at);
+
+        CREATE INDEX idx_runs_created ON workflow_runs(created_at, id);
+        CREATE INDEX idx_runs_workflow_created ON workflow_runs(workflow, created_at, id);
+        CREATE INDEX idx_runs_workflow_finished ON workflow_runs(workflow, finished_at) WHERE finished_at IS NOT NULL;
+
+        -- Failed and cancelled runs listed newest first, however long ago they
+        -- stopped. Written only when a run fails, is cancelled, or resumes.
+        -- Led by status so the planner, given status = 'failed', prefers them
+        -- to sorting the status index.
+        CREATE INDEX idx_runs_failed_created ON workflow_runs(status, created_at, id) WHERE status = 'failed';
+        CREATE INDEX idx_runs_failed_workflow_created ON workflow_runs(status, workflow, created_at, id) WHERE status = 'failed';
+        CREATE INDEX idx_runs_cancelled_created ON workflow_runs(status, created_at, id) WHERE status = 'cancelled';
+        CREATE INDEX idx_runs_cancelled_workflow_created ON workflow_runs(status, workflow, created_at, id) WHERE status = 'cancelled';
+      `)
+    },
+  },
 ]
 
 /** The schema version this build of Reflow writes. */

@@ -26,6 +26,8 @@ UPDATE workflow_runs SET finished_at = updated_at
 WHERE finished_at IS NULL AND status IN ('completed', 'failed', 'cancelled');
 ```
 
+On a large database the upgrade takes a few seconds: building the new indexes takes about 9 seconds per million runs, holding the write lock throughout. Processes starting up at the same time wait for it, for up to a minute. Workers still running the old version keep claiming; a claim that waits more than five seconds for the lock fails with a busy error, which the engine reports to `onError` and retries at its next poll. To avoid even that, upgrade when the system is quiet, or start one new process first and let it finish before rolling out the rest.
+
 A database written by a **newer** version of Reflow is refused with a `ConfigError` rather than opened, since older code could mishandle columns it does not know. Downgrading therefore needs a database from before the upgrade.
 
 ## Custom storage adapters
@@ -44,6 +46,7 @@ A database written by a **newer** version of Reflow is refused with a `ConfigErr
 
 - `countRuns(filter?)` — runs per status, every status present. Backs `engine.countRuns()`.
 - `deleteRuns({ finishedBefore, statuses, limit })` — delete finished runs, oldest-finished first, with their steps and events. Backs `engine.prune()`.
+- Optional: `getStepResultsForRuns(runIds)` and `runActivity(filter)`, which the dashboard uses when present to read less. See [Custom adapters](/guide/storage#custom-adapters).
 
 ### New fields
 

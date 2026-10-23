@@ -25,6 +25,12 @@ import type {
 /** A single contract case. Receives a freshly initialized, empty storage. */
 export interface ConformanceCase {
   readonly name: string
+  /**
+   * Whether the case applies to this adapter — false for a case covering an
+   * optional method the adapter does not implement. A runner can report the
+   * case as skipped; `run` also passes without checking anything in that case.
+   */
+  appliesTo?(storage: StorageAdapter): boolean
   run(storage: StorageAdapter): Promise<void>
 }
 
@@ -503,6 +509,45 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
 
+  {
+    name: "getStepResultsForRuns returns each run's steps in order, and an empty list for the rest",
+    appliesTo: (storage) => storage.getStepResultsForRuns !== undefined,
+    async run(storage) {
+      if (!storage.getStepResultsForRuns) return
+      await storage.createRun(makeRun({ id: 'a' }))
+      await storage.createRun(makeRun({ id: 'b' }))
+      await storage.saveStepResult(makeStep({ id: 'a2', runId: 'a', name: 'second', createdAt: 2 }))
+      await storage.saveStepResult(makeStep({ id: 'a1', runId: 'a', name: 'first', createdAt: 1 }))
+
+      const byRun = await storage.getStepResultsForRuns(['a', 'b', 'missing'])
+
+      assertEqual([...byRun.keys()].sort(), ['a', 'b', 'missing'], 'every run asked for')
+      assertEqual(byRun.get('a')?.map((step) => step.name), ['first', 'second'], 'steps in creation order')
+      assertEqual(byRun.get('b'), [], 'a run with no steps')
+      assertEqual(byRun.get('missing'), [], 'a run that does not exist')
+    },
+  },
+  {
+    name: 'runActivity counts runs started, completed, and failed per bucket',
+    appliesTo: (storage) => storage.runActivity !== undefined,
+    async run(storage) {
+      if (!storage.runActivity) return
+      const finished = (id: string, workflow: string, status: 'completed' | 'failed', createdAt: number, finishedAt: number) =>
+        storage.createRun(makeRun({ id, workflow, status, createdAt, updatedAt: finishedAt, finishedAt }))
+      await finished('a', 'w', 'completed', 1_000, 1_500)
+      await finished('b', 'w', 'failed', 1_900, 2_100)
+      await finished('c', 'other', 'completed', 1_000, 1_100)
+      await storage.createRun(makeRun({ id: 'd', workflow: 'w', createdAt: 2_500 }))
+      await storage.createRun(makeRun({ id: 'early', workflow: 'w', createdAt: 999 }))
+      await storage.createRun(makeRun({ id: 'late', workflow: 'w', createdAt: 3_000 }))
+
+      const activity = await storage.runActivity({ workflow: 'w', since: 1_000, bucketMs: 1_000, buckets: 2 })
+
+      assertEqual(activity, { started: [2, 1], completed: [1, 0], failed: [0, 1] }, 'activity for w')
+      const all = await storage.runActivity({ since: 1_000, bucketMs: 1_000, buckets: 2 })
+      assertEqual(all.started, [3, 1], 'every workflow')
+    },
+  },
   {
     name: 'listRuns returns runs newest first',
     async run(storage) {
