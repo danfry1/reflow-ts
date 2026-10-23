@@ -8,7 +8,7 @@ import type { StorageAdapter } from '../types'
 import { MemoryStorage } from '../../storage/memory'
 import { SQLiteStorage } from '../../storage/sqlite-node'
 import { at } from '../../__tests__/helpers'
-import { ValidationError } from '../../index'
+import { StorageError, ValidationError } from '../../index'
 
 function expectPresent<T>(value: T | null | undefined): T {
   expect(value).not.toBeNull()
@@ -1021,6 +1021,103 @@ describe('Engine', () => {
       expect(maxActiveRuns).toBe(1)
     })
 
+    // The poll interval in these tests is far longer than any of them run, so
+    // each pass shows the work was picked up without waiting for a poll.
+    const NEVER_POLL_AGAIN = 60_000
+
+    it('refills a free slot as soon as a run ends, while a slow sibling is still running', async () => {
+      let releaseSlow: () => void = () => {}
+      const slowGate = new Promise<void>((resolve) => {
+        releaseSlow = resolve
+      })
+      const completed: string[] = []
+      const wf = createWorkflow({
+        name: 'refill',
+        input: z.object({ id: z.string(), slow: z.boolean() }),
+      }).step('work', async ({ input }) => {
+        if (input.slow) await slowGate
+        completed.push(input.id)
+      })
+
+      const engine = createEngine({ storage, workflows: [wf], concurrency: 2 })
+      await engine.enqueue('refill', { id: 'slow', slow: true })
+      await engine.enqueue('refill', { id: 'fast-1', slow: false })
+      await engine.enqueue('refill', { id: 'fast-2', slow: false })
+      await engine.start(NEVER_POLL_AGAIN)
+
+      await vi.waitFor(() => {
+        expect(completed).toStrictEqual(['fast-1', 'fast-2'])
+      })
+
+      releaseSlow()
+      await vi.waitFor(() => {
+        expect(completed).toStrictEqual(['fast-1', 'fast-2', 'slow'])
+      })
+      await engine.stop()
+    })
+
+    it('runs a workflow enqueued on a started engine without waiting for the next poll', async () => {
+      const wf = createWorkflow({ name: 'prompt', input: z.object({}) }).step('a', async () => ({ ok: true }))
+      const engine = createEngine({ storage, workflows: [wf] })
+      await engine.start(NEVER_POLL_AGAIN)
+      // Let the first poll finish, so the next run can only be picked up by
+      // the enqueue itself.
+      const first = await engine.enqueue('prompt', {})
+      await vi.waitFor(async () => {
+        expect((await engine.getRunStatus(first.id))?.run.status).toBe('completed')
+      })
+
+      const second = await engine.enqueue('prompt', {})
+
+      await vi.waitFor(async () => {
+        expect((await engine.getRunStatus(second.id))?.run.status).toBe('completed')
+      })
+      await engine.stop()
+    })
+
+    it('resumes a waiting run as soon as its event is delivered', async () => {
+      const wf = createWorkflow({ name: 'approval', input: z.object({}) })
+        .waitForEvent('approved')
+        .step('after', async ({ prev }) => ({ got: prev }))
+      const engine = createEngine({ storage, workflows: [wf] })
+      await engine.start(NEVER_POLL_AGAIN)
+      const run = await engine.enqueue('approval', {})
+      await vi.waitFor(async () => {
+        expect((await engine.getRunStatus(run.id))?.run.status).toBe('waiting')
+      })
+
+      await engine.sendEvent(run.id, 'approved', { by: 'ops' })
+
+      await vi.waitFor(async () => {
+        expect((await engine.getRunStatus(run.id))?.run.status).toBe('completed')
+      })
+      await engine.stop()
+    })
+
+    it('never exceeds concurrency when tick() races the polling loop', async () => {
+      let activeRuns = 0
+      let maxActiveRuns = 0
+      const wf = createWorkflow({ name: 'race', input: z.object({}) }).step('slow', async () => {
+        activeRuns++
+        maxActiveRuns = Math.max(maxActiveRuns, activeRuns)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        activeRuns--
+      })
+      const engine = createEngine({ storage, workflows: [wf], concurrency: 2 })
+      for (let index = 0; index < 6; index++) {
+        await engine.enqueue('race', {})
+      }
+
+      await engine.start(NEVER_POLL_AGAIN)
+      await Promise.all([engine.tick(), engine.tick(), engine.tick()])
+      await vi.waitFor(async () => {
+        expect(await engine.listRuns({ status: 'completed' })).toHaveLength(6)
+      })
+      await engine.stop()
+
+      expect(maxActiveRuns).toBe(2)
+    })
+
     afterEach(() => {
       vi.restoreAllMocks()
     })
@@ -1792,6 +1889,27 @@ describe('Engine', () => {
       await engine.tick()
 
       expect(handler).toHaveBeenCalledTimes(1)
+    })
+
+    it('still runs what it claimed when a later claim in the batch fails', async () => {
+      const wf = createWorkflow({ name: 'test', input: z.object({}) }).step('a', async () => ({ done: true }))
+      let claims = 0
+      const flaky: StorageAdapter = Object.create(storage, {
+        claimNextRun: {
+          value: async (names: readonly string[], staleBefore?: number) => {
+            claims++
+            if (claims === 2) throw new Error('disk I/O error')
+            return storage.claimNextRun(names, staleBefore)
+          },
+        },
+      })
+      const engine = createEngine({ storage: flaky, workflows: [wf], concurrency: 2 })
+      const first = await engine.enqueue('test', {})
+      await engine.enqueue('test', {})
+
+      await expect(engine.tick()).rejects.toBeInstanceOf(StorageError)
+
+      expect((await engine.getRunStatus(first.id))?.run.status).toBe('completed')
     })
   })
 

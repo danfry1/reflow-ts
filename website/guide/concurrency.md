@@ -1,16 +1,16 @@
 # Concurrency
 
-By default the engine processes one run at a time. Raise `concurrency` to process multiple runs in parallel per tick:
+By default the engine processes one run at a time. Raise `concurrency` to execute several runs at once:
 
 ```typescript
 const engine = createEngine({
   storage,
   workflows: [orderWorkflow],
-  concurrency: 5, // process up to 5 runs in parallel per tick (default: 1)
+  concurrency: 5, // execute up to 5 runs at once (default: 1)
 })
 ```
 
-With `concurrency: 5`, each [tick](/guide/engine#polling-vs-manual-ticks) claims up to 5 pending (or reclaimable) runs and executes them concurrently.
+With `concurrency: 5`, the engine keeps up to 5 pending (or reclaimable) runs executing at once. Slots are independent: when a run finishes, its slot is refilled straight away, so one slow run never holds the others idle. A manual [`tick()`](/guide/engine#polling-vs-manual-ticks) fills whichever slots are free.
 
 ## What runs in parallel
 

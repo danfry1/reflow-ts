@@ -61,7 +61,9 @@ const engine = createEngine({
 
 ## Polling vs. manual ticks
 
-`start(pollIntervalMs?)` runs a `tick()` on an interval. For CLI tools or tests, call `tick()` yourself to process exactly one batch:
+`start(pollIntervalMs?)` keeps up to [`concurrency`](/guide/concurrency) runs executing continuously. Work this instance enqueues, resumes, or sends an event to starts at once, and a slot is refilled as soon as its run finishes. Every `pollIntervalMs` the engine also checks storage for work it was not told about directly: runs enqueued by other processes, elapsed sleeps and wait timeouts, due schedules, and stale runs to reclaim.
+
+For CLI tools or tests, call `tick()` yourself instead:
 
 ```typescript
 await storage.initialize() // start() does this for you; tick() alone does not
@@ -69,7 +71,7 @@ await engine.enqueue('order-fulfillment', { orderId: 'ORD_1', amount: 100 })
 await engine.tick()
 ```
 
-Each tick claims up to [`concurrency`](/guide/concurrency) runs and executes them in parallel.
+Each `tick()` claims runs into the free [`concurrency`](/guide/concurrency) slots, executes them in parallel, and resolves once they have finished.
 
 ## Engine configuration
 
@@ -78,7 +80,7 @@ Each tick claims up to [`concurrency`](/guide/concurrency) runs and executes the
 | `storage` | `StorageAdapter` | required | Backend for runs and step results |
 | `workflows` | `Workflow[]` | required | Workflows to register |
 | `hooks` | `EngineHooks` | — | [Lifecycle hooks](/guide/hooks) (may be `async`) |
-| `concurrency` | `number` | `1` | Runs processed in parallel per tick |
+| `concurrency` | `number` | `1` | Maximum runs executing at once |
 | `runLeaseDurationMs` | `number` | `30000` | Lease validity before reclaim |
 | `heartbeatIntervalMs` | `number` | `lease / 3` | Lease renewal interval |
 

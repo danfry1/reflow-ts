@@ -70,7 +70,7 @@ Now the user is charged but never got their welcome email. Worse — you don't k
 
 **Don't use Reflow when:**
 - You need distributed execution across multiple machines
-- You need sub-second latency on workflow dispatch
+- You need sub-second pickup of work enqueued by a different process (it waits for the next poll)
 - You're already running Temporal or similar
 
 ## Performance
@@ -506,17 +506,17 @@ Step-level `timeoutMs` takes precedence over `retry.timeoutMs`.
 
 ### Concurrency
 
-By default, the engine processes one run at a time. Set `concurrency` to process multiple runs in parallel per tick:
+By default, the engine processes one run at a time. Set `concurrency` to execute several runs at once:
 
 ```typescript
 const engine = createEngine({
   storage,
   workflows: [orderWorkflow],
-  concurrency: 5, // Process up to 5 runs in parallel per tick (default: 1)
+  concurrency: 5, // Execute up to 5 runs at once (default: 1)
 })
 ```
 
-With `concurrency: 5`, each tick claims up to 5 pending runs and executes them concurrently. Steps within a single run still execute sequentially.
+With `concurrency: 5`, the engine keeps up to 5 runs executing at once. Slots are independent: when a run finishes, its slot is refilled straight away, so one slow run never holds the others idle. Steps within a single run still execute sequentially.
 
 ### Run Cancellation
 
@@ -853,7 +853,7 @@ Creates an engine that executes workflows.
 | `config.storage` | `StorageAdapter` | required | Storage backend |
 | `config.workflows` | `Workflow[]` | required | Workflows to register |
 | `config.hooks` | `EngineHooks` | `undefined` | Lifecycle hooks (`onRunStart`, `onStepStart`, `onStepComplete`, `onRunComplete`, `onRunFailed`, `onError`). May be sync or `async` (awaited) |
-| `config.concurrency` | `number` | `1` | Number of runs to process in parallel per tick |
+| `config.concurrency` | `number` | `1` | Maximum runs executing at once |
 | `config.runLeaseDurationMs` | `number` | `30000` | How long a claimed run stays `running` before another engine may reclaim it |
 | `config.heartbeatIntervalMs` | `number` | `leaseDuration / 3` | How often the active worker renews its lease |
 
@@ -861,7 +861,7 @@ Returns an `Engine` with the methods below.
 
 ### `engine.start(pollIntervalMs?)`
 
-Initializes storage and starts the polling loop. Runs `tick()` every `pollIntervalMs` (default: `1000`). Call this once at startup, then `enqueue()` work as it arrives.
+Initializes storage and starts the engine. Work this instance enqueues, resumes, or sends an event to starts at once, and a finished run's slot is refilled immediately; every `pollIntervalMs` (default: `1000`) the engine also checks storage for work from elsewhere — other processes, elapsed sleeps, due schedules, stale runs. Call this once at startup, then `enqueue()` work as it arrives.
 
 ### `engine.stop()`
 

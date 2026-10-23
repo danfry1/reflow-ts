@@ -74,7 +74,7 @@ await engine.stop() // stops polling, clears schedules, waits for in-flight work
 
 ## Without a polling loop
 
-For CLI tools and tests, drive the engine manually with `tick()` instead of `start()` — it claims and runs one batch of pending work. Call `storage.initialize()` first:
+For CLI tools and tests, drive the engine manually with `tick()` instead of `start()` — it claims pending work into the free slots and resolves once that work has run. Call `storage.initialize()` first:
 
 ```typescript
 await storage.initialize()

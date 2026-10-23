@@ -76,7 +76,7 @@ export interface EngineConfig<TWorkflows extends readonly AnyWorkflow[] = readon
   workflows: TWorkflows
   /** Optional lifecycle hooks. */
   hooks?: EngineHooks
-  /** Maximum runs to process in parallel per tick (default: 1). */
+  /** Maximum runs this instance executes at once (default: 1). */
   concurrency?: number
   /** How long a run's lease is valid before another engine can reclaim it (default: 30000). */
   runLeaseDurationMs?: number
@@ -199,12 +199,25 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    * disposing the stream, unsubscribes automatically.
    */
   stream(options?: StreamOptions): ResultStream
-  /** Process one batch of pending runs. Useful for tests and CLI tools. */
+  /**
+   * Claim runs into the free `concurrency` slots, execute them, and resolve once
+   * they have finished. Useful for tests and CLI tools; `start()` does this
+   * continuously.
+   */
   tick(): Promise<void>
-  /** Initialize storage and start the polling loop. Call once at startup. */
+  /**
+   * Initialize storage and start executing runs. Call once at startup.
+   *
+   * Up to `concurrency` runs execute at once, and a slot is refilled as soon as
+   * its run finishes. Work this instance enqueues, resumes, or sends an event to
+   * starts immediately; every `pollIntervalMs` the engine also checks storage
+   * for work it was not told about directly — runs from other processes,
+   * elapsed sleeps and wait timeouts, due schedules, and stale runs.
+   */
   start(pollIntervalMs?: number): Promise<void>
   /**
-   * Stop the polling loop and wait for in-flight ticks to finish.
+   * Stop the engine, abort in-flight runs, and wait for its in-flight claims
+   * and runs to settle. Aborted runs are left `running`, to be reclaimed.
    *
    * Durable schedules are deliberately left registered — they belong to the
    * storage, not to this instance, and stopping one worker must not cancel a
@@ -212,6 +225,12 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    * remove one.
    */
   stop(): Promise<void>
+}
+
+/** What one pass of claiming started, and the claim failure that ended it early, if any. */
+interface ClaimBatch {
+  started: Promise<void>[]
+  failure: { error: unknown } | null
 }
 
 interface ActiveRunState {
@@ -270,9 +289,16 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   const subscribers = new Set<AbortableSubscriber<EngineEvent>>()
   let running = false
   let timer: ReturnType<typeof setInterval> | null = null
-  let tickInFlight = false
-  let tickPromise: Promise<void> | null = null
   let stopGeneration = 0
+  /** Runs this instance is executing. Each holds one `concurrency` slot. */
+  const executions = new Set<Promise<void>>()
+  /** Claims awaiting storage. Each has reserved a slot it may not need. */
+  let claimsInFlight = 0
+  /** Every background operation `stop()` must outlast: claims, schedule passes, executions. */
+  const pendingWork = new Set<Promise<unknown>>()
+  let fillInFlight = false
+  let refillRequested = false
+  let pollInFlight = false
 
   for (const wf of workflows) {
     if (registry.has(wf.name)) {
@@ -312,6 +338,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       throw new IdempotencyConflictError(workflowName, idempotencyKey)
     }
 
+    if (created) {
+      requestFill()
+    }
+
     return storedRun
   }
 
@@ -344,7 +374,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     if (!registry.has(run.workflow)) {
       throw new WorkflowNotFoundError(run.workflow)
     }
-    return storage.requeueRun(runId)
+    const requeued = await storage.requeueRun(runId)
+    if (requeued) {
+      requestFill()
+    }
+    return requeued
   }
 
   /**
@@ -670,7 +704,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }
 
     const validated = validateEventPayload(eventName, unit.schema, payload)
-    return storage.deliverEvent(runId, eventName, validated)
+    const delivered = await storage.deliverEvent(runId, eventName, validated)
+    if (delivered) {
+      requestFill()
+    }
+    return delivered
   }
 
   async function schedule(
@@ -748,41 +786,139 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }
   }
 
-  async function tick(): Promise<void> {
-    if (registry.size === 0 || tickInFlight) {
+  /**
+   * Track a background operation so `stop()` can wait for it to settle.
+   * Returns the same promise, so callers keep its result and its rejection.
+   */
+  function track<T>(work: Promise<T>): Promise<T> {
+    pendingWork.add(work)
+    const forget = () => {
+      pendingWork.delete(work)
+    }
+    void work.then(forget, forget)
+    return work
+  }
+
+  /**
+   * Claim runs into this instance's free slots, then start executing them
+   * without waiting for any to finish.
+   *
+   * Slots are reserved before each claim is awaited, so callers racing each
+   * other — the pool refilling while a manual `tick()` runs — can never hold
+   * more than `concurrency` runs between them. The whole batch is claimed
+   * before any of it starts, so the claims run back to back instead of
+   * interleaving with the executions they start.
+   *
+   * A failed claim ends the batch but is returned rather than thrown: the runs
+   * already claimed must still start, or they would sit stranded until their
+   * leases expired.
+   */
+  async function claimIntoFreeSlots(): Promise<ClaimBatch> {
+    const generation = stopGeneration
+    const claimed: ClaimedRun[] = []
+    let failure: ClaimBatch['failure'] = null
+
+    try {
+      while (registry.size > 0 && executions.size + claimsInFlight + claimed.length < concurrency) {
+        claimsInFlight++
+        let run: ClaimedRun | null
+        try {
+          run = await track(storage.claimNextRun(workflowNames, Date.now() - runLeaseDurationMs))
+        } finally {
+          claimsInFlight--
+        }
+
+        if (!run) {
+          break
+        }
+
+        claimed.push(run)
+      }
+    } catch (error) {
+      failure = { error }
+    }
+
+    // Runs claimed as stop() lands are left to their leases, like every other
+    // run a stopped instance holds, and reclaimed once those expire.
+    const started = generation === stopGeneration ? claimed.map(execute) : []
+    return { started, failure }
+  }
+
+  /** Execute a claimed run in its slot, freeing the slot and refilling it when the run ends. */
+  function execute(run: ClaimedRun): Promise<void> {
+    const execution: Promise<void> = executeRun(run).finally(() => {
+      executions.delete(execution)
+      requestFill()
+    })
+    executions.add(execution)
+    return track(execution)
+  }
+
+  /**
+   * Top up free slots from storage, while the polling loop is running.
+   *
+   * Requested on every poll, whenever a run ends, and whenever this instance
+   * enqueues, resumes, or delivers an event to a run — so a free slot is filled
+   * as soon as there is work for it, not at the next poll. Requests that land
+   * mid-fill are folded into one more pass rather than claiming concurrently.
+   */
+  function requestFill(): void {
+    if (!running) {
       return
     }
 
-    const generation = stopGeneration
-    tickInFlight = true
-    const promise = (async () => {
-      try {
-        await processDueSchedules()
+    if (fillInFlight) {
+      refillRequested = true
+      return
+    }
 
-        const staleBefore = Date.now() - runLeaseDurationMs
-        const runs: ClaimedRun[] = []
-
-        for (let index = 0; index < concurrency; index++) {
-          const run = await storage.claimNextRun(workflowNames, staleBefore)
-          if (!run) {
-            break
-          }
-
-          runs.push(run)
+    fillInFlight = true
+    refillRequested = false
+    void claimIntoFreeSlots()
+      .then(({ started, failure }) => {
+        // Nothing awaits the pool, so its failures are reported here.
+        for (const execution of started) {
+          execution.catch(reportError)
         }
-
-        if (generation !== stopGeneration) {
-          return
+        if (failure) {
+          reportError(failure.error)
         }
+      })
+      .finally(() => {
+        fillInFlight = false
+        if (refillRequested) {
+          requestFill()
+        }
+      })
+  }
 
-        await Promise.all(runs.map((run) => executeRun(run)))
-      } finally {
-        tickInFlight = false
-        tickPromise = null
-      }
-    })()
-    tickPromise = promise
-    await promise
+  /** One polling cycle: fire due schedules, then fill free slots. Cycles never overlap. */
+  async function poll(): Promise<void> {
+    if (pollInFlight || !running) {
+      return
+    }
+
+    pollInFlight = true
+    try {
+      await track(processDueSchedules())
+    } finally {
+      pollInFlight = false
+    }
+
+    requestFill()
+  }
+
+  async function tick(): Promise<void> {
+    if (registry.size === 0) {
+      return
+    }
+
+    await track(processDueSchedules())
+    const { started, failure } = await claimIntoFreeSlots()
+    await Promise.all(started)
+    if (failure) {
+      throw failure.error
+    }
   }
 
   async function start(pollIntervalMs = 1000): Promise<void> {
@@ -798,19 +934,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     running = true
 
     const triggerPoll = () => {
-      void runPollCycle().catch(reportError)
+      void poll().catch(reportError)
     }
 
     triggerPoll()
     timer = setInterval(triggerPoll, pollIntervalMs)
-  }
-
-  async function runPollCycle(): Promise<void> {
-    if (!running) {
-      return
-    }
-
-    await tick()
   }
 
   async function stop(): Promise<void> {
@@ -828,14 +956,17 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }
 
     // End all streams and unblock any producer paused on backpressure, so a
-    // pending tick can settle instead of deadlocking on a consumer that is gone.
+    // pending run can settle instead of deadlocking on a consumer that is gone.
     for (const subscriber of subscribers) {
       subscriber.close()
     }
     subscribers.clear()
 
-    if (tickPromise) {
-      await tickPromise.catch(noop)
+    // Settling one operation can start another (a run ending requests a fill,
+    // which no-ops once stopped but may already be claiming), so drain until
+    // nothing is left rather than snapshotting once.
+    while (pendingWork.size > 0) {
+      await Promise.allSettled(pendingWork)
     }
   }
 

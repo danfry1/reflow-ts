@@ -85,7 +85,7 @@ Solo devs and small teams who need reliable multi-step workflows without Tempora
 
 Don't use Reflow when:
 - You need distributed execution across multiple machines
-- You need sub-second latency on workflow dispatch
+- You need sub-second pickup of work enqueued by a different process (it waits for the next poll)
 - You're already running Temporal or similar
 
 ## Core Concepts
@@ -273,7 +273,7 @@ Reflow automatically resumes workflows from the last completed step. If the proc
 
 ### Concurrency
 
-By default, the engine processes one run at a time. Set concurrency to process multiple runs in parallel per tick:
+By default, the engine processes one run at a time. Set concurrency to execute several runs at once:
 
 ```typescript
 const engine = createEngine({
@@ -283,7 +283,7 @@ const engine = createEngine({
 })
 ```
 
-Each tick claims up to concurrency pending runs and executes them concurrently. Steps within a single run still execute sequentially.
+The engine keeps up to concurrency runs executing at once and refills a slot as soon as its run finishes, so one slow run never holds the others idle. Steps within a single run still execute sequentially.
 
 ### Cancellation
 
@@ -469,13 +469,13 @@ Attaches failure handler. Receives { error, stepName, input }. Called when a ste
 | config.storage              | StorageAdapter | required         | Storage backend                                |
 | config.workflows            | Workflow[]     | required         | Workflows to register                          |
 | config.hooks                | EngineHooks    | undefined        | Lifecycle hooks                                |
-| config.concurrency          | number         | 1                | Runs to process in parallel per tick           |
+| config.concurrency          | number         | 1                | Maximum runs executing at once                 |
 | config.runLeaseDurationMs   | number         | 30000            | Lease duration before reclaim                  |
 | config.heartbeatIntervalMs  | number         | leaseDuration/3  | Lease renewal interval                         |
 
 ### engine.start(pollIntervalMs?)
 
-Initializes storage and starts polling loop. Default pollIntervalMs: 1000. Call once at startup.
+Initializes storage and starts the engine. Work this instance enqueues, resumes, or sends an event to starts at once; every pollIntervalMs (default 1000) it also checks storage for work from other processes, elapsed sleeps, due schedules, and stale runs. Call once at startup.
 
 ### engine.stop()
 
