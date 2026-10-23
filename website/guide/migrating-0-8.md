@@ -6,7 +6,7 @@
 
 A few behaviours change in ways your code could notice:
 
-- **Retry backoff suspends the run.** Between attempts the run is `sleeping` (with `wakeAt` set to the next attempt) and the step is `retrying`, instead of the run staying `running`. A crash mid-backoff no longer restarts the step's attempts. Parallel branches still retry in process.
+- **Retry backoff suspends the run on a started engine.** Between attempts the run is `sleeping` (with `wakeAt` set to the next attempt) and the step is `retrying`, instead of the run staying `running`, and `onRunStart` fires again when it resumes. A crash mid-backoff no longer restarts the step's attempts. An engine driven only by `tick()` — and so `testEngine` — still waits out the backoff in process, as do parallel branches. A 0.7 worker that picks up a backing-off run, mid rolling deploy or after a rollback, starts that step's attempts over.
 - **`StepStatus` gains `'retrying'`.** An exhaustive `switch` over step statuses needs a case for it.
 - **A started engine keeps every slot busy** and starts work it enqueues at once, so runs can begin sooner than the next poll, and more of them run concurrently than before when some are slow.
 - **`tick()` fills free slots** rather than skipping when another tick is in flight. On an engine that is not otherwise running — the usual way to drive one in tests — it behaves as before.
