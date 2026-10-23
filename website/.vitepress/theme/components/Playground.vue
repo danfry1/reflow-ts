@@ -495,6 +495,9 @@ onUnmounted(async () => {
 .pg-frame { display: block; width: 100%; height: 720px; border: 1px solid var(--vp-c-divider); border-radius: 10px; background: var(--vp-c-bg-alt); }
 
 @media (max-width: 860px) {
+  .pg-story { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; font-size: 0.86rem; }
+  .pg-code { font-size: 0.8rem; }
+  .pg-code .ln { padding-right: 28px; }
   .pg-world { grid-template-columns: minmax(0, 1fr); }
   .pg-col { border-left: 0; border-top: 1px solid var(--vp-c-divider); }
   .pg-col:first-child { border-top: 0; }
