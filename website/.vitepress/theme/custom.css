@@ -1,41 +1,54 @@
 /* ──────────────────────────────────────────────────────────────
-   Reflow theme — refined VitePress.
-   Warm cream/ink palette with an orange accent, carried over from
-   the original Reflow site. Keeps the familiar docs structure.
+   Reflow theme — "Signal".
+   Navy ink on a cool canvas. Colour carries signal meaning, as in the
+   dashboard: blue for live work, amber for a durable hold, green for
+   proceed, red for stop. The brand accent is the live blue.
    ────────────────────────────────────────────────────────────── */
 
 :root {
-  /* Orange accent; the dark shade reads on white for links/inline code. */
-  --vp-c-brand-1: #b74e1b;
-  --vp-c-brand-2: #e46d2f;
-  --vp-c-brand-3: #e46d2f;
-  --vp-c-brand-soft: rgba(228, 109, 47, 0.14);
+  --vp-c-brand-1: #2453c7;
+  --vp-c-brand-2: #2563eb;
+  --vp-c-brand-3: #2563eb;
+  --vp-c-brand-soft: rgba(37, 99, 235, 0.12);
 
-  --vp-home-hero-name-color: transparent;
-  --vp-home-hero-name-background: linear-gradient(120deg, #b74e1b 10%, #e46d2f 60%, #1d7a67);
+  --vp-c-bg: #ffffff;
+  --vp-c-bg-alt: #f4f6f9;
+  --vp-c-bg-soft: #f4f6f9;
+  --vp-c-text-1: #14213d;
+  --vp-c-text-2: #4a5672;
 
-  --vp-home-hero-image-background-image: linear-gradient(120deg, rgba(228, 109, 47, 0.5), rgba(29, 122, 103, 0.5));
-  --vp-home-hero-image-filter: blur(48px);
+  --vp-home-hero-name-color: #14213d;
 
   --vp-custom-block-tip-border: transparent;
   --vp-custom-block-tip-bg: var(--vp-c-brand-soft);
-  --vp-custom-block-tip-code-bg: rgba(228, 109, 47, 0.08);
+  --vp-custom-block-tip-code-bg: rgba(37, 99, 235, 0.08);
 }
 
 .dark {
-  --vp-c-bg: #10211b;
-  --vp-c-bg-alt: #0c1a15;
-  --vp-c-bg-soft: #162c24;
-  --vp-c-bg-elv: #162c24;
-  /* Brighter orange/teal for contrast on the dark green background. */
-  --vp-c-brand-1: #f5a06e;
-  --vp-c-brand-2: #e46d2f;
-  --vp-c-brand-3: #e46d2f;
-  --vp-c-brand-soft: rgba(228, 109, 47, 0.18);
-  --vp-home-hero-name-background: linear-gradient(120deg, #f5a06e 10%, #f4d56e 90%);
+  --vp-c-bg: #0e1626;
+  --vp-c-bg-alt: #0a111e;
+  --vp-c-bg-soft: #152036;
+  --vp-c-bg-elv: #152036;
+  --vp-c-text-1: #e6eaf2;
+  --vp-c-text-2: #a9b3c7;
+  --vp-c-brand-1: #8fb4ff;
+  --vp-c-brand-2: #6e9bff;
+  --vp-c-brand-3: #2563eb;
+  --vp-c-brand-soft: rgba(110, 155, 255, 0.16);
+  --vp-home-hero-name-color: #e6eaf2;
 }
 
-/* Typography ---------------------------------------------------- */
+/* Typography ----------------------------------------------------
+   Headings and figures in a DIN signage face, as in the dashboard;
+   Barlow Semi Condensed, an open DIN-like face, where DIN is not
+   installed. Body text stays Inter. */
+:root {
+  --rf-sign: "DIN Alternate", Bahnschrift, "Barlow Semi Condensed", "Helvetica Neue", Arial, sans-serif;
+}
+.vp-doc h1, .vp-doc h2, .vp-doc h3, .VPNavBarTitle .title {
+  font-family: var(--rf-sign);
+  font-weight: 700;
+}
 .vp-doc h1,
 .vp-doc h2 {
   letter-spacing: -0.02em;
@@ -53,7 +66,76 @@
 }
 
 .vp-doc th {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* Home ------------------------------------------------------------
+   One column, left aligned, read top to bottom: what it is, the demo,
+   the code, the dashboard, the rest. No hero, no feature cards. */
+.landing { max-width: 980px; margin: 0 auto; padding: 64px 24px 96px; }
+.landing .home-intro { max-width: 720px; }
+.landing .home-intro h1 {
+  margin: 0 0 20px;
+  font-size: clamp(2.6rem, 6vw, 4.2rem);
+  line-height: 1.02;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+  color: var(--vp-c-text-1);
+}
+.landing .home-lede { margin: 0 0 24px; font-size: 1.2rem; line-height: 1.65; color: var(--vp-c-text-2); }
+.landing .home-start { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 28px; }
+.landing .home-start div[class*='language-'] { flex: 0 1 360px; margin: 0; }
+.landing .home-facts { display: flex; flex-wrap: wrap; gap: 6px 28px; margin: 22px 0 0; font-size: 0.92rem; color: var(--vp-c-text-2); }
+.landing .home-links { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 0; font-weight: 600; }
+.landing .home-links a { text-decoration: underline; text-underline-offset: 4px; text-decoration-thickness: 1px; }
+.landing .home-section { margin-top: 88px; }
+.landing .home-play { margin-top: 56px; }
+.landing .home-play > h2 { margin: 0 0 8px; padding: 0; border: 0; font-size: 2rem; }
+.landing .home-play > p { max-width: 680px; margin: 0 0 20px; color: var(--vp-c-text-2); }
+
+/* The code, with a note beside it on what each step is guaranteed. */
+.landing .home-code { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 28px; align-items: start; margin-top: 20px; }
+.landing .home-code div[class*='language-'] { margin: 0; }
+.landing .home-notes { margin: 0; padding: 0; list-style: none; counter-reset: note; }
+.landing .home-notes li { margin: 0 0 18px; padding-top: 12px; border-top: 1px solid var(--vp-c-divider); color: var(--vp-c-text-2); line-height: 1.6; }
+.landing .home-notes strong { display: block; color: var(--vp-c-text-1); font-family: var(--vp-font-family-mono); font-size: 0.92rem; font-weight: 600; }
+@media (max-width: 900px) { .landing .home-code { grid-template-columns: minmax(0, 1fr); } }
+.landing .home-section > h2 {
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+  font-size: 2rem;
+  letter-spacing: -0.005em;
+}
+.landing .home-section > p { max-width: 680px; color: var(--vp-c-text-2); }
+
+/* Long lines scroll inside their block rather than widening the page. */
+.landing div[class*='language-'], .landing pre { max-width: 100%; overflow-x: auto; }
+.landing table { display: block; max-width: 100%; overflow-x: auto; }
+
+.landing .home-shot { margin: 28px 0 0; }
+.landing .home-shot img {
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+  border: 1px solid var(--vp-c-divider);
+}
+/* Screenshots come in both themes; each shows with its own. */
+.shot-dark { display: none; }
+.dark .shot-dark { display: block; }
+.dark .shot-light { display: none; }
+.vp-doc .dashboard-shot { width: 100%; height: auto; margin: 20px 0 8px; border-radius: 8px; border: 1px solid var(--vp-c-divider); }
+
+.landing .home-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 40px; margin: 24px 0 0; }
+.landing .home-list div { border-top: 1px solid var(--vp-c-divider); padding-top: 14px; }
+.landing .home-list dt { margin: 0 0 4px; font-family: var(--rf-sign); font-size: 1.15rem; font-weight: 700; }
+.landing .home-list dt a { color: var(--vp-c-text-1); text-decoration: none; }
+.landing .home-list dt a:hover { color: var(--vp-c-brand-1); }
+.landing .home-list dd { margin: 0; color: var(--vp-c-text-2); line-height: 1.55; }
+@media (max-width: 640px) {
+  .landing { padding-top: 32px; }
+  .landing .home-lede { font-size: 1.05rem; }
+  .landing .home-list { grid-template-columns: minmax(0, 1fr); }
+  .landing .home-section { margin-top: 64px; }
 }
