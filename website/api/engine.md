@@ -99,6 +99,20 @@ const page2 = last
 ```
 
 
+## `engine.waitForRun(runId, options?)`
+
+Waits for a run to finish and resolves with it — `completed`, `failed`, or `cancelled`; check `status`, `output`, and `error` to see which. A failed run resolves rather than rejects. Resolves at once if the run has already finished; throws [`RunNotFoundError`](/api/errors) for an unknown run.
+
+```typescript
+const { id } = await engine.enqueue('generate-report', { accountId })
+const run = await engine.waitForRun(id, { signal: AbortSignal.timeout(30_000) })
+
+if (run.status === 'completed') return run.output
+throw new Error(`Report failed at ${run.error?.stepName}: ${run.error?.message}`)
+```
+
+A run finishing on this engine resolves the wait as soon as its hooks and `onFailure` have run. One finished by any other engine instance — in another process, or another engine in this one — is noticed on the next read of storage, every `pollIntervalMs` (default `1000`). `signal` stops the wait early, rejecting with its reason — `AbortSignal.timeout(ms)` gives a deadline. The wait reads storage itself, so it works on an engine that was never started, and it outlives `stop()`; bound it with a `signal` if the run might never finish. Waiting does not affect the run in any way.
+
 ## `engine.countRuns(filter?)`
 
 Returns how many runs are in each status, optionally for one workflow — every status present, zero or not. Cheap enough to poll for a status bar or a health check.

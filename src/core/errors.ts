@@ -24,6 +24,7 @@ import type { PersistedValue } from './types'
 export type ReflowErrorCode =
   | 'CONFIG'
   | 'WORKFLOW_NOT_FOUND'
+  | 'RUN_NOT_FOUND'
   | 'DUPLICATE_WORKFLOW'
   | 'DUPLICATE_STEP'
   | 'PARALLEL_COMPLETE'
@@ -132,6 +133,18 @@ export class WorkflowNotFoundError extends ReflowError {
 
   protected override context() {
     return { workflowName: this.workflowName }
+  }
+}
+
+/** Thrown when an operation names a run that storage does not have. */
+export class RunNotFoundError extends ReflowError {
+  constructor(public readonly runId: string) {
+    super('RUN_NOT_FOUND', `Run "${runId}" not found`)
+    this.name = 'RunNotFoundError'
+  }
+
+  protected override context() {
+    return { runId: this.runId }
   }
 }
 
