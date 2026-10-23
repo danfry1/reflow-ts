@@ -37,11 +37,23 @@ export interface DashboardOptions {
    * Decide whether a request may see the dashboard. Called for every request,
    * page and API alike; return `false` to answer 401.
    *
-   * Required, because run inputs and outputs are your application's data. To
-   * serve it unauthenticated — on a loopback port in development, say — pass
-   * `() => true` explicitly.
+   * Required, because run inputs and outputs are your application's data.
+   * Check something the request *carries* — a session cookie, a bearer token —
+   * not where it comes from: a page on another site can reach a loopback port
+   * through DNS rebinding. To serve it with no check at all, pass `() => true`
+   * together with {@link DashboardOptions.allowedHosts}.
    */
   authorize(request: Request): boolean | Promise<boolean>
+  /**
+   * The `Host` values the dashboard answers to, such as `['localhost:4400']`
+   * or `['admin.example.com']`. Requests for any other host get 421.
+   *
+   * Set it whenever `authorize` does not check credentials. Otherwise a site
+   * the viewer visits can re-point its own domain at the dashboard's address
+   * (DNS rebinding) and read it as same-origin. Also list the public host when
+   * a proxy in front rewrites `Host`, so actions arriving from it are accepted.
+   */
+  allowedHosts?: readonly string[]
   /**
    * The engine running these workflows. Optional: with it the dashboard can
    * cancel and resume runs and update live as they progress; without it the
@@ -61,6 +73,9 @@ export interface DashboardOptions {
 /** A Fetch API request handler. */
 export type DashboardHandler = (request: Request) => Promise<Response>
 
+/** How often an idle live-update connection sends a keep-alive comment. */
+const HEARTBEAT_MS = 25_000
+
 /** Largest page of runs the API returns at once. */
 const MAX_PAGE_SIZE = 200
 
@@ -75,6 +90,7 @@ const ACTION_HEADER = 'x-reflow-dashboard'
  */
 export function createDashboard(options: DashboardOptions): DashboardHandler {
   const { storage, engine, authorize } = options
+  const allowedHosts = options.allowedHosts?.map((host) => host.toLowerCase())
   const basePath = normalizeBasePath(options.basePath ?? '/')
   const title = options.title ?? 'Reflow'
 
@@ -85,7 +101,19 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       return text(404, 'Not found')
     }
 
-    if (!(await authorize(request))) {
+    if (allowedHosts && !allowedHosts.includes(url.host.toLowerCase())) {
+      return text(421, 'This dashboard does not answer for that host')
+    }
+
+    let authorized: boolean
+    try {
+      authorized = await authorize(request)
+    } catch {
+      // Deliberately generic: the caller is unauthenticated, and an
+      // authorize() error message can echo what they sent.
+      return text(500, 'Could not check authorization')
+    }
+    if (!authorized) {
       return text(401, 'Not authorized to view this dashboard')
     }
 
@@ -103,7 +131,10 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
   }
 
   async function handle(request: Request, url: URL, route: string): Promise<Response> {
-    const segments = route.split('/').filter((segment) => segment.length > 0)
+    const segments = decodeSegments(route)
+    if (segments === null) {
+      return text(400, 'Malformed path')
+    }
     const [head, second, third, fourth] = segments
     const method = request.method
 
@@ -139,7 +170,7 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
 
     if (second === 'runs' && third !== undefined && (fourth === 'cancel' || fourth === 'resume') && segments.length === 4) {
       if (method !== 'POST') return methodNotAllowed('POST')
-      if (!isSameOriginAction(request, url)) {
+      if (!isSameOriginAction(request, url, allowedHosts)) {
         return json(403, { error: 'Actions must come from the dashboard page itself' })
       }
       if (!engine) {
@@ -238,31 +269,81 @@ function summarize(run: WorkflowRun): Omit<WorkflowRun, 'input' | 'output'> {
  * Stream a notice to the page whenever a run changes, as server-sent events.
  *
  * Only the run id and event type are sent; the page re-reads what it shows,
- * so nothing here depends on events arriving or being complete.
+ * so nothing here depends on events arriving or being complete. That is what
+ * lets a slow client be handled without either cost a buffer would bring:
+ * notices it cannot take yet are dropped and folded into one `resync` once it
+ * catches up, so a stalled tab neither grows server memory nor — since the
+ * engine stream is never left to fill — slows the engine down.
  */
 function liveUpdates(request: Request, engine: Pick<Engine, 'stream'>): Response {
-  const events = engine.stream({ bufferSize: 100 })
+  const events = engine.stream()
   const encoder = new TextEncoder()
+  let missed = false
+  // Set once the stream is closed, errored, or cancelled by the client; the
+  // controller accepts no further calls after any of the three.
+  let settled = false
+  let heartbeat: ReturnType<typeof setInterval> | null = null
+
+  const stopHeartbeat = () => {
+    if (heartbeat) {
+      clearInterval(heartbeat)
+      heartbeat = null
+    }
+  }
 
   const body = new ReadableStream<Uint8Array>({
-    async start(controller) {
+    // Not async: the stream only starts calling pull() — which delivers the
+    // resync — once start() returns, so the event loop runs detached.
+    start(controller) {
       const close = () => {
         void events[Symbol.asyncDispose]()
       }
       request.signal.addEventListener('abort', close, { once: true })
 
-      controller.enqueue(encoder.encode(': connected\n\n'))
-      try {
-        for await (const event of events) {
-          const notice = JSON.stringify({ type: event.type, runId: event.runId })
-          controller.enqueue(encoder.encode(`data: ${notice}\n\n`))
+      const send = (chunk: string) => {
+        if (!settled && (controller.desiredSize ?? 0) > 0) {
+          controller.enqueue(encoder.encode(chunk))
+          return true
         }
-      } finally {
+        return false
+      }
+
+      controller.enqueue(encoder.encode(': connected\n\n'))
+      // A comment every so often lets either end notice a dead connection.
+      heartbeat = setInterval(() => send(': ping\n\n'), HEARTBEAT_MS)
+      void (async () => {
+        for await (const event of events) {
+          if (!send(`data: ${JSON.stringify({ type: event.type, runId: event.runId })}\n\n`)) {
+            missed = true
+          }
+        }
+      })().then(
+        () => {
+          if (!settled) {
+            settled = true
+            controller.close()
+          }
+        },
+        (error: unknown) => {
+          if (!settled) {
+            settled = true
+            controller.error(error)
+          }
+        },
+      ).finally(() => {
+        stopHeartbeat()
         request.signal.removeEventListener('abort', close)
-        controller.close()
+      })
+    },
+    pull(controller) {
+      if (missed && !settled) {
+        missed = false
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'resync' })}\n\n`))
       }
     },
     async cancel() {
+      settled = true
+      stopHeartbeat()
       await events[Symbol.asyncDispose]()
     },
   })
@@ -283,14 +364,41 @@ function liveUpdates(request: Request, engine: Pick<Engine, 'stream'>): Response
  *
  * A cross-site form or script cannot set a custom header without the browser
  * first asking this server's permission, which it never grants, so requiring
- * one rules out cross-site request forgery. A present `Origin` must also match.
+ * one rules out cross-site request forgery. A present `Origin` must also name
+ * this host, or one in `allowedHosts`. Hosts are compared rather than whole
+ * origins so that a TLS-terminating proxy, which turns `https://` into
+ * `http://` on the way in, does not block every action.
  */
-function isSameOriginAction(request: Request, url: URL): boolean {
+function isSameOriginAction(request: Request, url: URL, allowedHosts: readonly string[] | undefined): boolean {
   if (request.headers.get(ACTION_HEADER) !== '1') {
     return false
   }
   const origin = request.headers.get('origin')
-  return origin === null || origin === url.origin
+  if (origin === null) {
+    return true
+  }
+  let originHost: string
+  try {
+    originHost = new URL(origin).host.toLowerCase()
+  } catch {
+    // `Origin: null` and other opaque origins name no host to trust.
+    return false
+  }
+  return originHost === url.host.toLowerCase() || (allowedHosts?.includes(originHost) ?? false)
+}
+
+/** Split a route into decoded segments, or `null` if one is not valid percent-encoding. */
+function decodeSegments(route: string): string[] | null {
+  const segments: string[] = []
+  for (const segment of route.split('/')) {
+    if (segment.length === 0) continue
+    try {
+      segments.push(decodeURIComponent(segment))
+    } catch {
+      return null
+    }
+  }
+  return segments
 }
 
 /** The path below `basePath`, or `null` when the request is outside the dashboard. */

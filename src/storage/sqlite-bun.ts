@@ -11,7 +11,7 @@
  * ```
  */
 
-import { SqliteStorageBase } from './sqlite/core'
+import { SqliteStorageBase, type SQLiteStorageOptions } from './sqlite/core'
 import type { SqlParam, SqliteDriver } from './sqlite/driver'
 
 // Minimal type declarations for bun:sqlite to enable compilation on any runtime.
@@ -34,10 +34,14 @@ interface BunStatement {
   all(...params: SqlParam[]): unknown[]
 }
 
-function openBunSqlite(path: string): SqliteDriver {
+export type { SQLiteStorageOptions }
+
+function openBunSqlite(path: string, options: SQLiteStorageOptions): SqliteDriver {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Database } = require('bun:sqlite') as { Database: new (path: string) => BunDatabase }
-  const db = new Database(path)
+  const { Database } = require('bun:sqlite') as {
+    Database: new (path: string, options?: { readonly?: boolean }) => BunDatabase
+  }
+  const db = new Database(path, options.readOnly ? { readonly: true } : undefined)
   // Prepared fresh each call, unlike the other drivers: a bun:sqlite statement
   // keeps the column names it was prepared with, so after another connection
   // rebuilds a table (a migration in a newer process, mid rolling deploy) a
@@ -62,7 +66,7 @@ function openBunSqlite(path: string): SqliteDriver {
  * transactional claiming for safe multi-process access.
  */
 export class SQLiteStorage extends SqliteStorageBase {
-  constructor(path: string) {
-    super(openBunSqlite(path))
+  constructor(path: string, options: SQLiteStorageOptions = {}) {
+    super(openBunSqlite(path, options), options)
   }
 }

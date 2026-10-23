@@ -62,6 +62,17 @@ interface WorkflowScheduleRow {
   updated_at: number
 }
 
+/** Options for the SQLite adapters' constructors. */
+export interface SQLiteStorageOptions {
+  /**
+   * Open the database for reading only: every write fails, `initialize()`
+   * included, and the file is left exactly as it was — no journal-mode change.
+   * The file must already exist. For inspecting a database another process
+   * owns, or a backup.
+   */
+  readOnly?: boolean
+}
+
 /**
  * The SQLite storage adapter, independent of which binding executes the SQL.
  *
@@ -73,11 +84,18 @@ interface WorkflowScheduleRow {
 export class SqliteStorageBase implements StorageAdapter {
   private readonly driver: SqliteDriver
 
-  constructor(driver: SqliteDriver) {
+  constructor(driver: SqliteDriver, options: SQLiteStorageOptions = {}) {
     this.driver = driver
     // First, so that even switching the journal mode waits for a lock held by
     // another process opening the same file, instead of failing at once.
     this.driver.exec('PRAGMA busy_timeout = 5000')
+    if (options.readOnly) {
+      // Refuses every write on this connection, whatever the binding's own
+      // read-only flag does or does not honour. The journal-mode pragma below
+      // would itself be a persistent write to the file, so it is skipped too.
+      this.driver.exec('PRAGMA query_only = ON')
+      return
+    }
     this.driver.exec('PRAGMA journal_mode = WAL')
     this.driver.exec('PRAGMA synchronous = NORMAL')
   }

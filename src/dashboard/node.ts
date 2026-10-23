@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 
 /**
  * Adapt a Fetch API handler — such as the one `createDashboard()` returns —
@@ -21,12 +22,13 @@ export function toNodeHandler(
   handler: (request: Request) => Promise<Response>,
 ): (req: IncomingMessage, res: ServerResponse) => void {
   return (req, res) => {
-    void serve(handler, req, res).catch((error: unknown) => {
+    void serve(handler, req, res).catch(() => {
+      // Nothing about the failure is sent: the caller may be unauthenticated.
       if (!res.headersSent) {
-        res.statusCode = 500
-        res.end(error instanceof Error ? error.message : 'Internal error')
+        res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' })
+        res.end('Internal error')
       } else {
-        res.destroy(error instanceof Error ? error : undefined)
+        res.destroy()
       }
     })
   }
@@ -69,23 +71,31 @@ async function serve(
   }
 
   res.flushHeaders()
-  // `Readable.fromWeb` would do, but its types disagree across Node versions
-  // supported here; reading the stream by hand works on all of them.
-  const reader = response.body.getReader()
-  const stream = new Readable({
+  // `pipeline` forwards an error from either side and tears both down, so a
+  // body that fails mid-stream ends this response instead of crashing the
+  // process with an unhandled 'error' event.
+  await pipeline(readableFrom(response.body), res)
+}
+
+/**
+ * A Node readable over a web stream. `Readable.fromWeb` would do, but its types
+ * disagree across the Node versions supported here.
+ */
+function readableFrom(body: ReadableStream<Uint8Array>): Readable {
+  const reader = body.getReader()
+  return new Readable({
     read() {
       reader.read().then(
         ({ done, value }) => {
           this.push(done ? null : value)
         },
         (error: unknown) => {
-          this.destroy(error instanceof Error ? error : undefined)
+          this.destroy(error instanceof Error ? error : new Error(String(error)))
         },
       )
     },
     destroy(error, callback) {
-      reader.cancel(error).then(() => callback(error), () => callback(error))
+      reader.cancel(error ?? undefined).then(() => callback(error), () => callback(error))
     },
   })
-  stream.pipe(res)
 }

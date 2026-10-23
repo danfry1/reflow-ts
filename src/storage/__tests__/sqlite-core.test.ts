@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
-import { existsSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { SqliteStorageBase } from '../sqlite/core'
 import type { SqliteDriver } from '../sqlite/driver'
 import { ConfigError, SerializationError } from '../../core/errors'
@@ -246,5 +246,59 @@ describe('SqliteStorageBase migrations', () => {
     await expect(storage.initialize()).rejects.toBeInstanceOf(ConfigError)
     expect(userVersion()).toBe(SCHEMA_VERSION + 1)
     storage.close()
+  })
+})
+
+describe('SQLiteStorage read-only', () => {
+  beforeEach(removeDatabase)
+  afterEach(removeDatabase)
+
+  /** An initialized database switched back to the rollback journal, as another tool might leave it. */
+  async function seed(): Promise<void> {
+    const storage = new SQLiteStorage(DB_PATH)
+    await storage.initialize()
+    storage.close()
+    const db = new Database(DB_PATH)
+    db.pragma('journal_mode = DELETE')
+    db.close()
+  }
+
+  it('reads an existing database', async () => {
+    const writable = new SQLiteStorage(DB_PATH)
+    await writable.initialize()
+    await writable.createRun(makeRun())
+    writable.close()
+
+    const storage = new SQLiteStorage(DB_PATH, { readOnly: true })
+
+    expect((await storage.getRun('run_1'))?.status).toBe('pending')
+    storage.close()
+  })
+
+  it('refuses every write, migrations included', async () => {
+    await seed()
+    const storage = new SQLiteStorage(DB_PATH, { readOnly: true })
+
+    await expect(storage.createRun(makeRun())).rejects.toThrow(/readonly|read-only|query_only|attempt to write/i)
+    storage.close()
+  })
+
+  it('leaves the file exactly as it found it, journal mode included', async () => {
+    await seed()
+    const before = readFileSync(DB_PATH)
+
+    const storage = new SQLiteStorage(DB_PATH, { readOnly: true })
+    await storage.countRuns()
+    storage.close()
+
+    expect(readFileSync(DB_PATH).equals(before)).toBe(true)
+    const db = new Database(DB_PATH, { readonly: true })
+    expect(db.pragma('journal_mode', { simple: true })).toBe('delete')
+    db.close()
+  })
+
+  it('does not create a database that is not there', () => {
+    expect(() => new SQLiteStorage(DB_PATH, { readOnly: true })).toThrow()
+    expect(existsSync(DB_PATH)).toBe(false)
   })
 })

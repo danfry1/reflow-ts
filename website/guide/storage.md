@@ -38,6 +38,16 @@ Requires **Node.js ≥ 22.5** (when `node:sqlite` landed). On Node 22.x and 23.x
 Use `sqlite-node-builtin` if you're on Node ≥ 22.5 and want to drop the `better-sqlite3` native dependency. Use `sqlite-node` for broad compatibility (Node ≥ 18.18) or to avoid the experimental module.
 :::
 
+### Read-only connections
+
+Every SQLite adapter can open an existing database for reading only — to inspect a database another process owns, or a backup — without changing a byte of it:
+
+```typescript
+const storage = new SQLiteStorage('./workflows.db', { readOnly: true })
+```
+
+Writes fail, `initialize()` included, and the file's journal mode is left as it was. This is how [`reflow-ts dashboard`](/guide/dashboard) opens a database.
+
 ## MemoryStorage
 
 An in-memory adapter, used internally by the [test helper](/guide/testing). For custom use, import it from `reflow-ts/test`. State is lost when the process exits — it offers no durability, so it's for tests and ephemeral work only.

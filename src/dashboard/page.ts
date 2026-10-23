@@ -214,6 +214,13 @@ pre.json { margin: 0; padding: 12px 14px; background: var(--canvas); border-radi
 const SCRIPT = String.raw`
 'use strict';
 (function () {
+  // Every request below is relative to the page, so the page must sit under a
+  // trailing slash — a host that strips the mount path (Express) cannot add it.
+  if (!/\/$/.test(location.pathname)) {
+    location.replace(location.pathname + '/' + location.search + location.hash);
+    return;
+  }
+
   var STATUS_ORDER = ['running', 'waiting', 'sleeping', 'pending', 'failed', 'completed', 'cancelled'];
   var STATUS_LABEL = {
     all: 'All runs', running: 'Running', waiting: 'Waiting', sleeping: 'Sleeping', pending: 'Queued',
@@ -304,7 +311,11 @@ const SCRIPT = String.raw`
     var hash = location.hash.replace(/^#/, '') || '/';
     var match = hash.match(/^\/runs\/(.+)$/);
     if (hash === '/schedules') return { view: 'schedules' };
-    return { view: 'runs', runId: match ? decodeURIComponent(match[1]) : null };
+    var runId = null;
+    if (match) {
+      try { runId = decodeURIComponent(match[1]); } catch (error) { runId = match[1]; }
+    }
+    return { view: 'runs', runId: runId };
   }
 
   function markView(view) {
@@ -644,6 +655,9 @@ const SCRIPT = String.raw`
     source.onopen = function () { liveBadge.hidden = false; };
     source.onerror = function () { liveBadge.hidden = true; };
     source.onmessage = soon;
+    // A safety net: if the stream goes quiet without closing — an engine that
+    // stopped, a proxy holding the connection — the view still catches up.
+    setInterval(function () { if (document.visibilityState === 'visible') refresh(); }, 30000);
   }
 
   window.addEventListener('hashchange', function () {

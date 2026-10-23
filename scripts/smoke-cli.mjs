@@ -4,7 +4,9 @@
  * rather than only through its imports. Run after `bun run build`.
  */
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createEngine, createWorkflow } from '../dist/index.mjs'
@@ -21,6 +23,8 @@ await storage.initialize()
 await engine.enqueue('smoke', {})
 await engine.tick()
 storage.close()
+const digest = () => createHash('sha256').update(readFileSync(path)).digest('hex')
+const before = digest()
 
 const cli = spawn(process.execPath, ['dist/cli.mjs', 'dashboard', path, '--port', '0'], { stdio: ['ignore', 'pipe', 'inherit'] })
 try {
@@ -42,7 +46,22 @@ try {
   if (page.status !== 200 || !(await page.text()).includes('<main id="app"')) {
     throw new Error(`page did not render (status ${page.status})`)
   }
-  console.log('OK: reflow-ts dashboard serves a database read-only')
+  // A page re-pointing its own domain at this address sends its own Host.
+  const rebound = await new Promise((resolve, reject) => {
+    const { port } = new URL(url)
+    request({ host: '127.0.0.1', port, path: '/api/runs', headers: { host: `attacker.example:${port}` } }, (res) => {
+      res.resume()
+      resolve(res.statusCode)
+    }).on('error', reject).end()
+  })
+  if (rebound !== 421) {
+    throw new Error(`a request for another host got ${rebound}, not 421`)
+  }
+
+  if (digest() !== before) {
+    throw new Error('serving the dashboard changed the database file')
+  }
+  console.log('OK: reflow-ts dashboard serves a database read-only, untouched, to its own host only')
 } finally {
   cli.kill()
   rmSync(dir, { recursive: true, force: true })

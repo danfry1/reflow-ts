@@ -11,8 +11,9 @@
 import { existsSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { resolve } from 'node:path'
+import { isIPv4, isIPv6 } from 'node:net'
 import { parseArgs } from 'node:util'
-import type { SqliteStorageBase } from './storage/sqlite/core'
+import type { SqliteStorageBase, SQLiteStorageOptions } from './storage/sqlite/core'
 import { createDashboard, toNodeHandler } from './dashboard/index'
 
 const USAGE = `Usage: reflow-ts dashboard <database> [options]
@@ -70,7 +71,9 @@ async function main(argv: readonly string[]): Promise<void> {
     throw new UsageError(`--port must be a port number, not "${values.port}"`)
   }
 
-  const storage = await openStorage(path)
+  // Read-only unless asked to migrate: an inspector must leave the file as it
+  // found it, journal mode included.
+  let storage = await openStorage(path, { readOnly: true })
   const { current, latest } = storage.schemaVersion()
   if (current > latest) {
     throw new UsageError(`${path} was written by a newer reflow-ts (schema ${current}); upgrade reflow-ts to inspect it`)
@@ -82,24 +85,45 @@ async function main(argv: readonly string[]): Promise<void> {
           'to upgrade it, or pass --migrate to upgrade it now.',
       )
     }
-    await storage.initialize()
+    storage.close()
+    const writable = await openStorage(path, { readOnly: false })
+    await writable.initialize()
+    writable.close()
+    storage = await openStorage(path, { readOnly: true })
   }
 
-  const dashboard = createDashboard({
-    storage,
-    // Bound to loopback by default; widening that is an explicit --host.
-    authorize: () => true,
+  try {
+    await storage.countRuns()
+  } catch (error) {
+    throw new UsageError(`${path} does not look like a Reflow database`, { cause: error })
+  }
+
+  const server = createServer((req, res) => serveRequest(req, res))
+  let serveRequest: ReturnType<typeof toNodeHandler> = (_req, res) => {
+    res.writeHead(503).end()
+  }
+
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once('error', rejectListen)
+    server.listen(port, values.host, () => resolveListen())
   })
 
-  const server = createServer(toNodeHandler(dashboard))
-  server.listen(port, values.host, () => {
-    const address = server.address()
-    const shown = typeof address === 'object' && address !== null ? address.port : port
-    process.stdout.write(`Reflow dashboard for ${path}\nhttp://${values.host}:${shown}/  (read-only, Ctrl+C to stop)\n`)
-    if (!isLoopback(values.host)) {
-      process.stderr.write(`Warning: listening on ${values.host}, without authentication.\n`)
-    }
+  const address = server.address()
+  const boundPort = typeof address === 'object' && address !== null ? address.port : port
+  const dashboard = createDashboard({
+    storage,
+    // No credentials to check, so the dashboard answers only to the address it
+    // is bound on: a site re-pointing its own name at that address through DNS
+    // rebinding sends its own Host, and is turned away.
+    authorize: () => true,
+    allowedHosts: hostNames(values.host).map((name) => `${name}:${boundPort}`),
   })
+  serveRequest = toNodeHandler(dashboard)
+
+  process.stdout.write(`Reflow dashboard for ${path}\nhttp://${displayHost(values.host)}:${boundPort}/  (read-only, Ctrl+C to stop)\n`)
+  if (!isLoopback(values.host)) {
+    process.stderr.write(`Warning: listening on ${values.host}, without authentication.\n`)
+  }
 
   const shutdown = () => {
     server.close()
@@ -109,25 +133,38 @@ async function main(argv: readonly string[]): Promise<void> {
   process.once('SIGTERM', shutdown)
 }
 
+/** The names a browser may use for `host` in a `Host` header. */
+function hostNames(host: string): string[] {
+  if (isLoopback(host)) {
+    return ['localhost', '127.0.0.1', '[::1]']
+  }
+  return [displayHost(host)]
+}
+
+/** IPv6 literals are bracketed in URLs and `Host` headers. */
+function displayHost(host: string): string {
+  return isIPv6(host) ? `[${host}]` : host
+}
+
 /**
  * Open the database with whichever SQLite binding this runtime has: Bun's
  * built-in, Node's built-in (22.5+), or better-sqlite3 if it is installed.
  */
-async function openStorage(path: string): Promise<SqliteStorageBase> {
+async function openStorage(path: string, options: SQLiteStorageOptions): Promise<SqliteStorageBase> {
   if ('Bun' in globalThis) {
     const { SQLiteStorage } = await import('./storage/sqlite-bun')
-    return new SQLiteStorage(path)
+    return new SQLiteStorage(path, options)
   }
 
   const hasNodeSqlite = await import('node:sqlite').then(() => true, () => false)
   if (hasNodeSqlite) {
     const { SQLiteStorage } = await import('./storage/sqlite-node-builtin')
-    return new SQLiteStorage(path)
+    return new SQLiteStorage(path, options)
   }
 
   try {
     const { SQLiteStorage } = await import('./storage/sqlite-node')
-    return new SQLiteStorage(path)
+    return new SQLiteStorage(path, options)
   } catch (error) {
     throw new UsageError('No SQLite binding available: use Node 22.5 or newer, Bun, or install better-sqlite3', {
       cause: error,
@@ -136,7 +173,7 @@ async function openStorage(path: string): Promise<SqliteStorageBase> {
 }
 
 function isLoopback(host: string): boolean {
-  return host === 'localhost' || host === '::1' || host.startsWith('127.')
+  return host === 'localhost' || host === '::1' || (isIPv4(host) && host.startsWith('127.'))
 }
 
 main(process.argv.slice(2)).catch((error: unknown) => {

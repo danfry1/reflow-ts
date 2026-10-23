@@ -11,7 +11,7 @@ npx reflow-ts dashboard ./reflow.db
 # http://127.0.0.1:4400/  (read-only)
 ```
 
-It serves on `127.0.0.1` by default and cannot change anything: with no engine attached there is nothing to cancel or resume with. Pass `--port` to pick a port, and `--host` to bind elsewhere — anyone who can reach that address can read every run's input and output.
+It serves on `127.0.0.1` by default and cannot change anything: with no engine attached there is nothing to cancel or resume with. It opens the database read-only, so the file is left exactly as it was — safe for a live database or a backup. It answers only to requests addressed to the host and port it is bound on, so a website you visit cannot reach it by re-pointing its own domain at your machine. Pass `--port` to pick a port, and `--host` to bind elsewhere — anyone who can reach that address can read every run's input and output.
 
 A database from an older version of Reflow is refused rather than upgraded behind your back; start your app on the new version once, or pass `--migrate`. The command never creates a database at a path that does not exist.
 
@@ -63,7 +63,8 @@ createServer(toNodeHandler(dashboard)).listen(4400)
 | Option | Description |
 |---|---|
 | `storage` | The storage to read runs from — the same one your engine uses. |
-| `authorize(request)` | **Required.** Return `true` to let the request through, `false` to answer 401. Called for the page and every API request; may be `async`. |
+| `authorize(request)` | **Required.** Return `true` to let the request through, `false` to answer 401. Called for the page and every API request; may be `async`. Check what the request carries — a session, a token — not where it comes from. |
+| `allowedHosts` | The `Host` values to answer to, such as `['localhost:4400']`; anything else gets 421. **Set it whenever `authorize` checks no credentials.** Also list your public host if a proxy in front rewrites `Host`. |
 | `engine` | Optional. Enables cancelling and resuming runs, and live updates. Without it the dashboard is read-only and refreshes every few seconds. |
 | `basePath` | The path it is mounted at, when your server passes full paths (Bun, Hono, Next.js). Default `/`. |
 | `title` | Shown in the header and the browser tab. Default `Reflow`. |
@@ -80,7 +81,8 @@ createServer(toNodeHandler(dashboard)).listen(4400)
 
 Run inputs and outputs are your application's data, so the dashboard is built to be safe to expose behind your own auth:
 
-- `authorize` is required — there is no default that serves data to anyone. Open access is an explicit `() => true`.
-- Cancel and resume exist only when you pass `engine`, and only as `POST` requests carrying a header that a cross-site page cannot send, from the dashboard's own origin. A link or form elsewhere cannot trigger them.
+- `authorize` is required — there is no default that serves data to anyone. Open access is an explicit `() => true`, and must come with `allowedHosts`: a dashboard that checks no credentials is otherwise readable by any site the viewer visits, which can re-point its own domain at the dashboard's address (DNS rebinding) and so count as same-origin.
+- Cancel and resume exist only when you pass `engine`, and only as `POST` requests carrying a header that a cross-site page cannot send, from the dashboard's own host. A link or form elsewhere cannot trigger them. The host is compared rather than the whole origin, so actions keep working behind a TLS-terminating proxy.
+- A slow or stalled browser tab cannot make the server buffer live updates, nor slow the engine: notices it cannot take are folded into a single refresh.
 - The page loads nothing from any other origin and runs under a strict content security policy with a per-response nonce; it cannot be framed. Run data is only ever rendered as text, never as markup.
 - The run list never includes inputs or outputs; only opening a run fetches them.

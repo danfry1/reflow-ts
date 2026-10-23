@@ -55,6 +55,28 @@ describe('createDashboard', () => {
       expect(seen).toStrictEqual(['/', '/api/overview'])
     })
 
+    it('answers 500 without detail when authorize() throws', async () => {
+      const handler = dashboard({ authorize: () => {
+        throw new Error('<script>alert(1)</script> is not a token')
+      } })
+
+      const response = await handler(get('/api/overview'))
+
+      expect(response.status).toBe(500)
+      expect(await response.text()).toBe('Could not check authorization')
+      expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    })
+
+    it('answers only to allowed hosts, so DNS rebinding cannot reach it', async () => {
+      const handler = dashboard({ allowedHosts: ['localhost:4400'] })
+
+      const rebound = await handler(new Request('http://attacker.example:4400/api/runs'))
+      const local = await handler(new Request('http://LOCALHOST:4400/api/runs'))
+
+      expect(rebound.status).toBe(421)
+      expect(local.status).toBe(200)
+    })
+
     it('waits for an async authorize()', async () => {
       const handler = dashboard({ authorize: async () => true })
 
@@ -193,6 +215,17 @@ describe('createDashboard', () => {
       expect(missing.status).toBe(404)
     })
 
+    it('decodes run ids in the path, and rejects malformed escapes', async () => {
+      await storage.createRun({
+        id: 'run with spaces', workflow: 'order', input: { id: 'x' }, idempotencyKey: null, status: 'pending',
+        createdAt: 1, updatedAt: 1, startedAt: null, finishedAt: null, output: undefined, error: null, wakeAt: null, waitingFor: null,
+      })
+      const handler = dashboard()
+
+      expect((await handler(get('/api/runs/run%20with%20spaces'))).status).toBe(200)
+      expect((await handler(get('/api/runs/%E0%A4%A'))).status).toBe(400)
+    })
+
     it('lists schedules', async () => {
       await engine.schedule('order', { id: 'nightly' }, { cron: '0 3 * * *' }, { key: 'nightly-order' })
 
@@ -256,6 +289,37 @@ describe('createDashboard', () => {
       expect((await storage.getRun(run.id))?.status).toBe('pending')
     })
 
+    it('accepts actions from the same host over https, as through a TLS-terminating proxy', async () => {
+      const run = await engine.enqueue('approval', {})
+
+      const response = await dashboard({ engine })(
+        post(`/api/runs/${run.id}/cancel`, { 'x-reflow-dashboard': '1', origin: 'https://dash.test' }),
+      )
+
+      expect(response.status).toBe(200)
+    })
+
+    it('accepts actions from an allowed public host when a proxy rewrites Host', async () => {
+      const run = await engine.enqueue('approval', {})
+      const handler = dashboard({ engine, allowedHosts: ['dash.test', 'admin.example.com'] })
+
+      const fromPublic = await handler(
+        post(`/api/runs/${run.id}/cancel`, { 'x-reflow-dashboard': '1', origin: 'https://admin.example.com' }),
+      )
+
+      expect(fromPublic.status).toBe(200)
+    })
+
+    it('refuses actions from an opaque origin', async () => {
+      const run = await engine.enqueue('approval', {})
+
+      const response = await dashboard({ engine })(
+        post(`/api/runs/${run.id}/cancel`, { 'x-reflow-dashboard': '1', origin: 'null' }),
+      )
+
+      expect(response.status).toBe(403)
+    })
+
     it('is read-only without an engine', async () => {
       const run = await engine.enqueue('approval', {})
 
@@ -278,6 +342,26 @@ describe('createDashboard', () => {
   describe('live updates', () => {
     it('is unavailable without an engine', async () => {
       expect((await dashboard()(get('/api/live'))).status).toBe(404)
+    })
+
+    it('drops notices a stalled client cannot take, and sends one resync when it catches up', async () => {
+      const response = await dashboard({ engine })(get('/api/live'))
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+      if (!reader) throw new Error('expected a streaming body')
+      await reader.read()
+
+      // Many changes while the client reads nothing.
+      for (const id of ['a', 'b', 'c']) {
+        await engine.enqueue('order', { id })
+      }
+      await engine.tick()
+
+      const first = decoder.decode((await reader.read()).value)
+      const second = decoder.decode((await reader.read()).value)
+      expect(first).toMatch(/^data: \{"type":"runStart"/)
+      expect(second).toBe(`data: ${JSON.stringify({ type: 'resync' })}\n\n`)
+      await reader.cancel()
     })
 
     it('streams a notice naming each run that changes', async () => {
@@ -318,6 +402,43 @@ describe('toNodeHandler', () => {
       expect(page.status).toBe(200)
       expect(page.headers.get('content-security-policy')).toContain("default-src 'none'")
       expect(await overview.json()).toMatchObject({ actions: false })
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it('ends the response, rather than crashing, when a body fails mid-stream', async () => {
+    const failing = async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new TextEncoder().encode('partial'))
+        controller.error(new Error('body failed'))
+      },
+    }))
+    const server = createServer(toNodeHandler(failing))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('expected a TCP address')
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/`)
+      await expect(response.text()).rejects.toBeInstanceOf(TypeError)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it('answers 500 without detail when the handler throws', async () => {
+    const server = createServer(toNodeHandler(async () => {
+      throw new Error('secret internals')
+    }))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('expected a TCP address')
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/`)
+      expect(response.status).toBe(500)
+      expect(await response.text()).toBe('Internal error')
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()))
     }
