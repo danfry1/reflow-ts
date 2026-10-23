@@ -378,11 +378,25 @@ interface StorageAdapter {
   createRun(run: WorkflowRun): Promise<CreateRunResult>
   claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
   heartbeatRun(runId: string, leaseId: string): Promise<boolean>
+  sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean>
+  waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
+  deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
+  takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
   getRun(runId: string): Promise<WorkflowRun | null>
+  listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
+  requeueRun(runId: string): Promise<boolean>
   getStepResults(runId: string): Promise<StepResult[]>
   saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
-  updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
-  updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean>
+  completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean>
+  failRun(runId: string, leaseId: string, error: RunError): Promise<boolean>
+  cancelRun(runId: string): Promise<boolean>
+  countRuns(filter?: CountRunsFilter): Promise<RunCounts>
+  deleteRuns(filter: DeleteRunsFilter): Promise<number>
+  upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule>
+  claimDueSchedule(workflowNames: readonly string[], now: number): Promise<WorkflowSchedule | null>
+  deleteSchedule(key: string): Promise<boolean>
+  listSchedules(): Promise<WorkflowSchedule[]>
+  close(): void
 }
 ```
 
@@ -505,7 +519,15 @@ Recurring workflow enqueue. Returns scheduleId. Cancel with engine.unschedule(sc
 
 ### engine.getRunStatus(runId)
 
-Returns { run, steps } or null.
+Returns { run, steps } or null. run carries status, startedAt, finishedAt, output (completed runs), error ({ stepName, message, code } for failed runs), wakeAt, and waitingFor. Each step carries status, output, error, attempts, startedAt, and updatedAt.
+
+### engine.countRuns(filter?)
+
+Returns a count for every run status, optionally for one workflow.
+
+### engine.prune({ olderThan, statuses? })
+
+Deletes finished runs older than olderThan (ms or '30d'), with their steps and events. Never deletes runs that can still progress. Returns the number deleted.
 
 ### testEngine(config)
 

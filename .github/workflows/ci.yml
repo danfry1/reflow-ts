@@ -57,8 +57,15 @@ jobs:
             requeueRun: async () => false,
             getStepResults: async () => [],
             saveStepResult: async () => true,
-            updateRunStatus: async () => true,
-            updateClaimedRunStatus: async () => true,
+            completeRun: async () => true,
+            failRun: async () => true,
+            cancelRun: async () => true,
+            countRuns: async () => ({ pending: 0, running: 0, sleeping: 0, waiting: 0, completed: 0, failed: 0, cancelled: 0 }),
+            deleteRuns: async () => 0,
+            upsertSchedule: async (schedule) => schedule,
+            claimDueSchedule: async () => null,
+            deleteSchedule: async () => false,
+            listSchedules: async () => [],
             close: () => {},
           }
           const engine = createEngine({ storage, workflows: [] })

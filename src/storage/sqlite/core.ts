@@ -1,16 +1,21 @@
 import { randomUUID } from 'node:crypto'
 import type {
   ClaimedRun,
+  CountRunsFilter,
   CreateRunResult,
+  DeleteRunsFilter,
   PersistedValue,
   ListRunsFilter,
-  RunStatus,
+  RunCounts,
+  RunError,
   StepResult,
   StorageAdapter,
   WorkflowRun,
   WorkflowSchedule,
   ScheduleRecurrence,
 } from '../../core/types'
+import { emptyRunCounts, parseRunError, parseRunStatus, parseStepStatus } from '../records'
+import { pendingMigrations } from './schema'
 import { deserializePersistedValue, serializePersistedValue } from '../codec'
 import { nextOccurrence } from '../../core/schedule-timing'
 import { InternalError } from '../../core/errors'
@@ -25,6 +30,12 @@ interface WorkflowRunRow {
   status: string
   created_at: number
   updated_at: number
+  wake_at: number | null
+  started_at: number | null
+  finished_at: number | null
+  output: string | null
+  error: string | null
+  waiting_for: string | null
 }
 
 interface WorkflowStepRow {
@@ -37,6 +48,7 @@ interface WorkflowStepRow {
   attempts: number
   created_at: number
   updated_at: number
+  started_at: number | null
 }
 
 interface WorkflowScheduleRow {
@@ -70,97 +82,38 @@ export class SqliteStorageBase implements StorageAdapter {
     this.driver.exec('PRAGMA synchronous = NORMAL')
   }
 
+  /**
+   * Bring the database up to {@link SCHEMA_VERSION}, applying each pending
+   * migration in its own transaction.
+   *
+   * The version is re-read once the write lock is held, so processes starting
+   * against one file at the same moment apply each migration exactly once
+   * between them rather than racing to repeat it.
+   */
   async initialize(): Promise<void> {
-    this.driver.exec(`
-      CREATE TABLE IF NOT EXISTS workflow_runs (
-        id               TEXT PRIMARY KEY,
-        workflow         TEXT NOT NULL,
-        input            TEXT NOT NULL,
-        idempotency_key  TEXT,
-        lease_id         TEXT,
-        status           TEXT NOT NULL,
-        wake_at          INTEGER,
-        created_at       INTEGER NOT NULL,
-        updated_at       INTEGER NOT NULL
-      );
+    for (;;) {
+      const applied = this.transaction(() => {
+        const [next] = pendingMigrations(this.schemaVersion())
+        if (!next) {
+          return false
+        }
 
-      CREATE TABLE IF NOT EXISTS workflow_steps (
-        id          TEXT PRIMARY KEY,
-        run_id      TEXT NOT NULL,
-        name        TEXT NOT NULL,
-        status      TEXT NOT NULL,
-        output      TEXT,
-        error       TEXT,
-        attempts    INTEGER DEFAULT 0,
-        created_at  INTEGER NOT NULL,
-        updated_at  INTEGER NOT NULL
-      );
+        next.up({
+          exec: (sql) => this.driver.exec(sql),
+          columns: (table) => this.all<{ name: string }>(`PRAGMA table_info(${table})`).map((column) => column.name),
+        })
+        this.driver.exec(`PRAGMA user_version = ${next.version}`)
+        return true
+      })
 
-      CREATE TABLE IF NOT EXISTS workflow_events (
-        id          TEXT PRIMARY KEY,
-        run_id      TEXT NOT NULL,
-        event_name  TEXT NOT NULL,
-        payload     TEXT,
-        created_at  INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS workflow_schedules (
-        key          TEXT PRIMARY KEY,
-        workflow     TEXT NOT NULL,
-        input        TEXT NOT NULL,
-        interval_ms  INTEGER,
-        cron         TEXT,
-        next_run_at  INTEGER NOT NULL,
-        created_at   INTEGER NOT NULL,
-        updated_at   INTEGER NOT NULL
-      );
-    `)
-
-    // Migrate databases created before the wake_at column existed.
-    const columns = this.all<{ name: string }>(`PRAGMA table_info(workflow_runs)`)
-    if (!columns.some((column) => column.name === 'wake_at')) {
-      this.driver.exec(`ALTER TABLE workflow_runs ADD COLUMN wake_at INTEGER`)
+      if (!applied) {
+        return
+      }
     }
+  }
 
-
-    // 0.6.0 shipped workflow_schedules with a NOT NULL interval_ms and no cron
-    // column. Adding cron alone is not enough: a cron schedule leaves
-    // interval_ms null, which that constraint rejects. SQLite cannot drop a NOT
-    // NULL in place, so the table is rebuilt — cheap, since schedules are few.
-    const scheduleColumns = this.all<{ name: string }>(`PRAGMA table_info(workflow_schedules)`)
-    if (scheduleColumns.length > 0 && !scheduleColumns.some((column) => column.name === 'cron')) {
-      this.driver.exec(`
-        ALTER TABLE workflow_schedules RENAME TO workflow_schedules_old;
-
-        CREATE TABLE workflow_schedules (
-          key          TEXT PRIMARY KEY,
-          workflow     TEXT NOT NULL,
-          input        TEXT NOT NULL,
-          interval_ms  INTEGER,
-          cron         TEXT,
-          next_run_at  INTEGER NOT NULL,
-          created_at   INTEGER NOT NULL,
-          updated_at   INTEGER NOT NULL
-        );
-
-        INSERT INTO workflow_schedules (key, workflow, input, interval_ms, cron, next_run_at, created_at, updated_at)
-        SELECT key, workflow, input, interval_ms, NULL, next_run_at, created_at, updated_at
-        FROM workflow_schedules_old;
-
-        DROP TABLE workflow_schedules_old;
-      `)
-    }
-
-    this.driver.exec(`
-      CREATE INDEX IF NOT EXISTS idx_runs_status ON workflow_runs(status, workflow);
-      CREATE INDEX IF NOT EXISTS idx_runs_wake ON workflow_runs(status, wake_at);
-      CREATE INDEX IF NOT EXISTS idx_steps_run_id ON workflow_steps(run_id);
-      CREATE INDEX IF NOT EXISTS idx_events_run_name ON workflow_events(run_id, event_name, created_at);
-      CREATE INDEX IF NOT EXISTS idx_schedules_due ON workflow_schedules(next_run_at);
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_workflow_idempotency
-      ON workflow_runs(workflow, idempotency_key)
-      WHERE idempotency_key IS NOT NULL;
-    `)
+  private schemaVersion(): number {
+    return this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0
   }
 
   async createRun(run: WorkflowRun): Promise<CreateRunResult> {
@@ -191,8 +144,10 @@ export class SqliteStorageBase implements StorageAdapter {
 
       try {
         this.run(
-          `INSERT INTO workflow_runs (id, workflow, input, idempotency_key, lease_id, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, NULL, ?, ?, ?)`,
+          `INSERT INTO workflow_runs
+             (id, workflow, input, idempotency_key, lease_id, status, created_at, updated_at,
+              wake_at, started_at, finished_at, output, error, waiting_for)
+           VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           run.id,
           run.workflow,
           serializedInput,
@@ -200,6 +155,12 @@ export class SqliteStorageBase implements StorageAdapter {
           run.status,
           run.createdAt,
           run.updatedAt,
+          run.wakeAt,
+          run.startedAt,
+          run.finishedAt,
+          serializeRunOutput(run),
+          serializeRunError(run.error),
+          run.waitingFor,
         )
       } catch (error) {
         if (run.idempotencyKey && isUniqueConstraintError(error)) {
@@ -271,9 +232,11 @@ export class SqliteStorageBase implements StorageAdapter {
       const leaseId = randomUUID()
       const changes = this.run(
         `UPDATE workflow_runs
-         SET status = 'running', lease_id = ?, wake_at = NULL, updated_at = ?
+         SET status = 'running', lease_id = ?, wake_at = NULL, waiting_for = NULL, updated_at = ?,
+             started_at = COALESCE(started_at, ?)
          WHERE id = ? AND ${reclaimClause}`,
         leaseId,
+        now,
         now,
         row.id,
         ...clauseParams,
@@ -283,12 +246,16 @@ export class SqliteStorageBase implements StorageAdapter {
         return null
       }
 
-      return {
+      const claimed: ClaimedRun = {
         ...mapWorkflowRunRow(row),
-        status: 'running' as RunStatus,
+        status: 'running',
         updatedAt: now,
+        startedAt: row.started_at ?? now,
+        wakeAt: null,
+        waitingFor: null,
         leaseId,
       }
+      return claimed
     })
   }
 
@@ -340,14 +307,15 @@ export class SqliteStorageBase implements StorageAdapter {
 
       if (buffered) {
         this.run(
-          `UPDATE workflow_runs SET status = 'pending', lease_id = NULL, wake_at = NULL, updated_at = ? WHERE id = ?`,
+          `UPDATE workflow_runs SET status = 'pending', lease_id = NULL, wake_at = NULL, waiting_for = NULL, updated_at = ? WHERE id = ?`,
           Date.now(),
           runId,
         )
       } else {
         this.run(
-          `UPDATE workflow_runs SET status = 'waiting', lease_id = NULL, wake_at = ?, updated_at = ? WHERE id = ?`,
+          `UPDATE workflow_runs SET status = 'waiting', lease_id = NULL, wake_at = ?, waiting_for = ?, updated_at = ? WHERE id = ?`,
           wakeAt,
+          eventName,
           Date.now(),
           runId,
         )
@@ -373,7 +341,7 @@ export class SqliteStorageBase implements StorageAdapter {
       )
 
       this.run(
-        `UPDATE workflow_runs SET status = 'pending', lease_id = NULL, wake_at = NULL, updated_at = ? WHERE id = ? AND status = 'waiting'`,
+        `UPDATE workflow_runs SET status = 'pending', lease_id = NULL, wake_at = NULL, waiting_for = NULL, updated_at = ? WHERE id = ? AND status = 'waiting'`,
         Date.now(),
         runId,
       )
@@ -442,7 +410,8 @@ export class SqliteStorageBase implements StorageAdapter {
     return this.transaction(() => {
       const changes = this.run(
         `UPDATE workflow_runs
-         SET status = 'pending', lease_id = NULL, updated_at = ?
+         SET status = 'pending', lease_id = NULL, updated_at = ?,
+             finished_at = NULL, output = NULL, error = NULL
          WHERE id = ? AND status IN ('failed', 'cancelled')`,
         Date.now(),
         runId,
@@ -468,12 +437,13 @@ export class SqliteStorageBase implements StorageAdapter {
       id: row.id,
       runId: row.run_id,
       name: row.name,
-      status: row.status as StepResult['status'],
+      status: parseStepStatus(row.status),
       output: row.output === null ? null : deserializePersistedValue(row.output),
       error: row.error,
       attempts: row.attempts,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      startedAt: row.started_at,
     }))
   }
 
@@ -493,8 +463,8 @@ export class SqliteStorageBase implements StorageAdapter {
       }
 
       this.run(
-        `INSERT OR REPLACE INTO workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         result.id,
         result.runId,
         result.name,
@@ -504,39 +474,97 @@ export class SqliteStorageBase implements StorageAdapter {
         result.attempts,
         result.createdAt,
         result.updatedAt,
+        result.startedAt,
       )
 
       return true
     })
   }
 
-  async updateRunStatus(runId: string, status: RunStatus): Promise<boolean> {
-    const changes = this.run(
+  async completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean> {
+    const now = Date.now()
+    return this.run(
       `UPDATE workflow_runs
-       SET status = ?, lease_id = ?, wake_at = NULL, updated_at = ?
-       WHERE id = ?`,
-      status,
-      null,
-      Date.now(),
-      runId,
-    )
-
-    return changes > 0
-  }
-
-  async updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean> {
-    const changes = this.run(
-      `UPDATE workflow_runs
-       SET status = ?, lease_id = ?, wake_at = NULL, updated_at = ?
+       SET status = 'completed', lease_id = NULL, wake_at = NULL, waiting_for = NULL,
+           output = ?, updated_at = ?, finished_at = ?
        WHERE id = ? AND status = 'running' AND lease_id = ?`,
-      status,
-      status === 'running' ? leaseId : null,
-      Date.now(),
+      serializePersistedValue(output, 'Run output'),
+      now,
+      now,
       runId,
       leaseId,
-    )
+    ) > 0
+  }
 
-    return changes > 0
+  async failRun(runId: string, leaseId: string, error: RunError): Promise<boolean> {
+    const now = Date.now()
+    return this.run(
+      `UPDATE workflow_runs
+       SET status = 'failed', lease_id = NULL, wake_at = NULL, waiting_for = NULL,
+           error = ?, updated_at = ?, finished_at = ?
+       WHERE id = ? AND status = 'running' AND lease_id = ?`,
+      serializeRunError(error),
+      now,
+      now,
+      runId,
+      leaseId,
+    ) > 0
+  }
+
+  async cancelRun(runId: string): Promise<boolean> {
+    const now = Date.now()
+    return this.run(
+      `UPDATE workflow_runs
+       SET status = 'cancelled', lease_id = NULL, wake_at = NULL, waiting_for = NULL,
+           updated_at = ?, finished_at = ?
+       WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`,
+      now,
+      now,
+      runId,
+    ) > 0
+  }
+
+  async countRuns(filter: CountRunsFilter = {}): Promise<RunCounts> {
+    const rows = filter.workflow === undefined
+      ? this.all<{ status: string; n: number }>(`SELECT status, COUNT(*) AS n FROM workflow_runs GROUP BY status`)
+      : this.all<{ status: string; n: number }>(
+        `SELECT status, COUNT(*) AS n FROM workflow_runs WHERE workflow = ? GROUP BY status`,
+        filter.workflow,
+      )
+
+    const counts = emptyRunCounts()
+    for (const row of rows) {
+      counts[parseRunStatus(row.status)] = row.n
+    }
+    return counts
+  }
+
+  async deleteRuns(filter: DeleteRunsFilter): Promise<number> {
+    if (filter.statuses.length === 0 || filter.limit < 1) {
+      return 0
+    }
+
+    const placeholders = filter.statuses.map(() => '?').join(', ')
+    return this.transaction(() => {
+      const ids = this.all<{ id: string }>(
+        `SELECT id FROM workflow_runs
+         WHERE finished_at < ? AND status IN (${placeholders})
+         ORDER BY finished_at ASC, rowid ASC
+         LIMIT ?`,
+        filter.finishedBefore,
+        ...filter.statuses,
+        filter.limit,
+      ).map((row) => row.id)
+
+      if (ids.length === 0) {
+        return 0
+      }
+
+      const idList = ids.map(() => '?').join(', ')
+      this.run(`DELETE FROM workflow_steps WHERE run_id IN (${idList})`, ...ids)
+      this.run(`DELETE FROM workflow_events WHERE run_id IN (${idList})`, ...ids)
+      return this.run(`DELETE FROM workflow_runs WHERE id IN (${idList})`, ...ids)
+    })
   }
 
   /**
@@ -713,10 +741,26 @@ function mapWorkflowRunRow(row: WorkflowRunRow): WorkflowRun {
     workflow: row.workflow,
     input: deserializePersistedValue(row.input),
     idempotencyKey: row.idempotency_key,
-    status: row.status as RunStatus,
+    status: parseRunStatus(row.status),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    // NULL means no output was recorded; a recorded `null` is the string "null".
+    output: row.output === null ? undefined : deserializePersistedValue(row.output),
+    error: row.error === null ? null : parseRunError(row.error),
+    wakeAt: row.wake_at,
+    waitingFor: row.waiting_for,
   }
+}
+
+/** A run's output is stored only once it completes; any other run stores NULL. */
+function serializeRunOutput(run: WorkflowRun): string | null {
+  return run.status === 'completed' ? serializePersistedValue(run.output, 'Run output') : null
+}
+
+function serializeRunError(error: RunError | null): string | null {
+  return error === null ? null : JSON.stringify(error)
 }
 
 function isUniqueConstraintError(error: unknown): boolean {

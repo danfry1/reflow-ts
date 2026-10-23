@@ -42,10 +42,12 @@ export function translateStorageErrors(storage: StorageAdapter): StorageAdapter 
     getStepResults: (runId) => guard('getStepResults', () => storage.getStepResults(runId)),
     saveStepResult: (result, leaseId) =>
       guard('saveStepResult', () => storage.saveStepResult(result, leaseId)),
-    updateRunStatus: (runId, status) =>
-      guard('updateRunStatus', () => storage.updateRunStatus(runId, status)),
-    updateClaimedRunStatus: (runId, leaseId, status) =>
-      guard('updateClaimedRunStatus', () => storage.updateClaimedRunStatus(runId, leaseId, status)),
+    completeRun: (runId, leaseId, output) =>
+      guard('completeRun', () => storage.completeRun(runId, leaseId, output)),
+    failRun: (runId, leaseId, error) => guard('failRun', () => storage.failRun(runId, leaseId, error)),
+    cancelRun: (runId) => guard('cancelRun', () => storage.cancelRun(runId)),
+    countRuns: (filter) => guard('countRuns', () => storage.countRuns(filter)),
+    deleteRuns: (filter) => guard('deleteRuns', () => storage.deleteRuns(filter)),
     upsertSchedule: (schedule) => guard('upsertSchedule', () => storage.upsertSchedule(schedule)),
     claimDueSchedule: (names, now) =>
       guard('claimDueSchedule', () => storage.claimDueSchedule(names, now)),

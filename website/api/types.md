@@ -15,16 +15,22 @@ Everything stored as workflow input or step output must be a `PersistedValue`. S
 
 ```typescript
 type RunStatus = 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+type TerminalRunStatus = 'completed' | 'failed' | 'cancelled'
 type StepStatus =
   | 'pending' | 'running' | 'completed' | 'completed-early'
   | 'skipped' | 'sleeping' | 'waiting' | 'failed'
 ```
 
+`RUN_STATUSES` and `STEP_STATUSES` are exported as readonly arrays of every value, for building filters or validating input.
+
 | Type | Shape |
 |---|---|
-| `WorkflowRun` | `{ id, workflow, input, idempotencyKey, status, createdAt, updatedAt }` |
+| `WorkflowRun` | `{ id, workflow, input, idempotencyKey, status, createdAt, updatedAt, startedAt, finishedAt, output, error, wakeAt, waitingFor }` — see [Inspecting runs](/guide/inspecting-runs) |
+| `RunError` | `{ stepName, message, code }` — why a `failed` run failed; `code` is the error's string code, or `null` |
 | `ClaimedRun` | `WorkflowRun & { leaseId }` |
-| `StepResult` | `{ id, runId, name, status, output, error, attempts, createdAt, updatedAt }` |
+| `StepResult` | `{ id, runId, name, status, output, error, attempts, createdAt, updatedAt, startedAt }` |
+| `RunCounts` | `Record<RunStatus, number>` — returned by `countRuns()` |
+| `PruneOptions` | `{ olderThan, statuses? }` — what `engine.prune()` deletes |
 | `RunInfo` | `{ run: WorkflowRun; steps: StepResult[] }` — returned by `getRunStatus()` |
 | `CreateRunResult` | `{ run: WorkflowRun; created: boolean }` — returned by `storage.createRun()` |
 | `WorkflowSchedule` | `{ key, workflow, input, recurrence, nextRunAt, createdAt, updatedAt }` — a registered [schedule](/guide/scheduling) |

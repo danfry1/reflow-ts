@@ -29,6 +29,12 @@ function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     status: 'pending',
     createdAt: now,
     updatedAt: now,
+    startedAt: null,
+    finishedAt: null,
+    output: undefined,
+    error: null,
+    wakeAt: null,
+    waitingFor: null,
     ...overrides,
   }
 }
@@ -45,6 +51,7 @@ function makeStep(overrides: Partial<StepResult> = {}): StepResult {
     attempts: 1,
     createdAt: now,
     updatedAt: now,
+    startedAt: null,
     ...overrides,
   }
 }
@@ -178,29 +185,6 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
 
     const steps = await storage.getStepResults('run_1')
     expect(steps.map((s) => s.id)).toStrictEqual(['s1'])
-  })
-
-  it('updateRunStatus updates status and clears the lease', async () => {
-    await storage.createRun(makeRun())
-    await storage.claimNextRun(['test'])
-
-    expect(await storage.updateRunStatus('run_1', 'cancelled')).toBe(true)
-    const run = expectPresent(await storage.getRun('run_1'))
-    expect(run.status).toBe('cancelled')
-
-    // Lease was cleared, so a claimed-status update no longer applies.
-    expect(await storage.updateClaimedRunStatus('run_1', 'any', 'completed')).toBe(false)
-  })
-
-  it('updateClaimedRunStatus only applies with the matching lease', async () => {
-    await storage.createRun(makeRun())
-    const claimed = expectPresent(await storage.claimNextRun(['test']))
-
-    expect(await storage.updateClaimedRunStatus('run_1', 'wrong', 'completed')).toBe(false)
-    expect(await storage.updateClaimedRunStatus('run_1', claimed.leaseId, 'completed')).toBe(true)
-
-    const run = expectPresent(await storage.getRun('run_1'))
-    expect(run.status).toBe('completed')
   })
 
   it('sleepRun suspends a run and rejects a non-matching lease', async () => {

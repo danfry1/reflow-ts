@@ -2,8 +2,17 @@
 
 ## Unreleased
 
-**Upgrading:** no API changes. Custom storage adapters are held to a new
-claim-ordering rule (below), which `reflow-ts/conformance` now checks.
+**Upgrading:** nothing to change if you use the built-in storage adapters —
+they migrate their tables on `initialize()`. Custom storage adapters implement
+a revised contract; see [Migrating to 0.8](https://danfry1.github.io/reflow-ts/guide/migrating-0-8).
+
+### Added
+
+- **Runs record their lifecycle.** `WorkflowRun` gains `startedAt` (first claimed, kept across crash recovery), `finishedAt`, `output` (a completed run's final output, including a `complete()` value), `error` (`{ stepName, message, code }` for a failed run), `wakeAt` (when a sleeping run wakes or a waiting run times out), and `waitingFor` (the event a waiting run awaits). `StepResult` gains `startedAt`, so a finished step's duration is `updatedAt - startedAt`. `error.code` is the error's own string code when it has one — `'STEP_TIMEOUT'`, or a system code like `'ECONNREFUSED'` — so failures can be grouped without parsing messages. New exported types: `RunError`, `TerminalRunStatus`.
+- **`engine.countRuns(filter?)`** — runs per status, every status present, optionally for one workflow. New exported types: `RunCounts`, `CountRunsFilter`.
+- **`engine.prune({ olderThan, statuses? })`** — delete finished runs, with their steps and events, that finished longer ago than a cutoff. Runs that can still progress are never deleted. Works in batches of 500 so it never holds SQLite's write lock for long. New exported type: `PruneOptions`.
+- `RUN_STATUSES` and `STEP_STATUSES` — every run and step status as a readonly array; `RunStatus` and `StepStatus` are now derived from them.
+- A guide to [inspecting runs](https://danfry1.github.io/reflow-ts/guide/inspecting-runs) and retention.
 
 ### Fixed
 
@@ -14,6 +23,9 @@ claim-ordering rule (below), which `reflow-ts/conformance` now checks.
 
 ### Changed
 
+- **Breaking for custom adapters:** `StorageAdapter.updateRunStatus` and `updateClaimedRunStatus` are replaced by `completeRun(runId, leaseId, output)`, `failRun(runId, leaseId, error)`, and `cancelRun(runId)`. A generic status setter could mark a run completed without an output, and made cancelling a read-then-write that could race a run completing; `cancelRun` refuses a finished run in the same write. Adapters also implement `countRuns` and `deleteRuns`, and store the new run and step fields. `engine.cancel()` behaves as before, without the race.
+- **SQLite schema migrations are versioned.** The adapters record the schema version in `PRAGMA user_version` and apply only the migrations a database is missing, each in its own `BEGIN IMMEDIATE` transaction, so processes starting together cannot apply one twice. Existing databases upgrade in place; runs that finished before the upgrade get a `finishedAt` so they can be pruned. A database written by a newer version is refused with a `ConfigError` instead of being opened.
+- Stored run and step statuses are validated when read rather than cast, so a corrupt or foreign row fails loudly.
 - **The `StorageAdapter.claimNextRun` contract specifies claim order**, as described above. `reflow-ts/conformance` gains four cases for it; a custom adapter that ranks by status will fail them.
 - The three SQLite adapters now share one implementation, each supplying only a small driver for its binding, so a fix to the SQL, the schema, or the transaction handling reaches all three at once. They also cache prepared statements rather than preparing each query on every call. The public classes, their constructors, and the on-disk schema are unchanged.
 - **Work this instance creates starts without waiting for the next poll.** `enqueue()`, `resume()`, and `sendEvent()` on a started engine claim the run into a free slot at once, rather than after up to `pollIntervalMs`. Polling still picks up work the instance was not told about directly: runs enqueued by other processes, elapsed sleeps and wait timeouts, due schedules, and stale runs.

@@ -69,6 +69,7 @@ export default defineConfig({
             { text: 'Concurrency', link: '/guide/concurrency' },
             { text: 'Crash Recovery', link: '/guide/crash-recovery' },
             { text: 'Storage', link: '/guide/storage' },
+            { text: 'Inspecting Runs', link: '/guide/inspecting-runs' },
           ],
         },
         {
@@ -77,6 +78,7 @@ export default defineConfig({
             { text: 'Testing', link: '/guide/testing' },
             { text: 'Type Safety', link: '/guide/type-safety' },
             { text: 'Error Handling', link: '/guide/error-handling' },
+            { text: 'Migrating to 0.8', link: '/guide/migrating-0-8' },
             { text: 'Migrating to 0.7', link: '/guide/migrating-0-7' },
             { text: 'Migrating to 0.6', link: '/guide/migrating-0-6' },
           ],

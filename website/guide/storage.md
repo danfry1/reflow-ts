@@ -55,7 +55,7 @@ Everything Reflow stores — workflow input and step output — must be plain da
 Implement the [`StorageAdapter`](/api/storage) interface to back Reflow with any database — Postgres, MySQL, Redis, a hosted KV. The contract is small, but two methods carry the durability guarantees:
 
 - `claimNextRun(workflowNames, staleBefore?)` must **atomically** claim the next pending or stale run, returning a unique `leaseId`. This is what prevents two workers from running the same run. It must also claim the run that has been claimable **longest**, so a steady stream of new work cannot starve a woken sleeper or a crashed run awaiting reclaim.
-- `saveStepResult` / `updateClaimedRunStatus` take a `leaseId` and must **no-op when the lease no longer matches**, so a worker that lost its lease can't clobber a run another worker has taken over.
+- `saveStepResult`, `completeRun`, and `failRun` take a `leaseId` and must **no-op when the lease no longer matches**, so a worker that lost its lease can't clobber a run another worker has taken over.
 
 - `claimDueSchedule(workflowNames, now)` must claim a due [schedule](/guide/scheduling) **and advance its next occurrence in the same transaction**, so one occurrence cannot fire on two workers.
 

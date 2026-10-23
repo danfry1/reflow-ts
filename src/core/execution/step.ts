@@ -168,6 +168,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
         }
       }
 
+      const startedAt = Date.now()
       await ctx.emit({
         type: 'stepStart',
         runId: ctx.run.id,
@@ -200,6 +201,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
           output: null,
           error: outcome.error.message,
           attempts: outcome.attempts,
+          startedAt,
         })
 
         return { kind: 'failed', stepName: stepDef.name, error: outcome.error }
@@ -210,6 +212,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
         status: outcome.kind === 'early-complete' ? 'completed-early' : 'completed',
         output: outcome.output,
         attempts: outcome.attempts,
+        startedAt,
       })
 
       await ctx.emit({

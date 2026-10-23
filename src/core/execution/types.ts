@@ -23,6 +23,11 @@ export interface StepRecord {
   readonly output: PersistedValue
   readonly error?: string | null
   readonly attempts?: number
+  /**
+   * When this execution of the step began. Omit to keep the time already
+   * recorded for the step (or, on its first save, to use now).
+   */
+  readonly startedAt?: number
 }
 
 /**
