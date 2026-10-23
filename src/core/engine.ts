@@ -10,6 +10,7 @@ import {
   assertNever,
   ConfigError,
   DuplicateWorkflowError,
+  errorMessage,
   HookError,
   IdempotencyConflictError,
   LeaseExpiredError,
@@ -699,6 +700,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         // A suspended sleep or wait finishing on a later claim keeps the time
         // it began; an executor re-running a step passes a fresh one.
         startedAt: record.startedAt ?? existing?.startedAt ?? now,
+        history: record.history ? [...record.history] : existing?.history ?? [],
       }, run.leaseId)
     }
 
@@ -848,7 +850,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   ): Promise<void> {
     const failed = await storage.failRun(run.id, run.leaseId, {
       stepName,
-      message: error.message,
+      message: errorMessage(error),
       code: errorCode(error),
     })
     if (!failed) {

@@ -61,6 +61,7 @@ describe('step row identity across re-execution', () => {
       createdAt: now,
       updatedAt: now,
       startedAt: null,
+      history: [],
     }, claimed?.leaseId)
 
     // Let the lease go stale so the engine reclaims the run and re-runs `a`.

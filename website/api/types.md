@@ -28,7 +28,8 @@ type StepStatus =
 | `WorkflowRun` | `{ id, workflow, input, idempotencyKey, status, createdAt, updatedAt, startedAt, finishedAt, output, error, wakeAt, waitingFor }` — see [Inspecting runs](/guide/inspecting-runs) |
 | `RunError` | `{ stepName, message, code }` — why a `failed` run failed; `code` is the error's string code, or `null` |
 | `ClaimedRun` | `WorkflowRun & { leaseId }` |
-| `StepResult` | `{ id, runId, name, status, output, error, attempts, createdAt, updatedAt, startedAt }` |
+| `StepResult` | `{ id, runId, name, status, output, error, attempts, createdAt, updatedAt, startedAt, history }` — `history` is a `StepAttempt[]` |
+| `StepAttempt` | `{ startedAt, finishedAt, error }` — one attempt at a step's handler; `error` is `null` for the one that succeeded |
 | `RunCounts` | `Record<RunStatus, number>` — returned by `countRuns()` |
 | `PruneOptions` | `{ olderThan, statuses? }` — what `engine.prune()` deletes |
 | `RunInfo` | `{ run: WorkflowRun; steps: StepResult[] }` — returned by `getRunStatus()` |

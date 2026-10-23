@@ -17,7 +17,7 @@ Custom storage adapters have work to do; the rest of this page is for them.
 
 `initialize()` adds the new columns and records the schema version in SQLite's `user_version`, so later upgrades apply exactly the migrations a database is missing. It is automatic, idempotent, and keeps every existing row.
 
-Runs that finished before the upgrade get a `finishedAt` (their last update), so `prune()` can delete them. Their `startedAt`, `output`, and `error` were never recorded and stay empty.
+Runs that finished before the upgrade get a `finishedAt` (their last update), so `prune()` can delete them. Their `startedAt`, `output`, and `error`, and their steps' attempt `history`, were never recorded and stay empty.
 
 During a rolling deploy, workers still on 0.7 keep finishing runs after the database has been upgraded, and they do not record `finishedAt`. Those runs are never pruned. Finish the rollout before relying on `prune()`, or backfill once it is done:
 
@@ -47,7 +47,7 @@ A database written by a **newer** version of Reflow is refused with a `ConfigErr
 
 ### New fields
 
-`WorkflowRun` gains `startedAt`, `finishedAt`, `output`, `error`, `wakeAt`, and `waitingFor`; `StepResult` gains `startedAt`. Store what the engine passes in and return it unchanged, plus:
+`WorkflowRun` gains `startedAt`, `finishedAt`, `output`, `error`, `wakeAt`, and `waitingFor`; `StepResult` gains `startedAt` and `history`, the step's attempts as an array to store whole and return in order. Store what the engine passes in and return it unchanged, plus:
 
 - `claimNextRun` sets `startedAt` on a run's **first** claim only, and clears `wakeAt` and `waitingFor`.
 - `waitRun` records the event name as `waitingFor`.

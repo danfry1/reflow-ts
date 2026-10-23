@@ -521,6 +521,28 @@ export function toError(value: unknown): Error {
 }
 
 /**
+ * An error's message as a string, for persisting.
+ *
+ * `message` is typed as a string but is an ordinary writable property, and
+ * some libraries put other values in it. Storage checks the shape of what it
+ * reads back, so a non-string would leave the record unreadable rather than
+ * merely odd.
+ */
+export function errorMessage(error: Error): string {
+  const message: unknown = error.message
+  if (typeof message === 'string') {
+    return message
+  }
+  if (message === undefined || message === null) {
+    return ''
+  }
+  // Objects keep to their tag: their own toString could throw or mislead.
+  return typeof message === 'object' || typeof message === 'function'
+    ? Object.prototype.toString.call(message)
+    : String(message)
+}
+
+/**
  * Assert that a value is `never`, proving a switch or union is exhaustive.
  *
  * Adding a variant to the union turns every call site into a compile error,

@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow, createEngine, ConfigError, RunNotFoundError } from '../../index'
+import { existsSync, unlinkSync } from 'node:fs'
 import { MemoryStorage } from '../../storage/memory'
+import { SQLiteStorage } from '../../storage/sqlite-node'
 import { at, delegatingAdapter } from '../../__tests__/helpers'
 
 const T0 = Date.UTC(2026, 0, 1)
@@ -357,5 +359,46 @@ describe('engine.waitForRun', () => {
     const engine = createEngine({ storage, workflows: [job] })
 
     await expect(engine.waitForRun('missing')).rejects.toBeInstanceOf(RunNotFoundError)
+  })
+})
+
+describe('errors whose message is not a string', () => {
+  const path = `/tmp/reflow-message-${process.pid}.db`
+  let storage: SQLiteStorage
+
+  beforeEach(async () => {
+    storage = new SQLiteStorage(path)
+    await storage.initialize()
+  })
+
+  afterEach(() => {
+    storage.close()
+    for (const suffix of ['', '-wal', '-shm']) {
+      if (existsSync(path + suffix)) unlinkSync(path + suffix)
+    }
+  })
+
+  // Some libraries assign non-strings to `message`; stored as they were, they
+  // made the run's records unreadable.
+  it.each([
+    ['undefined', undefined, ''],
+    ['a number', 42, '42'],
+    ['an object', { reason: 'nested' }, '[object Object]'],
+  ])('records a message that is %s as a string', async (_label, message, stored) => {
+    const wf = createWorkflow({ name: 'odd-message', input: z.object({}) }).step('throws', {
+      retry: { maxAttempts: 2, backoff: 'linear', initialDelayMs: 0 },
+      handler: async () => {
+        throw Object.assign(new Error('replaced'), { message })
+      },
+    })
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('odd-message', {})
+
+    await engine.tick()
+
+    const info = await engine.getRunStatus(run.id)
+    expect(info?.run.error).toStrictEqual({ stepName: 'throws', message: stored, code: null })
+    expect(info?.steps.map((step) => [step.error, step.history.map((attempt) => attempt.error)]))
+      .toStrictEqual([[stored, [stored, stored]]])
   })
 })

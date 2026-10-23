@@ -104,6 +104,7 @@ describe('integration: real-world scenarios', () => {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         startedAt: null,
+        history: [],
       })
 
       // Second engine: simulates process restart
@@ -251,6 +252,7 @@ describe('integration: real-world scenarios', () => {
         createdAt: now,
         updatedAt: now,
         startedAt: null,
+        history: [],
       })
       await storage.saveStepResult({
         id: 'step_summarize',
@@ -263,6 +265,7 @@ describe('integration: real-world scenarios', () => {
         createdAt: now,
         updatedAt: now,
         startedAt: null,
+        history: [],
       })
       await storage.saveStepResult({
         id: 'step_extract',
@@ -278,6 +281,7 @@ describe('integration: real-world scenarios', () => {
         createdAt: now,
         updatedAt: now,
         startedAt: null,
+        history: [],
       })
 
       // === Process crashed here — store never ran ===

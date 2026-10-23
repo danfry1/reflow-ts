@@ -449,6 +449,51 @@ describe('Parallel engine execution', () => {
       expect(flakyStep?.output).toStrictEqual({ recovered: true })
       expect(flakyStep?.attempts).toBe(3)
     })
+
+    it("records each branch's own attempts", async () => {
+      let attempts = 0
+      const wf = createWorkflow({ name: 'branch-history', input: z.object({}) })
+        .parallel({
+          flaky: {
+            retry: { maxAttempts: 2, backoff: 'linear', initialDelayMs: 0 },
+            handler: async () => {
+              attempts++
+              if (attempts < 2) throw new Error('transient')
+              return {}
+            },
+          },
+          stable: async () => ({}),
+        })
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('branch-history', {})
+
+      await engine.tick()
+
+      const steps = await storage.getStepResults(run.id)
+      const errors = (name: string) => steps.find((step) => step.name === name)?.history.map((attempt) => attempt.error)
+      expect(errors('flaky')).toStrictEqual(['transient', null])
+      expect(errors('stable')).toStrictEqual([null])
+    })
+
+    it('records the attempts of a branch that failed the group', async () => {
+      const wf = createWorkflow({ name: 'branch-history-failed', input: z.object({}) })
+        .parallel({
+          broken: {
+            retry: { maxAttempts: 2, backoff: 'linear', initialDelayMs: 0 },
+            handler: async () => {
+              throw new Error('always')
+            },
+          },
+          stable: async () => ({}),
+        })
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('branch-history-failed', {})
+
+      await engine.tick()
+
+      const broken = (await storage.getStepResults(run.id)).find((step) => step.name === 'broken')
+      expect(broken?.history.map((attempt) => attempt.error)).toStrictEqual(['always', 'always'])
+    })
   })
 
   describe('per-branch timeout', () => {
@@ -573,6 +618,7 @@ describe('Parallel engine execution', () => {
         createdAt: now,
         updatedAt: now,
         startedAt: null,
+        history: [],
       })
 
       await engine.tick()
@@ -620,6 +666,7 @@ describe('Parallel engine execution', () => {
         createdAt: now,
         updatedAt: now,
         startedAt: null,
+        history: [],
       })
 
       await engine.tick()
@@ -656,6 +703,7 @@ describe('Parallel engine execution', () => {
         createdAt: now,
         updatedAt: now,
         startedAt: null,
+        history: [],
       })
 
       await engine.tick()
@@ -698,6 +746,7 @@ describe('Parallel engine execution', () => {
         createdAt: now,
         updatedAt: now,
         startedAt: null,
+        history: [],
       })
 
       await engine.tick()
@@ -744,6 +793,7 @@ describe('Parallel engine execution', () => {
         createdAt: now,
         updatedAt: now,
         startedAt: null,
+        history: [],
       })
       await storage.saveStepResult({
         id: randomUUID(),
@@ -756,6 +806,7 @@ describe('Parallel engine execution', () => {
         createdAt: now,
         updatedAt: now,
         startedAt: null,
+        history: [],
       })
 
       await engine.tick()

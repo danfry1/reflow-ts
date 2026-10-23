@@ -82,6 +82,7 @@ function makeStep(overrides: Partial<StepResult> = {}): StepResult {
     createdAt: now,
     updatedAt: now,
     startedAt: now,
+    history: [],
     ...overrides,
   }
 }
@@ -481,6 +482,24 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
       await storage.saveStepResult(makeStep({ startedAt: 42 }))
 
       assertEqual((await storage.getStepResults('run_1'))[0]?.startedAt, 42, 'startedAt')
+    },
+  },
+  {
+    name: 'saveStepResult round-trips the attempt history, in order',
+    async run(storage) {
+      const history = [
+        { startedAt: 10, finishedAt: 12, error: 'gateway timed out' },
+        { startedAt: 1_012, finishedAt: 1_015, error: null },
+      ]
+      await storage.createRun(makeRun())
+      await storage.saveStepResult(makeStep({ attempts: 2, history }))
+
+      const [step] = await storage.getStepResults('run_1')
+      assertEqual(step?.history, history, 'history')
+
+      // Mutating what was read must not reach the stored record.
+      step?.history.push({ startedAt: 0, finishedAt: 0, error: null })
+      assertEqual((await storage.getStepResults('run_1'))[0]?.history, history, 'history after mutating a read')
     },
   },
 
