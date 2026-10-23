@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { SQLiteStorage } from '../sqlite-node'
+import { SqliteStorageBase } from '../sqlite/core'
 import { unlinkSync, existsSync } from 'node:fs'
 import type { WorkflowRun, StepResult, WorkflowSchedule } from '../../core/types'
 import { at } from '../../__tests__/helpers'
@@ -85,38 +86,32 @@ describe('SQLiteStorage', () => {
     it('returns the existing run when an idempotent insert loses a unique-key race', async () => {
       await storage.createRun(makeRun({ id: 'run_1', idempotencyKey: 'same-key', input: { x: 1 } }))
 
-      const db = (storage as any).db
-      const originalPrepare = db.prepare.bind(db)
+      // A second connection whose first idempotency lookup misses, as if a
+      // concurrent writer inserted the key between that lookup and the INSERT.
+      const db = new Database(DB_PATH)
       let firstLookupMissed = false
+      const racing = new SqliteStorageBase({
+        exec: (sql) => {
+          db.exec(sql)
+        },
+        get: <T>(sql: string, params: readonly unknown[]) => {
+          if (!firstLookupMissed && sql.includes('idempotency_key = ?')) {
+            firstLookupMissed = true
+            return undefined
+          }
+          return db.prepare(sql).get(...params) as T | undefined
+        },
+        all: <T>(sql: string, params: readonly unknown[]) => db.prepare(sql).all(...params) as T[],
+        run: (sql, params) => db.prepare(sql).run(...params).changes,
+        close: () => {
+          db.close()
+        },
+      })
 
-      vi.spyOn(db, 'prepare').mockImplementation(((sql: unknown) => {
-        const sqlText = String(sql)
-        const statement = originalPrepare(sqlText)
-        if (!sqlText.includes('SELECT * FROM workflow_runs') || !sqlText.includes('idempotency_key')) {
-          return statement
-        }
+      const result = await racing.createRun(makeRun({ id: 'run_2', idempotencyKey: 'same-key', input: { x: 1 } }))
+      racing.close()
 
-        return new Proxy(statement, {
-          get(target, property, receiver) {
-            if (property === 'get') {
-              return (...args: unknown[]) => {
-                if (!firstLookupMissed) {
-                  firstLookupMissed = true
-                  return undefined
-                }
-
-                return Reflect.get(target, property, receiver).apply(target, args)
-              }
-            }
-
-            const value = Reflect.get(target, property, receiver)
-            return typeof value === 'function' ? value.bind(target) : value
-          },
-        })
-      }) as any)
-
-      const result = await storage.createRun(makeRun({ id: 'run_2', idempotencyKey: 'same-key', input: { x: 1 } }))
-
+      expect(firstLookupMissed).toBe(true)
       expect(result.created).toBe(false)
       expect(result.run.id).toBe('run_1')
     })
