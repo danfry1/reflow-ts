@@ -1,51 +1,32 @@
 <svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#f8efde"/>
-      <stop offset="1" stop-color="#ead4b3"/>
-    </linearGradient>
-    <linearGradient id="glow" x1="600" y1="0" x2="600" y2="630" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#e46d2f" stop-opacity="0.06"/>
-      <stop offset="1" stop-color="#e46d2f" stop-opacity="0"/>
-    </linearGradient>
-  </defs>
+  <rect width="1200" height="630" fill="#0E1626"/>
 
-  <!-- Full-bleed warm background -->
-  <rect width="1200" height="630" fill="url(#bg)"/>
-
-  <!-- Subtle top glow -->
-  <rect width="1200" height="320" fill="url(#glow)"/>
-
-  <!-- Thin accent line at top -->
-  <rect y="0" width="1200" height="4" fill="#e46d2f" opacity="0.6"/>
-
-  <!-- Brand icon — the rounded R mark, matching the favicon -->
-  <g transform="translate(840, 100) scale(4.375)">
-    <rect width="64" height="64" rx="18" fill="#183128"/>
-    <path d="M21 48 V16 H34 A10 9 0 0 1 34 34 H26 L45 48" fill="none" stroke="#F6EEDC" stroke-width="8.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Mark -->
+  <g transform="translate(80 72) scale(1.125)">
+    <rect width="64" height="64" rx="16" fill="#14213D" stroke="#26334D" stroke-width="2"/>
+    <path d="M12 42h16M36 22h16" stroke="#F4F6F9" stroke-width="7" stroke-linecap="round"/>
+    <path d="M30.5 38.5l3-13" stroke="#E8A317" stroke-width="7" stroke-linecap="round" stroke-dasharray="0.01 10.5"/>
   </g>
-
-  <!-- Brand -->
-  <text x="80" y="100" fill="#183128" font-family="'Inter', 'SF Pro Display', 'Avenir Next', sans-serif" font-size="22" font-weight="700" letter-spacing="3">REFLOW</text>
-  <text x="80" y="128" fill="#7a8c83" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="16">reflow-ts</text>
+  <text x="168" y="122" fill="#E6EAF2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="700" letter-spacing="-0.5">Reflow</text>
 
   <!-- Headline -->
-  <text x="80" y="240" fill="#183128" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="72" font-weight="800" letter-spacing="-2">Durable workflow</text>
-  <text x="80" y="320" fill="#183128" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="72" font-weight="800" letter-spacing="-2">execution for</text>
-  <text x="80" y="400" fill="#183128" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="72" font-weight="800" letter-spacing="-2">TypeScript.</text>
+  <text x="80" y="268" fill="#E6EAF2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="68" font-weight="750" letter-spacing="-2">Workflows that pause, crash,</text>
+  <text x="80" y="346" fill="#E6EAF2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="68" font-weight="750" letter-spacing="-2">and carry on.</text>
+  <text x="80" y="408" fill="#A9B3C7" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="26">Durable execution for TypeScript, on a SQLite file.</text>
 
-  <!-- Subtitle -->
-  <text x="80" y="468" fill="#51655b" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="24">SQLite-backed workflows with typed steps, retries, and crash recovery.</text>
-
-  <!-- Bottom badges — minimal, dot-separated -->
-  <text x="80" y="564" fill="#e46d2f" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="16" font-weight="600" letter-spacing="1.5">CRASH SAFE</text>
-  <circle cx="216" cy="559" r="2" fill="#c4b6a0"/>
-  <text x="234" y="564" fill="#7a8c83" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="16" font-weight="600" letter-spacing="1.5">ZERO INFRA</text>
-  <circle cx="380" cy="559" r="2" fill="#c4b6a0"/>
-  <text x="398" y="564" fill="#7a8c83" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="16" font-weight="600" letter-spacing="1.5">TYPESCRIPT</text>
-  <circle cx="546" cy="559" r="2" fill="#c4b6a0"/>
-  <text x="564" y="564" fill="#7a8c83" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="16" font-weight="600" letter-spacing="1.5">SQLITE</text>
-
-  <!-- Bottom border accent -->
-  <rect y="626" width="1200" height="4" fill="#e46d2f" opacity="0.3"/>
+  <!-- A run's flow: work, a durable hold, a crash, the reclaim, and finishing. -->
+  <g transform="translate(80 500)">
+    <line x1="0" y1="10" x2="60" y2="10" stroke="#26334D" stroke-width="3" stroke-dasharray="2 6" stroke-linecap="round"/>
+    <rect x="72" y="0" width="150" height="20" rx="5" fill="#4CC08A"/>
+    <rect x="230" y="0" width="96" height="20" rx="5" fill="#4CC08A"/>
+    <line x1="338" y1="10" x2="610" y2="10" stroke="#E8A317" stroke-width="5" stroke-dasharray="14 10"/>
+    <rect x="622" y="0" width="70" height="20" rx="5" fill="#6E9BFF"/>
+    <rect x="696" y="-10" width="6" height="40" rx="3" fill="#F06A5F"/>
+    <line x1="714" y1="10" x2="790" y2="10" stroke="#26334D" stroke-width="3" stroke-dasharray="2 6" stroke-linecap="round"/>
+    <rect x="802" y="0" width="120" height="20" rx="5" fill="#4CC08A"/>
+    <rect x="930" y="0" width="110" height="20" rx="5" fill="#4CC08A"/>
+    <text x="338" y="58" fill="#6E7A93" font-family="'Inter', 'Helvetica Neue', Arial, sans-serif" font-size="18">sleep('2h')</text>
+    <text x="664" y="58" fill="#6E7A93" font-family="'Inter', 'Helvetica Neue', Arial, sans-serif" font-size="18">crash</text>
+    <text x="802" y="58" fill="#6E7A93" font-family="'Inter', 'Helvetica Neue', Arial, sans-serif" font-size="18">resumed elsewhere</text>
+  </g>
 </svg>

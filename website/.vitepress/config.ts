@@ -23,6 +23,7 @@ export default defineConfig({
     ['meta', { name: 'twitter:title', content: 'Reflow — Durable Workflows for TypeScript' }],
   ],
   themeConfig: {
+    logo: '/favicon.svg',
     search: { provider: 'local' },
     socialLinks: [{ icon: 'github', link: 'https://github.com/danfry1/reflow-ts' }],
     editLink: {

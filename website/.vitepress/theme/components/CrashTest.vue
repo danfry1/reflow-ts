@@ -293,18 +293,16 @@ const statusLabel = {
 
 <style scoped>
 .ct {
-  --ct-accent: #e46d2f;
-  --ct-good: #2f9e6f;
-  --ct-bad: #d2553a;
+  --ct-accent: var(--vp-c-brand-1);
+  --ct-good: #23825a;
+  --ct-bad: #d2463c;
   margin: 5rem 0 1rem;
 }
 
 .ct-head { max-width: 46rem; }
 .ct-eyebrow {
-  font-family: var(--vp-font-family-mono, ui-monospace, monospace);
-  font-size: 0.78rem;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  font-size: 0.95rem;
+  font-weight: 600;
   color: var(--ct-accent);
   margin: 0 0 0.6rem;
 }

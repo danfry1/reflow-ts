@@ -4,11 +4,11 @@ title: Reflow — Durable Workflows for TypeScript
 titleTemplate: false
 hero:
   name: Reflow
-  text: Durable workflow execution for TypeScript.
-  tagline: Multi-step workflows with full type safety, automatic retries, and crash recovery — powered by SQLite, no external services required.
+  text: Workflows that pause, crash, and carry on.
+  tagline: Durable execution for TypeScript. Typed multi-step workflows with retries, sleeps, and crash recovery, on a SQLite file — no services to run.
   image:
-    src: /favicon.svg
-    alt: Reflow
+    src: /hero-runs.svg
+    alt: Three runs drawn as lanes — one completed, one waiting for an event, one that crashed mid-step and picked up where it left off
   actions:
     - theme: brand
       text: Get Started

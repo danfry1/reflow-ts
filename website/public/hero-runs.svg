@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 330" fill="none" font-family="Inter, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif">
+  <!-- Three runs drawn as the dashboard draws them: work is solid, a durable
+       hold is dashed, a crash is a stop, and recovery carries on after it. -->
+  <rect x="1" y="1" width="478" height="328" rx="18" fill="#14213D"/>
+
+  <text x="32" y="56" fill="#E6EAF2" font-size="17" font-weight="650">order-fulfillment</text>
+  <text x="448" y="56" fill="#4CC08A" font-size="14" text-anchor="end">Completed</text>
+  <rect x="32" y="72" width="120" height="12" rx="3" fill="#4CC08A"/>
+  <rect x="157" y="72" width="70" height="12" rx="3" fill="#4CC08A"/>
+  <rect x="232" y="72" width="150" height="12" rx="3" fill="#4CC08A"/>
+  <rect x="304" y="68" width="2" height="20" fill="#14213D"/>
+  <rect x="338" y="68" width="2" height="20" fill="#14213D"/>
+  <rect x="387" y="72" width="61" height="12" rx="3" fill="#4CC08A"/>
+
+  <text x="32" y="148" fill="#E6EAF2" font-size="17" font-weight="650">user-signup</text>
+  <text x="448" y="148" fill="#E8A317" font-size="14" text-anchor="end">Waiting for email-verified</text>
+  <rect x="32" y="164" width="96" height="12" rx="3" fill="#4CC08A"/>
+  <line x1="136" y1="170" x2="448" y2="170" stroke="#E8A317" stroke-width="3" stroke-dasharray="10 7"/>
+
+  <text x="32" y="240" fill="#E6EAF2" font-size="17" font-weight="650">nightly-import</text>
+  <text x="448" y="240" fill="#6E9BFF" font-size="14" text-anchor="end">Resumed after a crash</text>
+  <rect x="32" y="256" width="150" height="12" rx="3" fill="#4CC08A"/>
+  <rect x="187" y="256" width="60" height="12" rx="3" fill="#6E9BFF"/>
+  <rect x="250" y="248" width="4" height="28" rx="2" fill="#F06A5F"/>
+  <line x1="262" y1="262" x2="300" y2="262" stroke="#6E7A93" stroke-width="2" stroke-dasharray="2 5" stroke-linecap="round"/>
+  <rect x="308" y="256" width="96" height="12" rx="3" fill="#4CC08A"/>
+  <rect x="409" y="256" width="39" height="12" rx="3" fill="#6E9BFF"/>
+  <text x="250" y="300" fill="#6E7A93" font-size="13" text-anchor="middle">crash</text>
+  <text x="308" y="300" fill="#6E7A93" font-size="13">picks up at step 3</text>
+</svg>
