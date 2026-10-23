@@ -10,7 +10,7 @@ import type {
   WorkflowRun,
   WorkflowSchedule,
 } from '../core/types'
-import { InternalError } from '../core/errors'
+import { assertNever, InternalError } from '../core/errors'
 import { nextOccurrence, sameRecurrence } from '../core/schedule-timing'
 import { clonePersistedValue } from './codec'
 
@@ -68,39 +68,27 @@ export class MemoryStorage implements StorageAdapter {
     }
 
     const now = Date.now()
-    const candidates = Array.from(this.runs.values())
-      .filter((run) => {
-        if (!workflowNames.includes(run.workflow)) {
-          return false
-        }
+    // Claim the run that has been due longest, so new pending runs cannot
+    // starve a woken sleeper or a stale run. A single pass rather than a sort:
+    // this runs on every claim, over every stored run. Ties go to the earlier
+    // `createdAt`, then to insertion order.
+    let run: StoredRun | undefined
+    let runDueAt = Number.POSITIVE_INFINITY
+    for (const candidate of this.runs.values()) {
+      if (!workflowNames.includes(candidate.workflow)) {
+        continue
+      }
 
-        if (run.status === 'pending') {
-          return true
-        }
+      const dueAt = claimableSince(candidate, now, staleBefore)
+      if (
+        dueAt !== null
+        && (dueAt < runDueAt || (dueAt === runDueAt && run !== undefined && candidate.createdAt < run.createdAt))
+      ) {
+        run = candidate
+        runDueAt = dueAt
+      }
+    }
 
-        if (
-          (run.status === 'sleeping' || run.status === 'waiting')
-          && run.wakeAt !== null
-          && run.wakeAt <= now
-        ) {
-          return true
-        }
-
-        return staleBefore !== undefined && run.status === 'running' && run.updatedAt <= staleBefore
-      })
-      .sort((left, right) => {
-        // Pending runs are claimed before woken sleeping / stale running runs;
-        // within a rank, oldest first. Rank-based so the comparator stays a
-        // valid total order when both non-pending kinds are present.
-        const rank = (status: RunStatus): number => (status === 'pending' ? 0 : 1)
-        const rankDiff = rank(left.status) - rank(right.status)
-        if (rankDiff !== 0) {
-          return rankDiff
-        }
-        return left.createdAt - right.createdAt
-      })
-
-    const run = candidates[0]
     if (!run) {
       return null
     }
@@ -362,6 +350,34 @@ function cloneWorkflowRun(run: StoredRun): WorkflowRun {
     status: run.status,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
+  }
+}
+
+/**
+ * When `run` became claimable, or null if it is not claimable now.
+ *
+ * A pending run is due from the moment it became pending, a sleeping or
+ * waiting run from its wake time, and a stale running run from the moment its
+ * lease expired: `now - staleBefore` (the lease duration) after its last
+ * heartbeat.
+ */
+function claimableSince(run: StoredRun, now: number, staleBefore: number | undefined): number | null {
+  switch (run.status) {
+    case 'pending':
+      return run.updatedAt
+    case 'sleeping':
+    case 'waiting':
+      return run.wakeAt !== null && run.wakeAt <= now ? run.wakeAt : null
+    case 'running':
+      return staleBefore !== undefined && run.updatedAt <= staleBefore
+        ? run.updatedAt + (now - staleBefore)
+        : null
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+      return null
+    default:
+      return assertNever(run.status, 'run status')
   }
 }
 

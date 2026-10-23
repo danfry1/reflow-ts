@@ -80,7 +80,7 @@ interface StorageAdapter {
 |---|---|
 | `initialize` | Create tables/indexes. Called once by `engine.start()`. |
 | `createRun` | Persist a new run. Must handle idempotency-key conflicts, returning `{ run, created }`. |
-| `claimNextRun` | **Atomically** claim the next pending run (a stale one older than `staleBefore`, or a `sleeping`/`waiting` run past its wake time), returning a unique `leaseId`. |
+| `claimNextRun` | **Atomically** claim the next pending run (a stale one older than `staleBefore`, or a `sleeping`/`waiting` run past its wake time), returning a unique `leaseId`. Must claim the run that has been claimable **longest** — pending since its `updatedAt`, sleeping/waiting since its wake time, stale since its lease expired — so new work cannot starve woken or crashed runs. |
 | `heartbeatRun` | Renew the lease. Return `false` if the lease was lost. |
 | `sleepRun` | Suspend a held run to `sleeping` until `wakeAt`, releasing the lease. Backs [`.sleep()`](/api/workflow). |
 | `waitRun` | Suspend a held run to `waiting` (until an event or `wakeAt`), releasing the lease. Must stay reclaimable if a matching event is already buffered. Backs [`.waitForEvent()`](/api/workflow). |
