@@ -63,9 +63,11 @@ export class SqliteStorageBase implements StorageAdapter {
 
   constructor(driver: SqliteDriver) {
     this.driver = driver
+    // First, so that even switching the journal mode waits for a lock held by
+    // another process opening the same file, instead of failing at once.
+    this.driver.exec('PRAGMA busy_timeout = 5000')
     this.driver.exec('PRAGMA journal_mode = WAL')
     this.driver.exec('PRAGMA synchronous = NORMAL')
-    this.driver.exec('PRAGMA busy_timeout = 5000')
   }
 
   async initialize(): Promise<void> {
@@ -672,7 +674,15 @@ export class SqliteStorageBase implements StorageAdapter {
       throw error
     }
 
-    this.driver.exec('COMMIT')
+    try {
+      this.driver.exec('COMMIT')
+    } catch (error) {
+      // A COMMIT that fails (SQLITE_BUSY under a rollback journal, say) leaves
+      // the transaction open, and every later BEGIN on this connection would
+      // fail. Roll back so the connection stays usable.
+      this.rollbackAfter(error)
+      throw error
+    }
     return result
   }
 

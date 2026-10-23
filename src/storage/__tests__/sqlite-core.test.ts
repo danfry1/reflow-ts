@@ -106,3 +106,48 @@ describe('SqliteStorageBase transactions', () => {
     storage.close()
   })
 })
+
+describe('SqliteStorageBase connection setup and recovery', () => {
+  beforeEach(removeDatabase)
+  afterEach(removeDatabase)
+
+  it('sets busy_timeout before anything that might wait for a lock', () => {
+    const statements: string[] = []
+    const recording = driverWithReadHook(DB_PATH, () => {})
+    const exec = recording.exec
+    recording.exec = (sql) => {
+      statements.push(sql)
+      exec(sql)
+    }
+
+    new SqliteStorageBase(recording).close()
+
+    expect(statements[0]).toBe('PRAGMA busy_timeout = 5000')
+  })
+
+  it('stays usable after a COMMIT fails', async () => {
+    const driver = driverWithReadHook(DB_PATH, () => {})
+    const exec = driver.exec
+    let failNextCommit = false
+    driver.exec = (sql) => {
+      if (sql === 'COMMIT' && failNextCommit) {
+        failNextCommit = false
+        throw new Error('database is locked')
+      }
+      exec(sql)
+    }
+    const storage = new SqliteStorageBase(driver)
+    await storage.initialize()
+
+    failNextCommit = true
+    await expect(storage.createRun(makeRun({ id: 'lost' }))).rejects.toThrow('database is locked')
+
+    // Without a rollback the connection would still be inside the failed
+    // transaction, and this would fail with "cannot start a transaction
+    // within a transaction".
+    await storage.createRun(makeRun({ id: 'kept' }))
+    expect((await storage.getRun('kept'))?.status).toBe('pending')
+    expect(await storage.getRun('lost')).toBeNull()
+    storage.close()
+  })
+})

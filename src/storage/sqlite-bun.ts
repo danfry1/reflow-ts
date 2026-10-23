@@ -12,7 +12,7 @@
  */
 
 import { SqliteStorageBase } from './sqlite/core'
-import { statementCache, type SqlParam, type SqliteDriver } from './sqlite/driver'
+import type { SqlParam, SqliteDriver } from './sqlite/driver'
 
 // Minimal type declarations for bun:sqlite to enable compilation on any runtime.
 // At runtime this module only works on Bun.
@@ -38,7 +38,11 @@ function openBunSqlite(path: string): SqliteDriver {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Database } = require('bun:sqlite') as { Database: new (path: string) => BunDatabase }
   const db = new Database(path)
-  const prepare = statementCache((sql) => db.prepare(sql))
+  // Prepared fresh each call, unlike the other drivers: a bun:sqlite statement
+  // keeps the column names it was prepared with, so after another connection
+  // rebuilds a table (a migration in a newer process, mid rolling deploy) a
+  // cached `SELECT *` would silently return values under the wrong names.
+  const prepare = (sql: string) => db.prepare(sql)
 
   return {
     exec: (sql) => {
