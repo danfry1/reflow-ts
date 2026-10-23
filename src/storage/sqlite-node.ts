@@ -14,11 +14,13 @@
  */
 
 import Database from 'better-sqlite3'
-import { SqliteStorageBase } from './sqlite/core'
+import { SqliteStorageBase, type SQLiteStorageOptions } from './sqlite/core'
 import { statementCache, type SqliteDriver } from './sqlite/driver'
 
-function openBetterSqlite(path: string): SqliteDriver {
-  const db = new Database(path)
+export type { SQLiteStorageOptions }
+
+function openBetterSqlite(path: string, options: SQLiteStorageOptions): SqliteDriver {
+  const db = new Database(path, options.readOnly ? { readonly: true, fileMustExist: true } : {})
   const prepare = statementCache((sql) => db.prepare(sql))
 
   return {
@@ -39,7 +41,7 @@ function openBetterSqlite(path: string): SqliteDriver {
  * transactional claiming for safe multi-process access.
  */
 export class SQLiteStorage extends SqliteStorageBase {
-  constructor(path: string) {
-    super(openBetterSqlite(path))
+  constructor(path: string, options: SQLiteStorageOptions = {}) {
+    super(openBetterSqlite(path, options), options)
   }
 }

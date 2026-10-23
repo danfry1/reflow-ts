@@ -402,6 +402,26 @@ interface StorageAdapter {
 
 Persisted data must be JSON-compatible: plain objects, arrays, strings, numbers, booleans, null, and undefined.
 
+## Dashboard
+
+```bash
+npx reflow-ts dashboard ./reflow.db   # read-only web view of a SQLite database, on 127.0.0.1
+```
+
+```typescript
+import { createDashboard, toNodeHandler } from 'reflow-ts/dashboard'
+
+// A Fetch API handler: (request: Request) => Promise<Response>
+const dashboard = createDashboard({
+  storage,
+  authorize: (request) => isAdmin(request), // required; () => true for open access
+  engine,                                   // optional: enables cancel/resume and live updates
+  basePath: '/admin/reflow',                // when the server passes full paths
+})
+Bun.serve({ fetch: dashboard })
+app.use('/admin/reflow', toNodeHandler(dashboard)) // Express / node:http (leave basePath '/')
+```
+
 ## Testing
 
 ```typescript

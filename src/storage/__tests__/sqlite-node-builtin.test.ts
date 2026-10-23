@@ -262,6 +262,18 @@ describe.skipIf(!nodeSqliteAvailable)('SQLiteStorage (node:sqlite)', () => {
     expect(claimed.id).toBe('run_1')
   })
 
+  it('a read-only connection reads the database and refuses writes', async () => {
+    await storage.createRun(makeRun({ id: 'existing' }))
+    const reader = new SQLiteStorage(dbPath, { readOnly: true })
+
+    try {
+      expect(expectPresent(await reader.getRun('existing')).status).toBe('pending')
+      await expect(reader.createRun(makeRun({ id: 'new' }))).rejects.toThrow(/readonly|read-only|query_only|attempt to write/i)
+    } finally {
+      reader.close()
+    }
+  })
+
   it('requeueRun returns false for non-resumable runs', async () => {
     await storage.createRun(makeRun({ id: 'p', status: 'pending' }))
     expect(await storage.requeueRun('p')).toBe(false)

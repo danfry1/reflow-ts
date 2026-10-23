@@ -15,7 +15,7 @@ import type {
   ScheduleRecurrence,
 } from '../../core/types'
 import { emptyRunCounts, parseRunError, parseRunStatus, parseStepStatus } from '../records'
-import { pendingMigrations } from './schema'
+import { pendingMigrations, SCHEMA_VERSION } from './schema'
 import { deserializePersistedValue, serializePersistedValue } from '../codec'
 import { nextOccurrence } from '../../core/schedule-timing'
 import { InternalError } from '../../core/errors'
@@ -62,6 +62,17 @@ interface WorkflowScheduleRow {
   updated_at: number
 }
 
+/** Options for the SQLite adapters' constructors. */
+export interface SQLiteStorageOptions {
+  /**
+   * Open the database for reading only: every write fails, `initialize()`
+   * included, and the file is left exactly as it was — no journal-mode change.
+   * The file must already exist. For inspecting a database another process
+   * owns, or a backup.
+   */
+  readOnly?: boolean
+}
+
 /**
  * The SQLite storage adapter, independent of which binding executes the SQL.
  *
@@ -73,11 +84,18 @@ interface WorkflowScheduleRow {
 export class SqliteStorageBase implements StorageAdapter {
   private readonly driver: SqliteDriver
 
-  constructor(driver: SqliteDriver) {
+  constructor(driver: SqliteDriver, options: SQLiteStorageOptions = {}) {
     this.driver = driver
     // First, so that even switching the journal mode waits for a lock held by
     // another process opening the same file, instead of failing at once.
     this.driver.exec('PRAGMA busy_timeout = 5000')
+    if (options.readOnly) {
+      // Refuses every write on this connection, whatever the binding's own
+      // read-only flag does or does not honour. The journal-mode pragma below
+      // would itself be a persistent write to the file, so it is skipped too.
+      this.driver.exec('PRAGMA query_only = ON')
+      return
+    }
     this.driver.exec('PRAGMA journal_mode = WAL')
     this.driver.exec('PRAGMA synchronous = NORMAL')
   }
@@ -93,7 +111,7 @@ export class SqliteStorageBase implements StorageAdapter {
   async initialize(): Promise<void> {
     for (;;) {
       const applied = this.transaction(() => {
-        const [next] = pendingMigrations(this.schemaVersion())
+        const [next] = pendingMigrations(this.currentSchemaVersion())
         if (!next) {
           return false
         }
@@ -112,7 +130,15 @@ export class SqliteStorageBase implements StorageAdapter {
     }
   }
 
-  private schemaVersion(): number {
+  /**
+   * The database's schema version and the version this build writes. When
+   * `current` is behind `latest`, `initialize()` will migrate the database.
+   */
+  schemaVersion(): { current: number; latest: number } {
+    return { current: this.currentSchemaVersion(), latest: SCHEMA_VERSION }
+  }
+
+  private currentSchemaVersion(): number {
     return this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0
   }
 

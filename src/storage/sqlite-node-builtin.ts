@@ -18,7 +18,7 @@
  */
 
 import { createRequire } from 'node:module'
-import { SqliteStorageBase } from './sqlite/core'
+import { SqliteStorageBase, type SQLiteStorageOptions } from './sqlite/core'
 import { statementCache, type SqlParam, type SqliteDriver } from './sqlite/driver'
 
 // `node:sqlite` is loaded lazily through createRequire so importing this module
@@ -26,9 +26,13 @@ import { statementCache, type SqlParam, type SqliteDriver } from './sqlite/drive
 // to be present (Node >= 22.5).
 const nodeRequire = createRequire(import.meta.url)
 
-function openNodeSqlite(path: string): SqliteDriver {
+export type { SQLiteStorageOptions }
+
+function openNodeSqlite(path: string, options: SQLiteStorageOptions): SqliteDriver {
   const sqlite = nodeRequire('node:sqlite') as typeof import('node:sqlite')
-  const db = new sqlite.DatabaseSync(path)
+  // `readOnly` arrived in Node 22.12 and is ignored before it; the base class's
+  // query_only pragma refuses writes either way.
+  const db = new sqlite.DatabaseSync(path, options.readOnly ? { readOnly: true } : {})
   const prepare = statementCache((sql) => db.prepare(sql))
 
   return {
@@ -50,7 +54,7 @@ function openNodeSqlite(path: string): SqliteDriver {
  * reads and transactional claiming for safe multi-process access.
  */
 export class SQLiteStorage extends SqliteStorageBase {
-  constructor(path: string) {
-    super(openNodeSqlite(path))
+  constructor(path: string, options: SQLiteStorageOptions = {}) {
+    super(openNodeSqlite(path, options), options)
   }
 }

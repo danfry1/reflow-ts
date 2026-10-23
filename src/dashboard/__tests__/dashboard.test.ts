@@ -1,0 +1,446 @@
+import { describe, it, expect, beforeEach } from 'vitest'
+import { createServer } from 'node:http'
+import { z } from 'zod'
+import { createEngine, createWorkflow } from '../../index'
+import { MemoryStorage } from '../../storage/memory'
+import { delegatingAdapter } from '../../__tests__/helpers'
+import { createDashboard, toNodeHandler, type DashboardOptions } from '../index'
+
+const ORIGIN = 'http://dash.test'
+
+const wf = createWorkflow({ name: 'order', input: z.object({ id: z.string() }) })
+  .step('charge', async ({ input }) => {
+    if (input.id === 'bad') throw new Error('card declined')
+    return { charged: input.id }
+  })
+
+const waiter = createWorkflow({ name: 'approval', input: z.object({}) }).waitForEvent('approved')
+
+function get(path: string, init?: RequestInit): Request {
+  return new Request(ORIGIN + path, init)
+}
+
+function post(path: string, headers: Record<string, string> = { 'x-reflow-dashboard': '1' }): Request {
+  return new Request(ORIGIN + path, { method: 'POST', headers })
+}
+
+describe('createDashboard', () => {
+  let storage: MemoryStorage
+  let engine: ReturnType<typeof makeEngine>
+
+  function makeEngine() {
+    return createEngine({ storage, workflows: [wf, waiter], concurrency: 5 })
+  }
+
+  function dashboard(options: Partial<DashboardOptions> = {}) {
+    return createDashboard({ storage, authorize: () => true, ...options })
+  }
+
+  beforeEach(async () => {
+    storage = new MemoryStorage()
+    await storage.initialize()
+    engine = makeEngine()
+  })
+
+  describe('access', () => {
+    it('answers 401 to a request authorize() rejects, page and API alike', async () => {
+      const seen: string[] = []
+      const handler = dashboard({ authorize: (request) => {
+        seen.push(new URL(request.url).pathname)
+        return false
+      } })
+
+      expect((await handler(get('/'))).status).toBe(401)
+      expect((await handler(get('/api/overview'))).status).toBe(401)
+      expect(seen).toStrictEqual(['/', '/api/overview'])
+    })
+
+    it('answers 500 without detail when authorize() throws', async () => {
+      const handler = dashboard({ authorize: () => {
+        throw new Error('<script>alert(1)</script> is not a token')
+      } })
+
+      const response = await handler(get('/api/overview'))
+
+      expect(response.status).toBe(500)
+      expect(await response.text()).toBe('Could not check authorization')
+      expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    })
+
+    it('answers only to allowed hosts, so DNS rebinding cannot reach it', async () => {
+      const handler = dashboard({ allowedHosts: ['localhost:4400'] })
+
+      const rebound = await handler(new Request('http://attacker.example:4400/api/runs'))
+      const local = await handler(new Request('http://LOCALHOST:4400/api/runs'))
+
+      expect(rebound.status).toBe(421)
+      expect(local.status).toBe(200)
+    })
+
+    it('waits for an async authorize()', async () => {
+      const handler = dashboard({ authorize: async () => true })
+
+      expect((await handler(get('/api/overview'))).status).toBe(200)
+    })
+  })
+
+  describe('page', () => {
+    it('serves the page with a nonce-locked content security policy', async () => {
+      const response = await dashboard()(get('/'))
+      const html = await response.text()
+      const policy = response.headers.get('content-security-policy') ?? ''
+      const nonce = /script-src 'nonce-([^']+)'/.exec(policy)?.[1]
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
+      expect(policy).toContain("default-src 'none'")
+      expect(policy).toContain("frame-ancestors 'none'")
+      expect(nonce).toMatch(/^[A-Za-z0-9+/=]{24}$/)
+      expect(html).toContain(`<script nonce="${nonce}">`)
+      expect(html).toContain(`<style nonce="${nonce}">`)
+    })
+
+    it('uses a fresh nonce for every response', async () => {
+      const handler = dashboard()
+      const first = (await handler(get('/'))).headers.get('content-security-policy')
+      const second = (await handler(get('/'))).headers.get('content-security-policy')
+
+      expect(first).not.toBe(second)
+    })
+
+    it('loads nothing from anywhere else', async () => {
+      const html = await (await dashboard()(get('/'))).text()
+
+      expect(html).not.toMatch(/\b(src|href)="https?:/)
+    })
+
+    it('escapes the configured title', async () => {
+      const html = await (await dashboard({ title: '<b>Ops</b> & co' })(get('/'))).text()
+
+      expect(html).toContain('<title>&lt;b&gt;Ops&lt;/b&gt; &amp; co</title>')
+      expect(html).not.toContain('<b>Ops</b>')
+    })
+  })
+
+  describe('mount path', () => {
+    it('redirects the bare mount path to its trailing-slash form', async () => {
+      const response = await dashboard({ basePath: '/admin/reflow' })(get('/admin/reflow?x=1'))
+
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('/admin/reflow/?x=1')
+    })
+
+    it('serves the API below the mount path and nothing outside it', async () => {
+      const handler = dashboard({ basePath: '/admin/reflow/' })
+
+      expect((await handler(get('/admin/reflow/api/overview'))).status).toBe(200)
+      expect((await handler(get('/api/overview'))).status).toBe(404)
+      expect((await handler(get('/admin/reflowx/api/overview'))).status).toBe(404)
+    })
+  })
+
+  describe('reading', () => {
+    it('reports counts, and whether actions and live updates are available', async () => {
+      await engine.enqueue('order', { id: 'a' })
+
+      const readOnly = await (await dashboard()(get('/api/overview'))).json()
+      const withEngine = await (await dashboard({ engine })(get('/api/overview'))).json()
+
+      expect(readOnly).toMatchObject({ title: 'Reflow', actions: false, live: false })
+      expect(readOnly.counts.pending).toBe(1)
+      expect(withEngine).toMatchObject({ actions: true, live: true })
+    })
+
+    it('lists runs without their inputs and outputs', async () => {
+      await engine.enqueue('order', { id: 'secret-ish' })
+      await engine.tick()
+
+      const body = await (await dashboard()(get('/api/runs'))).json()
+
+      expect(body.runs).toHaveLength(1)
+      expect(body.runs[0]).toMatchObject({ workflow: 'order', status: 'completed' })
+      expect(body.runs[0]).not.toHaveProperty('input')
+      expect(body.runs[0]).not.toHaveProperty('output')
+      expect(body.next).toBeNull()
+    })
+
+    it('filters runs by status and workflow', async () => {
+      await engine.enqueue('order', { id: 'ok' })
+      await engine.enqueue('order', { id: 'bad' })
+      await engine.enqueue('approval', {})
+      await engine.tick()
+      const handler = dashboard()
+
+      const failed = await (await handler(get('/api/runs?status=failed'))).json()
+      const approvals = await (await handler(get('/api/runs?workflow=approval'))).json()
+
+      expect(failed.runs.map((run: { error: { message: string } }) => run.error.message)).toStrictEqual(['card declined'])
+      expect(approvals.runs.map((run: { status: string }) => run.status)).toStrictEqual(['waiting'])
+    })
+
+    it('pages through runs with the returned cursor', async () => {
+      for (const id of ['a', 'b', 'c']) {
+        await engine.enqueue('order', { id })
+      }
+      const handler = dashboard()
+
+      const first = await (await handler(get('/api/runs?limit=2'))).json()
+      const cursor = new URLSearchParams({ limit: '2', before: String(first.next.before), beforeId: first.next.beforeId })
+      const second = await (await handler(get(`/api/runs?${cursor.toString()}`))).json()
+
+      const ids = [...first.runs, ...second.runs].map((run: { id: string }) => run.id)
+      expect(new Set(ids).size).toBe(3)
+      expect(second.next).toBeNull()
+    })
+
+    it('rejects an unknown status or an out-of-range limit', async () => {
+      const handler = dashboard()
+
+      expect((await handler(get('/api/runs?status=paused'))).status).toBe(400)
+      expect((await handler(get('/api/runs?limit=0'))).status).toBe(400)
+      expect((await handler(get('/api/runs?limit=201'))).status).toBe(400)
+      expect((await handler(get('/api/runs?before=soon'))).status).toBe(400)
+    })
+
+    it('returns one run with its steps, or 404', async () => {
+      const run = await engine.enqueue('order', { id: 'a' })
+      await engine.tick()
+      const handler = dashboard()
+
+      const found = await (await handler(get(`/api/runs/${run.id}`))).json()
+      const missing = await handler(get('/api/runs/nope'))
+
+      expect(found.run).toMatchObject({ id: run.id, input: { id: 'a' }, output: { charged: 'a' } })
+      expect(found.steps.map((step: { name: string }) => step.name)).toStrictEqual(['charge'])
+      expect(missing.status).toBe(404)
+    })
+
+    it('decodes run ids in the path, and rejects malformed escapes', async () => {
+      await storage.createRun({
+        id: 'run with spaces', workflow: 'order', input: { id: 'x' }, idempotencyKey: null, status: 'pending',
+        createdAt: 1, updatedAt: 1, startedAt: null, finishedAt: null, output: undefined, error: null, wakeAt: null, waitingFor: null,
+      })
+      const handler = dashboard()
+
+      expect((await handler(get('/api/runs/run%20with%20spaces'))).status).toBe(200)
+      expect((await handler(get('/api/runs/%E0%A4%A'))).status).toBe(400)
+    })
+
+    it('lists schedules', async () => {
+      await engine.schedule('order', { id: 'nightly' }, { cron: '0 3 * * *' }, { key: 'nightly-order' })
+
+      const body = await (await dashboard()(get('/api/schedules'))).json()
+
+      expect(body.schedules).toMatchObject([{ key: 'nightly-order', recurrence: { kind: 'cron', expression: '0 3 * * *' } }])
+    })
+
+    it('answers 405 to the wrong method and 404 to an unknown endpoint', async () => {
+      const handler = dashboard()
+
+      expect((await handler(post('/api/overview'))).status).toBe(405)
+      expect((await handler(get('/api/nothing'))).status).toBe(404)
+    })
+
+    it('answers 500 with the message when storage fails', async () => {
+      const broken = delegatingAdapter(storage, {
+        countRuns: async () => {
+          throw new Error('disk gone')
+        },
+      })
+      const response = await createDashboard({ storage: broken, authorize: () => true })(get('/api/overview'))
+
+      expect(response.status).toBe(500)
+      expect(await response.json()).toStrictEqual({ error: 'disk gone' })
+    })
+  })
+
+  describe('actions', () => {
+    it('cancels and resumes a run through the engine', async () => {
+      const run = await engine.enqueue('approval', {})
+      await engine.tick()
+      const handler = dashboard({ engine })
+
+      const cancelled = await handler(post(`/api/runs/${run.id}/cancel`))
+      expect(await cancelled.json()).toStrictEqual({ done: true })
+      expect((await storage.getRun(run.id))?.status).toBe('cancelled')
+
+      const resumed = await handler(post(`/api/runs/${run.id}/resume`))
+      expect(await resumed.json()).toStrictEqual({ done: true })
+      expect((await storage.getRun(run.id))?.status).toBe('pending')
+    })
+
+    it('refuses actions without the dashboard header', async () => {
+      const run = await engine.enqueue('approval', {})
+
+      const response = await dashboard({ engine })(post(`/api/runs/${run.id}/cancel`, {}))
+
+      expect(response.status).toBe(403)
+      expect((await storage.getRun(run.id))?.status).toBe('pending')
+    })
+
+    it('refuses actions from another origin', async () => {
+      const run = await engine.enqueue('approval', {})
+
+      const response = await dashboard({ engine })(
+        post(`/api/runs/${run.id}/cancel`, { 'x-reflow-dashboard': '1', origin: 'https://evil.example' }),
+      )
+
+      expect(response.status).toBe(403)
+      expect((await storage.getRun(run.id))?.status).toBe('pending')
+    })
+
+    it('accepts actions from the same host over https, as through a TLS-terminating proxy', async () => {
+      const run = await engine.enqueue('approval', {})
+
+      const response = await dashboard({ engine })(
+        post(`/api/runs/${run.id}/cancel`, { 'x-reflow-dashboard': '1', origin: 'https://dash.test' }),
+      )
+
+      expect(response.status).toBe(200)
+    })
+
+    it('accepts actions from an allowed public host when a proxy rewrites Host', async () => {
+      const run = await engine.enqueue('approval', {})
+      const handler = dashboard({ engine, allowedHosts: ['dash.test', 'admin.example.com'] })
+
+      const fromPublic = await handler(
+        post(`/api/runs/${run.id}/cancel`, { 'x-reflow-dashboard': '1', origin: 'https://admin.example.com' }),
+      )
+
+      expect(fromPublic.status).toBe(200)
+    })
+
+    it('refuses actions from an opaque origin', async () => {
+      const run = await engine.enqueue('approval', {})
+
+      const response = await dashboard({ engine })(
+        post(`/api/runs/${run.id}/cancel`, { 'x-reflow-dashboard': '1', origin: 'null' }),
+      )
+
+      expect(response.status).toBe(403)
+    })
+
+    it('is read-only without an engine', async () => {
+      const run = await engine.enqueue('approval', {})
+
+      const response = await dashboard()(post(`/api/runs/${run.id}/cancel`))
+
+      expect(response.status).toBe(403)
+      expect((await storage.getRun(run.id))?.status).toBe('pending')
+    })
+
+    it('does not change state on GET', async () => {
+      const run = await engine.enqueue('approval', {})
+
+      const response = await dashboard({ engine })(get(`/api/runs/${run.id}/cancel`))
+
+      expect(response.status).toBe(405)
+      expect((await storage.getRun(run.id))?.status).toBe('pending')
+    })
+  })
+
+  describe('live updates', () => {
+    it('is unavailable without an engine', async () => {
+      expect((await dashboard()(get('/api/live'))).status).toBe(404)
+    })
+
+    it('drops notices a stalled client cannot take, and sends one resync when it catches up', async () => {
+      const response = await dashboard({ engine })(get('/api/live'))
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+      if (!reader) throw new Error('expected a streaming body')
+      await reader.read()
+
+      // Many changes while the client reads nothing.
+      for (const id of ['a', 'b', 'c']) {
+        await engine.enqueue('order', { id })
+      }
+      await engine.tick()
+
+      const first = decoder.decode((await reader.read()).value)
+      const second = decoder.decode((await reader.read()).value)
+      expect(first).toMatch(/^data: \{"type":"runStart"/)
+      expect(second).toBe(`data: ${JSON.stringify({ type: 'resync' })}\n\n`)
+      await reader.cancel()
+    })
+
+    it('streams a notice naming each run that changes', async () => {
+      const aborted = new AbortController()
+      const response = await dashboard({ engine })(get('/api/live', { signal: aborted.signal }))
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+      if (!reader) throw new Error('expected a streaming body')
+
+      expect(response.headers.get('content-type')).toBe('text/event-stream; charset=utf-8')
+      expect(decoder.decode((await reader.read()).value)).toBe(': connected\n\n')
+
+      const run = await engine.enqueue('order', { id: 'a' })
+      await engine.tick()
+      const notice = decoder.decode((await reader.read()).value)
+
+      expect(notice).toBe(`data: ${JSON.stringify({ type: 'runStart', runId: run.id })}\n\n`)
+      aborted.abort()
+      await reader.cancel()
+    })
+  })
+})
+
+describe('toNodeHandler', () => {
+  it('serves the dashboard over node:http', async () => {
+    const storage = new MemoryStorage()
+    await storage.initialize()
+    const server = createServer(toNodeHandler(createDashboard({ storage, authorize: () => true })))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('expected a TCP address')
+    const { port } = address
+
+    try {
+      const page = await fetch(`http://127.0.0.1:${port}/`)
+      const overview = await fetch(`http://127.0.0.1:${port}/api/overview`)
+
+      expect(page.status).toBe(200)
+      expect(page.headers.get('content-security-policy')).toContain("default-src 'none'")
+      expect(await overview.json()).toMatchObject({ actions: false })
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it('ends the response, rather than crashing, when a body fails mid-stream', async () => {
+    const failing = async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new TextEncoder().encode('partial'))
+        controller.error(new Error('body failed'))
+      },
+    }))
+    const server = createServer(toNodeHandler(failing))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('expected a TCP address')
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/`)
+      await expect(response.text()).rejects.toBeInstanceOf(TypeError)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it('answers 500 without detail when the handler throws', async () => {
+    const server = createServer(toNodeHandler(async () => {
+      throw new Error('secret internals')
+    }))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('expected a TCP address')
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/`)
+      expect(response.status).toBe(500)
+      expect(await response.text()).toBe('Internal error')
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+})

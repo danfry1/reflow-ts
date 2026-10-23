@@ -70,6 +70,7 @@ export default defineConfig({
             { text: 'Crash Recovery', link: '/guide/crash-recovery' },
             { text: 'Storage', link: '/guide/storage' },
             { text: 'Inspecting Runs', link: '/guide/inspecting-runs' },
+            { text: 'Dashboard', link: '/guide/dashboard' },
           ],
         },
         {
