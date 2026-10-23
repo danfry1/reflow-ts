@@ -292,10 +292,17 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   let stopGeneration = 0
   /** Runs this instance is executing. Each holds one `concurrency` slot. */
   const executions = new Set<Promise<void>>()
-  /** Claims awaiting storage. Each has reserved a slot it may not need. */
-  let claimsInFlight = 0
-  /** Every background operation `stop()` must outlast: claims, schedule passes, executions. */
-  const pendingWork = new Set<Promise<unknown>>()
+  /**
+   * Slots reserved by claims that are awaiting storage, or that have claimed a
+   * run not yet started. Shared by every caller — the pool and any manual
+   * `tick()` — so between them they never hold more than `concurrency`.
+   */
+  let reservedSlots = 0
+  /**
+   * Every background operation a `stop()` must outlast — claims, schedule
+   * passes, executions — with the stop generation it began in.
+   */
+  const pendingWork = new Map<Promise<unknown>, number>()
   let fillInFlight = false
   let refillRequested = false
   let pollInFlight = false
@@ -632,7 +639,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         throw error
       }
     } finally {
-      cleanupActiveRun(run.id)
+      cleanupActiveRun(run.id, activeRun)
     }
   }
 
@@ -791,7 +798,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
    * Returns the same promise, so callers keep its result and its rejection.
    */
   function track<T>(work: Promise<T>): Promise<T> {
-    pendingWork.add(work)
+    pendingWork.set(work, stopGeneration)
     const forget = () => {
       pendingWork.delete(work)
     }
@@ -819,16 +826,23 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     let failure: ClaimBatch['failure'] = null
 
     try {
-      while (registry.size > 0 && executions.size + claimsInFlight + claimed.length < concurrency) {
-        claimsInFlight++
+      // Stops claiming the moment stop() lands, rather than filling every slot
+      // with runs that would only sit out their leases.
+      while (registry.size > 0 && generation === stopGeneration && executions.size + reservedSlots < concurrency) {
+        // The slot stays reserved from here until the run starts executing (or
+        // the claim comes back empty), so a concurrent caller cannot count it
+        // as free while this batch is still being claimed.
+        reservedSlots++
         let run: ClaimedRun | null
         try {
           run = await track(storage.claimNextRun(workflowNames, Date.now() - runLeaseDurationMs))
-        } finally {
-          claimsInFlight--
+        } catch (error) {
+          reservedSlots--
+          throw error
         }
 
         if (!run) {
+          reservedSlots--
           break
         }
 
@@ -838,6 +852,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       failure = { error }
     }
 
+    reservedSlots -= claimed.length
     // Runs claimed as stop() lands are left to their leases, like every other
     // run a stopped instance holds, and reclaimed once those expire.
     const started = generation === stopGeneration ? claimed.map(execute) : []
@@ -942,7 +957,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   }
 
   async function stop(): Promise<void> {
-    stopGeneration++
+    const stopping = stopGeneration++
     running = false
 
     if (timer) {
@@ -950,9 +965,9 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       timer = null
     }
 
-    for (const [runId] of activeRuns) {
+    for (const [runId, activeRun] of activeRuns) {
       abortActiveRun(runId, new RunControlError('Engine stopped'))
-      cleanupActiveRun(runId)
+      cleanupActiveRun(runId, activeRun)
     }
 
     // End all streams and unblock any producer paused on backpressure, so a
@@ -964,16 +979,26 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
 
     // Settling one operation can start another (a run ending requests a fill,
     // which no-ops once stopped but may already be claiming), so drain until
-    // nothing is left rather than snapshotting once.
-    while (pendingWork.size > 0) {
-      await Promise.allSettled(pendingWork)
+    // nothing is left rather than snapshotting once. Only work begun before
+    // this stop counts: an engine started again meanwhile must not keep a
+    // stop() pending for as long as it stays busy.
+    for (;;) {
+      const outstanding = [...pendingWork].filter(([, generation]) => generation <= stopping).map(([work]) => work)
+      if (outstanding.length === 0) {
+        return
+      }
+      await Promise.allSettled(outstanding)
     }
   }
 
   function registerActiveRun(run: ClaimedRun): ActiveRunState {
+    // This instance reclaimed a run it was still executing: the earlier
+    // execution's lease has lapsed (its heartbeats stalled), so it can no
+    // longer write anything, and must stop before the new one runs alongside it.
     const existing = activeRuns.get(run.id)
     if (existing) {
-      cleanupActiveRun(run.id)
+      abortRunState(existing, new LeaseExpiredError(run.id))
+      cleanupActiveRun(run.id, existing)
     }
 
     const activeRun: ActiveRunState = {
@@ -999,10 +1024,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       try {
         const ok = await storage.heartbeatRun(run.id, activeRun.leaseId)
         if (!ok) {
-          abortActiveRun(run.id, new LeaseExpiredError(run.id))
+          abortRunState(activeRun, new LeaseExpiredError(run.id))
         }
       } catch (error) {
-        abortActiveRun(run.id, toError(error))
+        abortRunState(activeRun, toError(error))
       } finally {
         activeRun.heartbeatInFlight = false
       }
@@ -1013,25 +1038,30 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }, heartbeatIntervalMs)
   }
 
-  function cleanupActiveRun(runId: string): void {
-    const activeRun = activeRuns.get(runId)
-    if (!activeRun) {
-      return
-    }
-
+  /**
+   * Stop `activeRun`'s heartbeat and forget it — only it. Keyed by the state
+   * object rather than the run id, so an execution finishing after this
+   * instance has reclaimed the same run cannot tear down the new execution.
+   */
+  function cleanupActiveRun(runId: string, activeRun: ActiveRunState): void {
     if (activeRun.heartbeatTimer) {
       clearInterval(activeRun.heartbeatTimer)
+      activeRun.heartbeatTimer = null
     }
 
-    activeRuns.delete(runId)
+    if (activeRuns.get(runId) === activeRun) {
+      activeRuns.delete(runId)
+    }
   }
 
   function abortActiveRun(runId: string, reason: Error): void {
     const activeRun = activeRuns.get(runId)
-    if (!activeRun) {
-      return
+    if (activeRun) {
+      abortRunState(activeRun, reason)
     }
+  }
 
+  function abortRunState(activeRun: ActiveRunState, reason: Error): void {
     if (!activeRun.signals.run.signal.aborted) {
       activeRun.signals.run.abort(reason)
     }

@@ -7,7 +7,7 @@ import { createEngine } from '../engine'
 import type { StorageAdapter } from '../types'
 import { MemoryStorage } from '../../storage/memory'
 import { SQLiteStorage } from '../../storage/sqlite-node'
-import { at } from '../../__tests__/helpers'
+import { at, delegatingAdapter } from '../../__tests__/helpers'
 import { StorageError, ValidationError } from '../../index'
 
 function expectPresent<T>(value: T | null | undefined): T {
@@ -1092,6 +1092,144 @@ describe('Engine', () => {
         expect((await engine.getRunStatus(run.id))?.run.status).toBe('completed')
       })
       await engine.stop()
+    })
+
+    it('never exceeds concurrency when tick() calls overlap while claims are slow', async () => {
+      let activeRuns = 0
+      let maxActiveRuns = 0
+      const wf = createWorkflow({ name: 'slow-claims', input: z.object({}) }).step('work', async () => {
+        activeRuns++
+        maxActiveRuns = Math.max(maxActiveRuns, activeRuns)
+        await new Promise((resolve) => setTimeout(resolve, 30))
+        activeRuns--
+      })
+      const slow = delegatingAdapter(storage, {
+        claimNextRun: async (names, staleBefore) => {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          return storage.claimNextRun(names, staleBefore)
+        },
+      })
+      const engine = createEngine({ storage: slow, workflows: [wf], concurrency: 4 })
+      for (let index = 0; index < 20; index++) {
+        await engine.enqueue('slow-claims', {})
+      }
+
+      await Promise.all([engine.tick(), engine.tick(), engine.tick()])
+
+      expect(maxActiveRuns).toBe(4)
+    })
+
+    it('aborts its own stale execution when it reclaims a run, and keeps the new one alive', async () => {
+      let firstLease: string | null = null
+      const heartbeats = new Map<string, number>()
+      const stalling = delegatingAdapter(storage, {
+        claimNextRun: async (names, staleBefore) => {
+          const run = await storage.claimNextRun(names, staleBefore)
+          firstLease ??= run?.leaseId ?? null
+          return run
+        },
+        heartbeatRun: (runId, leaseId) => {
+          heartbeats.set(leaseId, (heartbeats.get(leaseId) ?? 0) + 1)
+          // The first lease's heartbeats hang, so it lapses while still executing.
+          return leaseId === firstLease ? new Promise<boolean>(() => {}) : storage.heartbeatRun(runId, leaseId)
+        },
+      })
+      const signals: AbortSignal[] = []
+      let releaseSecond: () => void = () => {}
+      const wf = createWorkflow({ name: 'reclaimed', input: z.object({}) }).step('long', async ({ signal }) => {
+        signals.push(signal)
+        if (signals.length === 1) {
+          await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
+          return {}
+        }
+        await new Promise<void>((resolve) => {
+          releaseSecond = resolve
+        })
+        return {}
+      })
+      // Two slots, so the pool has one free to reclaim the run into while the
+      // stale execution still occupies the other.
+      const engine = createEngine({ storage: stalling, workflows: [wf], concurrency: 2, runLeaseDurationMs: 150, heartbeatIntervalMs: 30 })
+      await engine.start(40)
+      const run = await engine.enqueue('reclaimed', {})
+
+      await vi.waitFor(() => {
+        expect(signals).toHaveLength(2)
+      })
+      const secondLease = expectPresent([...heartbeats.keys()].find((lease) => lease !== firstLease))
+      const beatsSoFar = heartbeats.get(secondLease) ?? 0
+      await new Promise((resolve) => setTimeout(resolve, 150))
+
+      expect(at(signals, 0).aborted).toBe(true)
+      expect(heartbeats.get(secondLease) ?? 0).toBeGreaterThan(beatsSoFar)
+      releaseSecond()
+      await vi.waitFor(async () => {
+        expect((await engine.getRunStatus(run.id))?.run.status).toBe('completed')
+      })
+      await engine.stop()
+    })
+
+    it('stops claiming the moment stop() is called', async () => {
+      let claims = 0
+      let firstClaimEntered: () => void = () => {}
+      const entered = new Promise<void>((resolve) => {
+        firstClaimEntered = resolve
+      })
+      let releaseFirstClaim: () => void = () => {}
+      const gate = new Promise<void>((resolve) => {
+        releaseFirstClaim = resolve
+      })
+      const gated = delegatingAdapter(storage, {
+        claimNextRun: async (names, staleBefore) => {
+          claims++
+          if (claims === 1) {
+            firstClaimEntered()
+            await gate
+          }
+          return storage.claimNextRun(names, staleBefore)
+        },
+      })
+      const wf = createWorkflow({ name: 'stop-claims', input: z.object({}) }).step('a', async () => ({}))
+      const engine = createEngine({ storage: gated, workflows: [wf], concurrency: 8 })
+      for (let index = 0; index < 8; index++) {
+        await engine.enqueue('stop-claims', {})
+      }
+      await engine.start(NEVER_POLL_AGAIN)
+      await entered
+
+      const stopping = engine.stop()
+      releaseFirstClaim()
+      await stopping
+
+      // The claim already in flight finishes; no further one starts.
+      expect(claims).toBe(1)
+    })
+
+    it('stop() resolves even if the engine is started again before it finishes', async () => {
+      // Runs arrive faster than two slots can take them, so the restarted
+      // engine is never idle — the old stop() waited on its work forever.
+      const wf = createWorkflow({ name: 'restart', input: z.object({}) }).step('a', async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30))
+      })
+      const engine = createEngine({ storage, workflows: [wf], concurrency: 2 })
+      const busy = setInterval(() => {
+        void engine.enqueue('restart', {})
+      }, 10)
+
+      try {
+        await engine.start(20)
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        const stopping = engine.stop()
+        await engine.start(20)
+
+        await expect(Promise.race([
+          stopping.then(() => 'stopped'),
+          new Promise((resolve) => setTimeout(() => resolve('still pending'), 1000)),
+        ])).resolves.toBe('stopped')
+      } finally {
+        clearInterval(busy)
+        await engine.stop()
+      }
     })
 
     it('never exceeds concurrency when tick() races the polling loop', async () => {
