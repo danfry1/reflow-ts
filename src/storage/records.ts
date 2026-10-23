@@ -5,6 +5,7 @@ import {
   type RunCounts,
   type RunError,
   type RunStatus,
+  type StepAttempt,
   type StepStatus,
 } from '../core/types'
 
@@ -44,6 +45,29 @@ export function parseRunError(serialized: string): RunError {
     return { stepName: value.stepName, message: value.message, code: value.code }
   }
   throw new InternalError('Stored run error is malformed')
+}
+
+/** Parse a step's attempt history stored as JSON, checking each entry's shape. */
+export function parseStepHistory(serialized: string): StepAttempt[] {
+  const value: unknown = JSON.parse(serialized)
+  if (!Array.isArray(value)) {
+    throw new InternalError('Stored step history is malformed')
+  }
+  return value.map((entry: unknown): StepAttempt => {
+    if (
+      typeof entry === 'object'
+      && entry !== null
+      && 'startedAt' in entry
+      && typeof entry.startedAt === 'number'
+      && 'finishedAt' in entry
+      && typeof entry.finishedAt === 'number'
+      && 'error' in entry
+      && (typeof entry.error === 'string' || entry.error === null)
+    ) {
+      return { startedAt: entry.startedAt, finishedAt: entry.finishedAt, error: entry.error }
+    }
+    throw new InternalError('Stored step history is malformed')
+  })
 }
 
 /** A count of zero for every run status. */

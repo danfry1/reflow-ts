@@ -1,5 +1,5 @@
 import type { EngineEvent } from '../events'
-import type { ClaimedRun, PersistedValue, StepResult, StepStatus, StorageAdapter } from '../types'
+import type { ClaimedRun, PersistedValue, StepAttempt, StepResult, StepStatus, StorageAdapter } from '../types'
 import type { AnyWorkflow, ExecutionUnit } from '../workflow'
 
 /**
@@ -28,6 +28,8 @@ export interface StepRecord {
    * recorded for the step (or, on its first save, to use now).
    */
   readonly startedAt?: number
+  /** Every attempt at the step's handler so far. Omit to keep what is already recorded. */
+  readonly history?: readonly StepAttempt[]
 }
 
 /**

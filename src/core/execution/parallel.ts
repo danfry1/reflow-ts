@@ -1,5 +1,5 @@
 import { BranchFailedError, ParallelCompleteError, RunControlError } from '../errors'
-import type { PersistedValue } from '../types'
+import type { PersistedValue, StepAttempt } from '../types'
 import type { StepDefinition } from '../workflow'
 import { toError } from './signals'
 import { runStepHandlerInProcess } from './step'
@@ -48,6 +48,9 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
     // fail because they observed the abort are downstream effects, not the
     // cause — distinguishing them keeps `onRunFailed` accurate.
     let causeBranch: BranchFailedError | null = null
+    // Each branch's attempts, kept beside the settled results rather than
+    // threaded through the branch error.
+    const histories = new Map<string, StepAttempt[]>()
 
     const onRunAbort = () => {
       if (!groupAbort.signal.aborted) {
@@ -96,6 +99,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
           // ParallelCompleteError (a plain error) before EarlyCompleteError can
           // be raised, so a branch only ever completes or fails.
           if (outcome.kind === 'failed') {
+            histories.set(branchDef.name, outcome.history)
             const failure = new BranchFailedError(branchDef.name, outcome.error, outcome.attempts)
             if (!groupAbort.signal.aborted) {
               causeBranch = failure
@@ -104,6 +108,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
             throw failure
           }
 
+          histories.set(branchDef.name, outcome.history)
           return { name: branchDef.name, output: outcome.output, attempts: outcome.attempts }
         }),
       )
@@ -132,6 +137,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
           error: firstFailure.branchError.message,
           attempts: firstFailure.attempts,
           startedAt,
+          history: histories.get(firstFailure.branchName) ?? [],
         })
 
         return { kind: 'failed', stepName: firstFailure.branchName, error: firstFailure.branchError }
@@ -147,6 +153,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
           output: branch.output,
           attempts: branch.attempts,
           startedAt,
+          history: histories.get(branch.name) ?? [],
         })
 
         await ctx.emit({

@@ -141,6 +141,15 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 3,
+    description: 'step attempt history',
+    up(db) {
+      // JSON array of attempts. NULL for steps recorded before it existed,
+      // which read back as an empty history.
+      db.exec(`ALTER TABLE workflow_steps ADD COLUMN history TEXT`)
+    },
+  },
 ]
 
 /** The schema version this build of Reflow writes. */

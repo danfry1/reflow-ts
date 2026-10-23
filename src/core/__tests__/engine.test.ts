@@ -7,7 +7,7 @@ import { createEngine } from '../engine'
 import { MemoryStorage } from '../../storage/memory'
 import { SQLiteStorage } from '../../storage/sqlite-node'
 import { at, delegatingAdapter } from '../../__tests__/helpers'
-import { StorageError, ValidationError } from '../../index'
+import { StorageError, ValidationError, type StepAttempt } from '../../index'
 
 function expectPresent<T>(value: T | null | undefined): T {
   expect(value).not.toBeNull()
@@ -438,6 +438,7 @@ describe('Engine', () => {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         startedAt: null,
+        history: [],
       })
 
       await engine.tick()
@@ -474,6 +475,7 @@ describe('Engine', () => {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         startedAt: null,
+        history: [],
       })
 
       await engine.tick()
@@ -668,7 +670,7 @@ describe('Engine', () => {
       tick(): Promise<void>
       getRunStatus(id: string): Promise<{
         run: { status: string; wakeAt: number | null }
-        steps: { status: string; updatedAt: number; output: unknown }[]
+        steps: { status: string; updatedAt: number; output: unknown; history: StepAttempt[] }[]
       } | null>
     }
 
@@ -811,6 +813,87 @@ describe('Engine', () => {
       expect(at(info.steps, 0)).toMatchObject({ status: 'failed', attempts: 3 })
       await second.stop()
       vi.useRealTimers()
+    })
+
+    it('records every attempt across executions, so each backoff is the gap between two', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        let attempts = 0
+        const wf = createWorkflow({ name: 'history-retry', input: z.object({}) }).step('flaky', {
+          retry: { maxAttempts: 3, backoff: 'linear', initialDelayMs: 10 * MINUTE },
+          handler: async () => {
+            attempts++
+            throw new Error(`attempt ${attempts} failed`)
+          },
+        })
+        const first = createEngine({ storage, workflows: [wf] })
+        await first.start(NO_POLL)
+        const run = await first.enqueue('history-retry', {})
+        const afterFirst = await settled(first, run.id)
+        await first.stop()
+
+        // The rest of the attempts happen on another engine, as after a crash.
+        const second = createEngine({ storage, workflows: [wf] })
+        await second.start(NO_POLL)
+        vi.setSystemTime(Number(at(afterFirst.steps, 0).output))
+        await second.tick()
+        const afterSecond = await settled(second, run.id)
+        vi.setSystemTime(Number(at(afterSecond.steps, 0).output))
+        await second.tick()
+        const info = await settled(second, run.id)
+        await second.stop()
+
+        const { history } = at(info.steps, 0)
+        expect(history.map((attempt) => attempt.error)).toStrictEqual([
+          'attempt 1 failed',
+          'attempt 2 failed',
+          'attempt 3 failed',
+        ])
+        // Linear backoff: 10 minutes after the first attempt, 20 after the second.
+        expect(at(history, 1).startedAt - at(history, 0).finishedAt).toBeGreaterThanOrEqual(10 * MINUTE)
+        expect(at(history, 2).startedAt - at(history, 1).finishedAt).toBeGreaterThanOrEqual(20 * MINUTE)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('records attempts waited out in process, ending with the one that succeeded', async () => {
+      let attempts = 0
+      const wf = createWorkflow({ name: 'history-tick', input: z.object({}) }).step('flaky', {
+        retry: { maxAttempts: 3, backoff: 'linear', initialDelayMs: 5 },
+        handler: async () => {
+          attempts++
+          if (attempts < 3) throw new Error(`attempt ${attempts} failed`)
+          return { ok: true }
+        },
+      })
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('history-tick', {})
+
+      await engine.tick()
+
+      const { history } = at(await storage.getStepResults(run.id), 0)
+      expect(history.map((attempt) => attempt.error)).toStrictEqual(['attempt 1 failed', 'attempt 2 failed', null])
+      for (const [index, attempt] of history.entries()) {
+        expect(attempt.finishedAt).toBeGreaterThanOrEqual(attempt.startedAt)
+        const next = history[index + 1]
+        if (next) {
+          expect(next.startedAt - attempt.finishedAt).toBeGreaterThanOrEqual(5 * (index + 1))
+        }
+      }
+    })
+
+    it('keeps no attempt history for a sleep', async () => {
+      const wf = createWorkflow({ name: 'history-sleep', input: z.object({}) })
+        .sleep('nap', 0)
+        .step('after', async () => ({ ok: true }))
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('history-sleep', {})
+
+      await engine.tick()
+
+      const steps = await storage.getStepResults(run.id)
+      expect(steps.map((step) => [step.name, step.history.length])).toStrictEqual([['nap', 0], ['after', 1]])
     })
 
     it('waits out a backoff in process when driven only by tick(), so the tick finishes the step', async () => {
@@ -2500,6 +2583,7 @@ describe('Engine', () => {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         startedAt: null,
+        history: [],
       }, claimed.leaseId)
 
       // Simulate lease expiry so a second engine can reclaim

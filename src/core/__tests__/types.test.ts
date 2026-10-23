@@ -50,6 +50,7 @@ describe('core types', () => {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       startedAt: null,
+      history: [],
     }
     expect(step.name).toBe('charge')
     expect(step.output).toStrictEqual({ chargeId: 'ch_123' })

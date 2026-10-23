@@ -243,6 +243,7 @@ export class MemoryStorage implements StorageAdapter {
     return (this.steps.get(runId) ?? []).map((step) => ({
       ...step,
       output: clonePersistedValue(step.output, 'Step output'),
+      history: step.history.map((attempt) => ({ ...attempt })),
     }))
   }
 
@@ -256,7 +257,11 @@ export class MemoryStorage implements StorageAdapter {
 
     const existing = this.steps.get(result.runId) ?? []
     const idx = existing.findIndex((step) => step.id === result.id)
-    const cloned = { ...result, output: clonePersistedValue(result.output, 'Step output') }
+    const cloned = {
+      ...result,
+      output: clonePersistedValue(result.output, 'Step output'),
+      history: result.history.map((attempt) => ({ ...attempt })),
+    }
 
     if (idx >= 0) {
       existing[idx] = cloned

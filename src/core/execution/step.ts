@@ -6,7 +6,7 @@ import {
   RunControlError,
   StepFailedError,
 } from '../errors'
-import type { PersistedValue } from '../types'
+import type { PersistedValue, StepAttempt } from '../types'
 import type { StepDefinition } from '../workflow'
 import { createAttemptSignal, delayWithSignal, runWithSignal, toError } from './signals'
 import type { ExecutionContext, UnitExecutor, UnitOutcome } from './types'
@@ -14,13 +14,14 @@ import type { ExecutionContext, UnitExecutor, UnitOutcome } from './types'
 /**
  * How a run of a step handler ended: success, early completion, all attempts
  * spent, or a failure with attempts left and a backoff to wait out first.
+ * `history` holds the attempts this call made, not those of earlier executions.
  */
 export type StepOutcome =
-  | { kind: 'completed'; output: PersistedValue; attempts: number }
-  | { kind: 'early-complete'; output: PersistedValue; attempts: number }
-  | { kind: 'failed'; error: Error; attempts: number }
+  | { kind: 'completed'; output: PersistedValue; attempts: number; history: StepAttempt[] }
+  | { kind: 'early-complete'; output: PersistedValue; attempts: number; history: StepAttempt[] }
+  | { kind: 'failed'; error: Error; attempts: number; history: StepAttempt[] }
   /** Attempt `attempts` failed; the next may start at `retryAt` (epoch ms). */
-  | { kind: 'retry'; error: Error; attempts: number; retryAt: number }
+  | { kind: 'retry'; error: Error; attempts: number; retryAt: number; history: StepAttempt[] }
 
 /** Everything {@link runStepHandler} needs, independent of how the step is scheduled. */
 export interface StepAttemptContext {
@@ -59,6 +60,7 @@ export async function runStepHandler(
 
   let lastError: Error | null = null
   const priorAttempts = attempt.priorAttempts ?? 0
+  const history: StepAttempt[] = []
 
   for (let attemptNumber = priorAttempts + 1; attemptNumber <= maxAttempts; attemptNumber++) {
     // Stop retrying once the run signal is aborted. A handler is not re-entered
@@ -69,6 +71,7 @@ export async function runStepHandler(
     }
 
     const attemptSignal = createAttemptSignal(attempt.runSignal, timeoutMs)
+    const startedAt = Date.now()
 
     try {
       const complete = (value?: PersistedValue): never => {
@@ -89,10 +92,12 @@ export async function runStepHandler(
       // `void` and `undefined` coincide at runtime; the cast narrows the
       // handler's `PersistedValue | void` return without touching the value, so
       // a handler that returns `null` still records `null` rather than `undefined`.
-      return { kind: 'completed', output: rawOutput as PersistedValue, attempts: attemptNumber }
+      history.push({ startedAt, finishedAt: Date.now(), error: null })
+      return { kind: 'completed', output: rawOutput as PersistedValue, attempts: attemptNumber, history }
     } catch (error) {
       if (error instanceof EarlyCompleteError) {
-        return { kind: 'early-complete', output: error.value, attempts: attemptNumber }
+        history.push({ startedAt, finishedAt: Date.now(), error: null })
+        return { kind: 'early-complete', output: error.value, attempts: attemptNumber, history }
       }
 
       const err = toError(error)
@@ -103,6 +108,7 @@ export async function runStepHandler(
       }
 
       lastError = err
+      history.push({ startedAt, finishedAt: Date.now(), error: err.message })
 
       if (attemptNumber < maxAttempts) {
         const delay = backoff === 'exponential'
@@ -110,7 +116,7 @@ export async function runStepHandler(
           : initialDelay * attemptNumber
 
         if (delay > 0) {
-          return { kind: 'retry', error: err, attempts: attemptNumber, retryAt: Date.now() + delay }
+          return { kind: 'retry', error: err, attempts: attemptNumber, retryAt: Date.now() + delay, history }
         }
       }
     } finally {
@@ -129,6 +135,7 @@ export async function runStepHandler(
     kind: 'failed',
     error: lastError ?? new StepFailedError(stepDef.name, attempts, { lastError: attempt.priorError }),
     attempts,
+    history,
   }
 }
 
@@ -145,10 +152,12 @@ export async function runStepHandlerInProcess(
   steps: Readonly<Record<string, PersistedValue>>,
 ): Promise<Exclude<StepOutcome, { kind: 'retry' }>> {
   let priorAttempts = attempt.priorAttempts ?? 0
+  const history: StepAttempt[] = []
   for (;;) {
     const outcome = await runStepHandler(stepDef, { ...attempt, priorAttempts }, prev, steps)
+    history.push(...outcome.history)
     if (outcome.kind !== 'retry') {
-      return outcome
+      return { ...outcome, history }
     }
 
     // An abort mid-backoff rejects with the abort's reason, which the caller
@@ -223,7 +232,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
         const retryAt = Number(retrying.output)
         if (Date.now() < retryAt) {
           if (ctx.durableBackoff) {
-            return suspendForRetry(ctx, stepDef.name, retrying.error ?? '', retrying.attempts, retryAt, startedAt)
+            return suspendForRetry(ctx, stepDef.name, retrying.error ?? '', retrying.attempts, retryAt, startedAt, retrying.history)
           }
           await delayWithSignal(retryAt - Date.now(), ctx.signals.run.signal)
         }
@@ -249,11 +258,15 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
         ? await runStepHandler(stepDef, attempt, prev, frozenSteps)
         : await runStepHandlerInProcess(stepDef, attempt, prev, frozenSteps)
 
+      // Attempts made by earlier executions come first, so the record spans
+      // every attempt and the backoffs between them.
+      const history = [...(retrying?.history ?? []), ...outcome.history]
+
       if (outcome.kind === 'retry') {
         if (isControlAbort(ctx)) {
           return { kind: 'halt' }
         }
-        return suspendForRetry(ctx, stepDef.name, outcome.error.message, outcome.attempts, outcome.retryAt, startedAt)
+        return suspendForRetry(ctx, stepDef.name, outcome.error.message, outcome.attempts, outcome.retryAt, startedAt, history)
       }
 
       if (outcome.kind === 'failed') {
@@ -275,6 +288,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
           error: outcome.error.message,
           attempts: outcome.attempts,
           startedAt,
+          history,
         })
 
         return { kind: 'failed', stepName: stepDef.name, error: outcome.error }
@@ -286,6 +300,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
         output: outcome.output,
         attempts: outcome.attempts,
         startedAt,
+        history,
       })
 
       await ctx.emit({
@@ -343,8 +358,9 @@ async function suspendForRetry(
   attempts: number,
   retryAt: number,
   startedAt: number,
+  history: readonly StepAttempt[],
 ): Promise<UnitOutcome> {
-  await ctx.saveStep({ name: stepName, status: 'retrying', output: retryAt, error, attempts, startedAt })
+  await ctx.saveStep({ name: stepName, status: 'retrying', output: retryAt, error, attempts, startedAt, history })
 
   if (!(await ctx.storage.sleepRun(ctx.run.id, ctx.run.leaseId, retryAt))) {
     throw new LeaseExpiredError(ctx.run.id)

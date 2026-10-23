@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { SqliteStorageBase } from '../sqlite/core'
 import type { SqliteDriver } from '../sqlite/driver'
-import { ConfigError, SerializationError } from '../../core/errors'
+import { ConfigError, InternalError, SerializationError } from '../../core/errors'
 import { SQLiteStorage } from '../sqlite-node'
 import { SCHEMA_VERSION } from '../sqlite/schema'
 import type { WorkflowRun } from '../../core/types'
@@ -222,6 +222,38 @@ describe('SqliteStorageBase migrations', () => {
     expect((await storage.getRun('done'))?.finishedAt).toBe(500)
     expect((await storage.getRun('live'))?.finishedAt).toBeNull()
     expect(await storage.deleteRuns({ finishedBefore: 1_000, statuses: ['completed'], limit: 10 })).toBe(1)
+    storage.close()
+  })
+
+  it('reads steps recorded before attempt history with an empty one', async () => {
+    seed0_7()
+    const db = new Database(DB_PATH)
+    db.prepare(
+      `INSERT INTO workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at)
+       VALUES ('s', 'done', 'charge', 'completed', '{}', NULL, 2, 100, 200)`,
+    ).run()
+    db.close()
+    const storage = new SQLiteStorage(DB_PATH)
+    await storage.initialize()
+
+    expect((await storage.getStepResults('done'))[0]).toMatchObject({ name: 'charge', attempts: 2, history: [] })
+    storage.close()
+  })
+
+  it('refuses a step whose stored history is malformed', async () => {
+    const storage = new SQLiteStorage(DB_PATH)
+    await storage.initialize()
+    await storage.createRun(makeRun())
+    const db = new Database(DB_PATH)
+    db.prepare(
+      `INSERT INTO workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at, history)
+       VALUES ('s', 'run_1', 'charge', 'completed', '{}', NULL, 1, 100, 200, '[{"startedAt":"soon"}]')`,
+    ).run()
+    db.close()
+
+    const read = storage.getStepResults('run_1')
+    await expect(read).rejects.toBeInstanceOf(InternalError)
+    await expect(read).rejects.toThrow('Stored step history is malformed')
     storage.close()
   })
 

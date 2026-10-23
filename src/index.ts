@@ -73,6 +73,7 @@ export type {
   WorkflowRun,
   WorkflowSchedule,
   ScheduleRecurrence,
+  StepAttempt,
   StepResult,
   RunCounts,
   RunError,

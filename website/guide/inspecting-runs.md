@@ -40,6 +40,17 @@ for (const step of info?.steps ?? []) {
 
 A step's duration includes its retries and their backoff. A [sleep](/guide/sleep) or [wait](/guide/wait-for-event) keeps the time it began even when it finishes on a later claim, so its duration is the whole pause.
 
+`history` breaks a step's duration down: one entry per attempt at its handler, oldest first, each with `startedAt`, `finishedAt`, and the `error` it failed with (`null` for the one that succeeded). It spans every execution of the step, including attempts made before a crash, so the gap between one attempt finishing and the next starting is the backoff it waited out:
+
+```typescript
+const [first, second] = step.history
+if (first && second) {
+  console.log(`attempt 1 failed with "${first.error}", retried ${second.startedAt - first.finishedAt}ms later`)
+}
+```
+
+Sleeps, waits, and skipped steps have an empty history, as do steps recorded before 0.8.
+
 ## Counting
 
 `countRuns()` returns a count for every status, zero or not — cheap enough to poll for a health check or a status line:

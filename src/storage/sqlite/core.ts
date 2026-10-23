@@ -14,7 +14,7 @@ import type {
   WorkflowSchedule,
   ScheduleRecurrence,
 } from '../../core/types'
-import { emptyRunCounts, parseRunError, parseRunStatus, parseStepStatus } from '../records'
+import { emptyRunCounts, parseRunError, parseRunStatus, parseStepHistory, parseStepStatus } from '../records'
 import { pendingMigrations, SCHEMA_VERSION } from './schema'
 import { deserializePersistedValue, serializePersistedValue } from '../codec'
 import { nextOccurrence } from '../../core/schedule-timing'
@@ -49,6 +49,7 @@ interface WorkflowStepRow {
   created_at: number
   updated_at: number
   started_at: number | null
+  history: string | null
 }
 
 interface WorkflowScheduleRow {
@@ -472,6 +473,7 @@ export class SqliteStorageBase implements StorageAdapter {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       startedAt: row.started_at,
+      history: row.history === null ? [] : parseStepHistory(row.history),
     }))
   }
 
@@ -491,8 +493,8 @@ export class SqliteStorageBase implements StorageAdapter {
       }
 
       this.run(
-        `INSERT OR REPLACE INTO workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at, history)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         result.id,
         result.runId,
         result.name,
@@ -503,6 +505,7 @@ export class SqliteStorageBase implements StorageAdapter {
         result.createdAt,
         result.updatedAt,
         result.startedAt,
+        JSON.stringify(result.history),
       )
 
       return true

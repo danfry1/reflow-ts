@@ -699,6 +699,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         // A suspended sleep or wait finishing on a later claim keeps the time
         // it began; an executor re-running a step passes a fresh one.
         startedAt: record.startedAt ?? existing?.startedAt ?? now,
+        history: record.history ? [...record.history] : existing?.history ?? [],
       }, run.leaseId)
     }
 

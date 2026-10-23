@@ -93,6 +93,23 @@ export interface StepResult {
    * finished step took. A step re-run after `resume()` gets a fresh value.
    */
   startedAt: number | null
+  /**
+   * Every attempt at the step's handler, oldest first, across executions. The
+   * gap between one attempt's `finishedAt` and the next one's `startedAt` is
+   * the backoff the step waited out. Empty for sleeps, waits, and skipped
+   * steps, and for steps recorded before 0.8.
+   */
+  history: StepAttempt[]
+}
+
+/** One attempt at running a step's handler. */
+export interface StepAttempt {
+  /** When the attempt began (epoch ms). */
+  startedAt: number
+  /** When it returned or threw (epoch ms). */
+  finishedAt: number
+  /** The message it failed with; `null` for the attempt that succeeded. */
+  error: string | null
 }
 
 /** Configuration for automatic step retries. */

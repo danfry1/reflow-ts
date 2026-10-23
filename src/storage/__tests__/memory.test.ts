@@ -45,6 +45,7 @@ function makeStep(overrides: Partial<StepResult> = {}): StepResult {
     createdAt: Date.now(),
     updatedAt: Date.now(),
     startedAt: null,
+    history: [],
     ...overrides,
   }
 }
