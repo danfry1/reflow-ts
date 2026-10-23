@@ -4,7 +4,7 @@ title: Reflow — Durable workflows for TypeScript
 titleTemplate: false
 ---
 
-<div class="home">
+<div class="landing">
 
 <section class="home-intro">
 
