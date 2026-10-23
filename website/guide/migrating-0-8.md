@@ -4,6 +4,13 @@
 
 **If you use the built-in storage adapters, you can upgrade without changing any code.** The SQLite adapters migrate their tables on `initialize()`. Everything on `engine` is additive.
 
+A few behaviours change in ways your code could notice:
+
+- **Retry backoff suspends the run.** Between attempts the run is `sleeping` (with `wakeAt` set to the next attempt) and the step is `retrying`, instead of the run staying `running`. A crash mid-backoff no longer restarts the step's attempts. Parallel branches still retry in process.
+- **`StepStatus` gains `'retrying'`.** An exhaustive `switch` over step statuses needs a case for it.
+- **A started engine keeps every slot busy** and starts work it enqueues at once, so runs can begin sooner than the next poll, and more of them run concurrently than before when some are slow.
+- **`tick()` fills free slots** rather than skipping when another tick is in flight. On an engine that is not otherwise running — the usual way to drive one in tests — it behaves as before.
+
 Custom storage adapters have work to do; the rest of this page is for them.
 
 ## Databases migrate themselves
