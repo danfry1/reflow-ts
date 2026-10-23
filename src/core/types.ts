@@ -94,10 +94,16 @@ export interface StepResult {
    */
   startedAt: number | null
   /**
-   * Every attempt at the step's handler, oldest first, across executions. The
-   * gap between one attempt's `finishedAt` and the next one's `startedAt` is
-   * the backoff the step waited out. Empty for sleeps, waits, and skipped
-   * steps, and for steps recorded before 0.8.
+   * The step's attempts at its handler, oldest first, including those made by
+   * earlier executions before a durable backoff or a crash. The gap between
+   * one attempt's `finishedAt` and the next one's `startedAt` is at least the
+   * backoff the step waited out. Keeps the latest 100. Empty for sleeps,
+   * waits, and skipped steps, and for steps recorded before 0.8.
+   *
+   * Attempts are saved when the step suspends or finishes, so those a step
+   * retries in process — zero-delay retries, parallel branches, an engine
+   * driven only by `tick()` — are lost along with the step's attempt count if
+   * the process dies before it does.
    */
   history: StepAttempt[]
 }

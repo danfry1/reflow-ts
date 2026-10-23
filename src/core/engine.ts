@@ -10,6 +10,7 @@ import {
   assertNever,
   ConfigError,
   DuplicateWorkflowError,
+  errorMessage,
   HookError,
   IdempotencyConflictError,
   LeaseExpiredError,
@@ -849,7 +850,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   ): Promise<void> {
     const failed = await storage.failRun(run.id, run.leaseId, {
       stepName,
-      message: error.message,
+      message: errorMessage(error),
       code: errorCode(error),
     })
     if (!failed) {

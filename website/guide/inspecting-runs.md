@@ -40,7 +40,7 @@ for (const step of info?.steps ?? []) {
 
 A step's duration includes its retries and their backoff. A [sleep](/guide/sleep) or [wait](/guide/wait-for-event) keeps the time it began even when it finishes on a later claim, so its duration is the whole pause.
 
-`history` breaks a step's duration down: one entry per attempt at its handler, oldest first, each with `startedAt`, `finishedAt`, and the `error` it failed with (`null` for the one that succeeded). It spans every execution of the step, including attempts made before a crash, so the gap between one attempt finishing and the next starting is the backoff it waited out:
+`history` breaks a step's duration down: one entry per attempt at its handler, oldest first, each with `startedAt`, `finishedAt`, and the `error` it failed with (`null` for the one that succeeded). It carries across executions — a durable backoff, or a crash after one — so the gap between one attempt finishing and the next starting is the backoff it waited out, plus any time before an engine picked the run up again:
 
 ```typescript
 const [first, second] = step.history
@@ -49,7 +49,9 @@ if (first && second) {
 }
 ```
 
-Sleeps, waits, and skipped steps have an empty history, as do steps recorded before 0.8.
+Sleeps, waits, and skipped steps have an empty history, as do steps recorded before 0.8. A history keeps the latest 100 attempts.
+
+Attempts are saved when a step suspends or finishes. Retries that run in process — zero-delay retries, [parallel](/guide/parallel) branches, and an engine driven only by `tick()` — are not saved one by one, so if the process dies mid-step they are lost, as is the step's attempt count, and the step starts over.
 
 ## Counting
 

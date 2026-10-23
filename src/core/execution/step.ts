@@ -1,6 +1,7 @@
 import {
   ConfigError,
   EarlyCompleteError,
+  errorMessage,
   InternalError,
   LeaseExpiredError,
   RunControlError,
@@ -108,7 +109,7 @@ export async function runStepHandler(
       }
 
       lastError = err
-      history.push({ startedAt, finishedAt: Date.now(), error: err.message })
+      history.push({ startedAt, finishedAt: Date.now(), error: errorMessage(err) })
 
       if (attemptNumber < maxAttempts) {
         const delay = backoff === 'exponential'
@@ -129,8 +130,9 @@ export async function runStepHandler(
   // could run, which needs an error of its own to report.
   // No attempt ran: either the signal aborted first, or earlier executions had
   // already spent every attempt (the workflow now allows fewer). In the second
-  // case the persisted error is the one that explains the failure.
-  const attempts = Math.max(maxAttempts, priorAttempts)
+  // case the persisted error is the one that explains the failure. Either
+  // way the count is the attempts actually made, not the ones allowed.
+  const attempts = priorAttempts + history.length
   return {
     kind: 'failed',
     error: lastError ?? new StepFailedError(stepDef.name, attempts, { lastError: attempt.priorError }),
@@ -260,13 +262,13 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
 
       // Attempts made by earlier executions come first, so the record spans
       // every attempt and the backoffs between them.
-      const history = [...(retrying?.history ?? []), ...outcome.history]
+      const history = recent([...(retrying?.history ?? []), ...outcome.history])
 
       if (outcome.kind === 'retry') {
         if (isControlAbort(ctx)) {
           return { kind: 'halt' }
         }
-        return suspendForRetry(ctx, stepDef.name, outcome.error.message, outcome.attempts, outcome.retryAt, startedAt, history)
+        return suspendForRetry(ctx, stepDef.name, errorMessage(outcome.error), outcome.attempts, outcome.retryAt, startedAt, history)
       }
 
       if (outcome.kind === 'failed') {
@@ -285,7 +287,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
           name: stepDef.name,
           status: 'failed',
           output: null,
-          error: outcome.error.message,
+          error: errorMessage(outcome.error),
           attempts: outcome.attempts,
           startedAt,
           history,
@@ -367,6 +369,18 @@ async function suspendForRetry(
   }
 
   return { kind: 'suspend', wakeAt: retryAt }
+}
+
+/**
+ * The most attempts a step's history keeps. A step retried thousands of times
+ * — retry used as polling — would otherwise rewrite an ever longer record on
+ * every backoff.
+ */
+export const MAX_STEP_HISTORY = 100
+
+/** The latest {@link MAX_STEP_HISTORY} attempts. */
+export function recent(history: StepAttempt[]): StepAttempt[] {
+  return history.length > MAX_STEP_HISTORY ? history.slice(-MAX_STEP_HISTORY) : history
 }
 
 /** True when the run signal aborted for a control-flow reason rather than a genuine error. */

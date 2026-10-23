@@ -883,6 +883,26 @@ describe('Engine', () => {
       }
     })
 
+    it('keeps only the latest attempts of a step retried many times', async () => {
+      let attempts = 0
+      const wf = createWorkflow({ name: 'history-cap', input: z.object({}) }).step('poll', {
+        retry: { maxAttempts: 105, backoff: 'linear', initialDelayMs: 0 },
+        handler: async () => {
+          attempts++
+          throw new Error(`attempt ${attempts}`)
+        },
+      })
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('history-cap', {})
+
+      await engine.tick()
+
+      const step = at(await storage.getStepResults(run.id), 0)
+      expect(step.attempts).toBe(105)
+      expect(step.history).toHaveLength(100)
+      expect([at(step.history, 0).error, at(step.history, 99).error]).toStrictEqual(['attempt 6', 'attempt 105'])
+    })
+
     it('keeps no attempt history for a sleep', async () => {
       const wf = createWorkflow({ name: 'history-sleep', input: z.object({}) })
         .sleep('nap', 0)

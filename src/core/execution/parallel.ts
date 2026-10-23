@@ -1,8 +1,8 @@
-import { BranchFailedError, ParallelCompleteError, RunControlError } from '../errors'
+import { BranchFailedError, errorMessage, ParallelCompleteError, RunControlError } from '../errors'
 import type { PersistedValue, StepAttempt } from '../types'
 import type { StepDefinition } from '../workflow'
 import { toError } from './signals'
-import { runStepHandlerInProcess } from './step'
+import { recent, runStepHandlerInProcess } from './step'
 import type { UnitExecutor, UnitOutcome } from './types'
 
 /**
@@ -99,7 +99,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
           // ParallelCompleteError (a plain error) before EarlyCompleteError can
           // be raised, so a branch only ever completes or fails.
           if (outcome.kind === 'failed') {
-            histories.set(branchDef.name, outcome.history)
+            histories.set(branchDef.name, recent(outcome.history))
             const failure = new BranchFailedError(branchDef.name, outcome.error, outcome.attempts)
             if (!groupAbort.signal.aborted) {
               causeBranch = failure
@@ -108,7 +108,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
             throw failure
           }
 
-          histories.set(branchDef.name, outcome.history)
+          histories.set(branchDef.name, recent(outcome.history))
           return { name: branchDef.name, output: outcome.output, attempts: outcome.attempts }
         }),
       )
@@ -134,7 +134,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
           name: firstFailure.branchName,
           status: 'failed',
           output: null,
-          error: firstFailure.branchError.message,
+          error: errorMessage(firstFailure.branchError),
           attempts: firstFailure.attempts,
           startedAt,
           history: histories.get(firstFailure.branchName) ?? [],
