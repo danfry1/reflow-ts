@@ -4,15 +4,15 @@ Methods on the [`Engine`](/api/create-engine) returned by `createEngine`.
 
 ## `engine.start(pollIntervalMs?)`
 
-Initializes storage and starts the polling loop, running `tick()` every `pollIntervalMs` (default `1000`). Call once at startup. Returns `Promise<void>`.
+Initializes storage and starts the engine, which keeps up to `concurrency` runs executing and refills each slot as soon as its run finishes. Work this instance enqueues, resumes, or sends an event to starts at once; every `pollIntervalMs` (default `1000`) it also checks storage for work from other processes, elapsed sleeps, due schedules, and stale runs. Call once at startup. Returns `Promise<void>`.
 
 ## `engine.stop()`
 
-Stops the polling loop, ends all open [streams](/api/events), aborts in-flight steps, and waits for any in-flight tick to finish. In-flight runs are left `running` so they can be reclaimed. Registered [schedules](/guide/scheduling) are deliberately left in place — they belong to the storage, not to this instance. Returns `Promise<void>`.
+Stops the polling loop, ends all open [streams](/api/events), aborts in-flight steps, and waits for in-flight claims and runs to settle. In-flight runs are left `running` so they can be reclaimed. Registered [schedules](/guide/scheduling) are deliberately left in place — they belong to the storage, not to this instance. Returns `Promise<void>`.
 
 ## `engine.tick()`
 
-Claims up to `concurrency` pending or stale runs and executes them in parallel. Useful for CLI tools and tests. If you use `tick()` without `start()`, call `storage.initialize()` first. Returns `Promise<void>`.
+Claims pending or stale runs into the free `concurrency` slots, executes them in parallel, and resolves once they have finished. Useful for CLI tools and tests. If you use `tick()` without `start()`, call `storage.initialize()` first. Returns `Promise<void>`.
 
 ## `engine.enqueue(name, input, options?)`
 

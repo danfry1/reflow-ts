@@ -32,7 +32,7 @@ The usual fix is to hand-roll checkpoint logic: state columns, retry loops, dedu
 **Don't use Reflow when:**
 
 - You need distributed execution across multiple machines.
-- You need sub-second latency on workflow dispatch.
+- You need sub-second pickup of work enqueued by a different process (it waits for the next poll).
 - You're already running Temporal or similar.
 
 ## How it compares
