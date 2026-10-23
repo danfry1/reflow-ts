@@ -13,6 +13,7 @@ export const STEP_STATUSES = [
   'skipped',
   'sleeping',
   'waiting',
+  'retrying',
   'failed',
 ] as const
 

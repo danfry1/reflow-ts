@@ -94,8 +94,11 @@ export type UnitOutcome =
   | { readonly kind: 'advance'; readonly output: PersistedValue }
   /** Continue to the next unit, leaving `prev` untouched (a sleep, or a skipped step). */
   | { readonly kind: 'passthrough' }
-  /** The run is durably suspended and its lease released. Stop; a later claim resumes it. */
-  | { readonly kind: 'suspend' }
+  /**
+   * The run is durably suspended and its lease released. Stop; a later claim
+   * resumes it — at `wakeAt` (epoch ms), or when an event arrives if `null`.
+   */
+  | { readonly kind: 'suspend'; readonly wakeAt: number | null }
   /** A handler called `complete()`. Finish the run as completed with `output`. */
   | { readonly kind: 'complete'; readonly output: PersistedValue }
   /** The unit failed. Mark the run failed and report `stepName` / `error`. */

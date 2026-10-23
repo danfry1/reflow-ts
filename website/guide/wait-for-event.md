@@ -36,7 +36,7 @@ Without `timeoutMs`, the run waits indefinitely (until the event arrives or the 
 - **Crash-safe.** The wait lives in storage, not process memory, so a restart (or a different machine) resumes it — and an event delivered while no engine is running is still there when one starts.
 - **`prev` is the payload.** The validated event payload becomes the next step's `prev` and is available as `steps[name]`.
 - **Observable as a step.** The wait appears in [`getRunStatus()`](/api/engine) as a step — `waiting` until the event (or timeout), then `completed` (or `failed`).
-- **Wake granularity** for timeouts is the engine poll interval.
+- **Wake granularity** for timeouts follows [sleep](/guide/sleep#behaviour): on time for a short timeout on the instance that began the wait, otherwise at the next poll after it. A delivered event resumes the run at once on the engine that received `sendEvent()`.
 - **One event at a time.** A sequential workflow waits for one named event at a time; an event sent for a name the run will only reach later is simply buffered until then.
 
 ## Sleep vs. wait

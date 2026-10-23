@@ -55,6 +55,6 @@ export const sleepExecutor: UnitExecutor<{ kind: 'sleep'; name: string; duration
       throw new LeaseExpiredError(ctx.run.id)
     }
 
-    return { kind: 'suspend' }
+    return { kind: 'suspend', wakeAt }
   },
 }

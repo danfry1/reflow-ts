@@ -653,14 +653,26 @@ describe('Engine', () => {
       expect(at(steps, 0).status).toBe('failed')
     })
 
-    it('uses exponential backoff when configured', async () => {
-      const delays: number[] = []
-      const originalSetTimeout = globalThis.setTimeout
-      vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
-        delays.push(ms ?? 0)
-        return originalSetTimeout(fn, 0)
-      }) as typeof setTimeout)
+    /**
+     * Drive a retrying step to completion, returning each backoff the run was
+     * suspended for: its wake time minus the moment it suspended.
+     */
+    async function backoffsOf(engine: { tick(): Promise<void>; getRunStatus(id: string): Promise<{ run: { status: string; wakeAt: number | null } } | null> }, runId: string): Promise<number[]> {
+      const backoffs: number[] = []
+      for (;;) {
+        const suspendedAt = Date.now()
+        await engine.tick()
+        const run = expectPresent(await engine.getRunStatus(runId)).run
+        if (run.status !== 'sleeping' || run.wakeAt === null) {
+          return backoffs
+        }
+        backoffs.push(run.wakeAt - suspendedAt)
+        vi.setSystemTime(run.wakeAt)
+      }
+    }
 
+    it('uses exponential backoff when configured', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
       let attempts = 0
       const wf = createWorkflow({
         name: 'exp-backoff',
@@ -675,23 +687,16 @@ describe('Engine', () => {
       })
 
       const engine = createEngine({ storage, workflows: [wf] })
-      await engine.enqueue('exp-backoff', {})
-      await engine.tick()
+      const run = await engine.enqueue('exp-backoff', {})
 
       // Exponential: 100 * 2^0, 100 * 2^1, 100 * 2^2
-      expect(delays).toStrictEqual([100, 200, 400])
-
-      vi.restoreAllMocks()
+      expect(await backoffsOf(engine, run.id)).toStrictEqual([100, 200, 400])
+      expect(expectPresent(await engine.getRunStatus(run.id)).run.status).toBe('completed')
+      vi.useRealTimers()
     })
 
     it('uses linear backoff when configured', async () => {
-      const delays: number[] = []
-      const originalSetTimeout = globalThis.setTimeout
-      vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
-        delays.push(ms ?? 0)
-        return originalSetTimeout(fn, 0)
-      }) as typeof setTimeout)
-
+      vi.useFakeTimers({ toFake: ['Date'] })
       let attempts = 0
       const wf = createWorkflow({
         name: 'lin-backoff',
@@ -706,13 +711,68 @@ describe('Engine', () => {
       })
 
       const engine = createEngine({ storage, workflows: [wf] })
-      await engine.enqueue('lin-backoff', {})
-      await engine.tick()
+      const run = await engine.enqueue('lin-backoff', {})
 
       // Linear: 50 * 1, 50 * 2, 50 * 3
-      expect(delays).toStrictEqual([50, 100, 150])
+      expect(await backoffsOf(engine, run.id)).toStrictEqual([50, 100, 150])
+      vi.useRealTimers()
+    })
 
-      vi.restoreAllMocks()
+    it('waits out a backoff durably, releasing the run and recording the retry', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      const wf = createWorkflow({ name: 'durable-retry', input: z.object({}) }).step('flaky', {
+        retry: { maxAttempts: 3, backoff: 'linear', initialDelayMs: 60_000 },
+        handler: async () => {
+          throw new Error('upstream down')
+        },
+      })
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('durable-retry', {})
+      const suspendedAt = Date.now()
+
+      await engine.tick()
+
+      const info = expectPresent(await engine.getRunStatus(run.id))
+      expect(info.run).toMatchObject({ status: 'sleeping', wakeAt: suspendedAt + 60_000 })
+      expect(at(info.steps, 0)).toMatchObject({
+        name: 'flaky',
+        status: 'retrying',
+        attempts: 1,
+        error: 'upstream down',
+        output: suspendedAt + 60_000,
+      })
+      // Nothing is claimable until the backoff ends: no lease, no slot held.
+      expect(await storage.claimNextRun(['durable-retry'])).toBeNull()
+      vi.useRealTimers()
+    })
+
+    it('continues from the persisted attempt after a crash mid-backoff', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      let attempts = 0
+      const wf = createWorkflow({ name: 'crash-retry', input: z.object({}) }).step('flaky', {
+        retry: { maxAttempts: 3, backoff: 'linear', initialDelayMs: 1_000 },
+        handler: async () => {
+          attempts++
+          throw new Error('still down')
+        },
+      })
+      const first = createEngine({ storage, workflows: [wf] })
+      const run = await first.enqueue('crash-retry', {})
+      await first.tick()
+      await first.tick()
+
+      // A fresh engine over the same storage — the first one is gone.
+      const second = createEngine({ storage, workflows: [wf] })
+      vi.setSystemTime(Date.now() + 60_000)
+      await second.tick()
+      vi.setSystemTime(Date.now() + 60_000)
+      await second.tick()
+
+      expect(attempts).toBe(3)
+      const info = expectPresent(await second.getRunStatus(run.id))
+      expect(info.run.status).toBe('failed')
+      expect(at(info.steps, 0)).toMatchObject({ status: 'failed', attempts: 3 })
+      vi.useRealTimers()
     })
 
     it('skips delay when initialDelayMs is 0', async () => {
@@ -1151,6 +1211,21 @@ describe('Engine', () => {
       await engine.stop()
     })
 
+    it('resumes a short sleep on time instead of at the next poll', async () => {
+      const wf = createWorkflow({ name: 'nap', input: z.object({}) })
+        .sleep('pause', 50)
+        .step('after', async () => ({ ok: true }))
+      const engine = createEngine({ storage, workflows: [wf] })
+      await engine.start(NEVER_POLL_AGAIN)
+
+      const run = await engine.enqueue('nap', {})
+
+      await vi.waitFor(async () => {
+        expect((await engine.getRunStatus(run.id))?.run.status).toBe('completed')
+      })
+      await engine.stop()
+    })
+
     it('stops claiming the moment stop() is called', async () => {
       let claims = 0
       let firstClaimEntered: () => void = () => {}
@@ -1212,6 +1287,28 @@ describe('Engine', () => {
         clearInterval(busy)
         await engine.stop()
       }
+    })
+
+    it('retries after a backoff on time instead of at the next poll', async () => {
+      let attempts = 0
+      const wf = createWorkflow({ name: 'retry-soon', input: z.object({}) }).step('flaky', {
+        retry: { maxAttempts: 2, backoff: 'linear', initialDelayMs: 30 },
+        handler: async () => {
+          attempts++
+          if (attempts === 1) throw new Error('first try fails')
+          return { ok: true }
+        },
+      })
+      const engine = createEngine({ storage, workflows: [wf] })
+      await engine.start(NEVER_POLL_AGAIN)
+
+      const run = await engine.enqueue('retry-soon', {})
+
+      await vi.waitFor(async () => {
+        expect((await engine.getRunStatus(run.id))?.run.status).toBe('completed')
+      })
+      expect(attempts).toBe(2)
+      await engine.stop()
     })
 
     it('never exceeds concurrency when tick() races the polling loop', async () => {
@@ -1742,7 +1839,7 @@ describe('Engine', () => {
       expect(at(steps, 0).status).toBe('completed')
     })
 
-    it('stops retry backoff promptly when a timed-out run is cancelled', async () => {
+    it('ends a run cancelled during a retry backoff without another attempt', async () => {
       let attempts = 0
 
       const wf = createWorkflow({
@@ -1766,20 +1863,15 @@ describe('Engine', () => {
 
       const engine = createEngine({ storage, workflows: [wf] })
       const run = await engine.enqueue('timeout-cancel-retry', {})
-      const tickPromise = engine.tick()
+      await engine.tick()
+      expect(expectPresent(await engine.getRunStatus(run.id)).run.status).toBe('sleeping')
 
-      await new Promise((resolve) => setTimeout(resolve, 40))
-
-      const cancelStartedAt = Date.now()
       expect(await engine.cancel(run.id)).toBe(true)
-      await tickPromise
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      await engine.tick()
 
-      expect(Date.now() - cancelStartedAt).toBeLessThan(120)
       expect(attempts).toBe(1)
-
-      const info = expectPresent(await engine.getRunStatus(run.id))
-      expect(info.run.status).toBe('cancelled')
-      expect(info.steps).toHaveLength(0)
+      expect(expectPresent(await engine.getRunStatus(run.id)).run.status).toBe('cancelled')
     })
 
     it('timeout from retry config is used when step-level timeout is not set', async () => {

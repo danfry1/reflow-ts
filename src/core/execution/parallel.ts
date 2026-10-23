@@ -2,7 +2,7 @@ import { BranchFailedError, ParallelCompleteError, RunControlError } from '../er
 import type { PersistedValue } from '../types'
 import type { StepDefinition } from '../workflow'
 import { toError } from './signals'
-import { runStepHandler } from './step'
+import { runStepHandlerInProcess } from './step'
 import type { UnitExecutor, UnitOutcome } from './types'
 
 /**
@@ -85,7 +85,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
             }),
           }
 
-          const outcome = await runStepHandler(
+          const outcome = await runStepHandlerInProcess(
             guardedDef,
             { input: ctx.run.input, runSignal: groupAbort.signal },
             prev,

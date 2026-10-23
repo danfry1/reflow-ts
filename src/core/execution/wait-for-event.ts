@@ -110,6 +110,6 @@ export const waitForEventExecutor: UnitExecutor<WaitUnit> = {
       throw new LeaseExpiredError(ctx.run.id)
     }
 
-    return { kind: 'suspend' }
+    return { kind: 'suspend', wakeAt: deadline }
   },
 }

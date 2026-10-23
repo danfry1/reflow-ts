@@ -2,6 +2,7 @@ import {
   ConfigError,
   EarlyCompleteError,
   InternalError,
+  LeaseExpiredError,
   RunControlError,
   StepFailedError,
 } from '../errors'
@@ -10,25 +11,34 @@ import type { StepDefinition } from '../workflow'
 import { createAttemptSignal, delayWithSignal, runWithSignal, toError } from './signals'
 import type { ExecutionContext, UnitExecutor, UnitOutcome } from './types'
 
-/** The result of running a step handler to exhaustion (success, early completion, or all retries spent). */
+/**
+ * How a run of a step handler ended: success, early completion, all attempts
+ * spent, or a failure with attempts left and a backoff to wait out first.
+ */
 export type StepOutcome =
   | { kind: 'completed'; output: PersistedValue; attempts: number }
   | { kind: 'early-complete'; output: PersistedValue; attempts: number }
   | { kind: 'failed'; error: Error; attempts: number }
+  /** Attempt `attempts` failed; the next may start at `retryAt` (epoch ms). */
+  | { kind: 'retry'; error: Error; attempts: number; retryAt: number }
 
 /** Everything {@link runStepHandler} needs, independent of how the step is scheduled. */
 export interface StepAttemptContext {
   readonly input: PersistedValue
   readonly runSignal: AbortSignal
+  /** Attempts earlier executions already spent on this step. Numbering continues from here. */
+  readonly priorAttempts?: number
 }
 
 /**
- * Run a step handler, retrying per its {@link RetryConfig} until it succeeds,
- * calls `complete()`, or exhausts its attempts.
+ * Run a step handler's attempts until it succeeds, calls `complete()`,
+ * exhausts its attempts, or fails with a backoff delay ahead of the next one.
  *
- * Shared by the sequential step executor and by each branch of a parallel
- * group — the two differ in how they schedule steps and interpret the result,
- * not in how a single step's attempts are driven.
+ * It never waits out a backoff itself: it returns a `retry` outcome and the
+ * caller decides how to wait. The sequential executor suspends the run
+ * durably, so the wait holds no lease or slot and survives a crash; a parallel
+ * branch, whose siblings are still running, waits in process. Zero-delay
+ * retries run straight through.
  */
 export async function runStepHandler(
   stepDef: StepDefinition,
@@ -46,8 +56,9 @@ export async function runStepHandler(
   const timeoutMs = stepDef.timeoutMs ?? stepDef.retry?.timeoutMs
 
   let lastError: Error | null = null
+  const priorAttempts = attempt.priorAttempts ?? 0
 
-  for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber++) {
+  for (let attemptNumber = priorAttempts + 1; attemptNumber <= maxAttempts; attemptNumber++) {
     // Stop retrying once the run signal is aborted. A handler is not re-entered
     // (runWithSignal short-circuits), but iterating just to reject again wastes
     // work and inflates the reported attempt count.
@@ -97,7 +108,7 @@ export async function runStepHandler(
           : initialDelay * attemptNumber
 
         if (delay > 0) {
-          await delayWithSignal(delay, attempt.runSignal)
+          return { kind: 'retry', error: err, attempts: attemptNumber, retryAt: Date.now() + delay }
         }
       }
     } finally {
@@ -111,7 +122,33 @@ export async function runStepHandler(
   return {
     kind: 'failed',
     error: lastError ?? new StepFailedError(stepDef.name, maxAttempts),
-    attempts: maxAttempts,
+    attempts: Math.max(maxAttempts, priorAttempts),
+  }
+}
+
+/**
+ * Run a step handler to its end, waiting out each backoff in process.
+ *
+ * For a parallel branch, which cannot suspend the run on its own while its
+ * siblings are still executing.
+ */
+export async function runStepHandlerInProcess(
+  stepDef: StepDefinition,
+  attempt: StepAttemptContext,
+  prev: PersistedValue,
+  steps: Readonly<Record<string, PersistedValue>>,
+): Promise<Exclude<StepOutcome, { kind: 'retry' }>> {
+  let priorAttempts = attempt.priorAttempts ?? 0
+  for (;;) {
+    const outcome = await runStepHandler(stepDef, { ...attempt, priorAttempts }, prev, steps)
+    if (outcome.kind !== 'retry') {
+      return outcome
+    }
+
+    // An abort mid-backoff rejects with the abort's reason, which the caller
+    // already treats as a cancellation, a stop, or a sibling's failure.
+    await delayWithSignal(Math.max(0, outcome.retryAt - Date.now()), attempt.runSignal)
+    priorAttempts = outcome.attempts
   }
 }
 
@@ -146,10 +183,15 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
       return { kind: 'passthrough' }
     }
 
+    // Waiting out a backoff from an earlier execution: carry on from the next
+    // attempt rather than starting the step over.
+    const retrying = existing?.status === 'retrying' ? existing : undefined
     const frozenSteps = ctx.snapshotSteps()
 
     try {
-      if (stepDef.when) {
+      // A retrying step already passed its `when`; re-evaluating it could now
+      // skip a step whose side effects have partly happened.
+      if (stepDef.when && !retrying) {
         const shouldRun = await stepDef.when({ input: ctx.run.input, prev, steps: frozenSteps })
 
         if (!shouldRun) {
@@ -168,20 +210,36 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
         }
       }
 
-      const startedAt = Date.now()
-      await ctx.emit({
-        type: 'stepStart',
-        runId: ctx.run.id,
-        workflow: ctx.run.workflow,
-        stepName: stepDef.name,
-      })
+      // A retry keeps the time the step first began, so its duration covers
+      // every attempt and backoff. `stepStart` fired on that first execution.
+      const startedAt = retrying?.startedAt ?? Date.now()
+      if (retrying) {
+        const retryAt = Number(retrying.output)
+        if (Date.now() < retryAt) {
+          return suspendForRetry(ctx, stepDef.name, retrying.error ?? '', retrying.attempts, retryAt, startedAt)
+        }
+      } else {
+        await ctx.emit({
+          type: 'stepStart',
+          runId: ctx.run.id,
+          workflow: ctx.run.workflow,
+          stepName: stepDef.name,
+        })
+      }
 
       const outcome = await runStepHandler(
         stepDef,
-        { input: ctx.run.input, runSignal: ctx.signals.run.signal },
+        { input: ctx.run.input, runSignal: ctx.signals.run.signal, priorAttempts: retrying?.attempts ?? 0 },
         prev,
         frozenSteps,
       )
+
+      if (outcome.kind === 'retry') {
+        if (isControlAbort(ctx)) {
+          return { kind: 'halt' }
+        }
+        return suspendForRetry(ctx, stepDef.name, outcome.error.message, outcome.attempts, outcome.retryAt, startedAt)
+      }
 
       if (outcome.kind === 'failed') {
         // A control-flow abort (cancel / engine stop / lease loss) can land on
@@ -253,6 +311,31 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
       return { kind: 'failed', stepName: stepDef.name, error: err }
     }
   },
+}
+
+/**
+ * Record a step as `retrying` and suspend the run until its next attempt.
+ *
+ * The backoff becomes a durable sleep: the lease and the concurrency slot are
+ * released for its whole length, and the attempt count is persisted, so a
+ * crash mid-backoff resumes at the right attempt instead of starting the
+ * step's attempts over.
+ */
+async function suspendForRetry(
+  ctx: ExecutionContext,
+  stepName: string,
+  error: string,
+  attempts: number,
+  retryAt: number,
+  startedAt: number,
+): Promise<UnitOutcome> {
+  await ctx.saveStep({ name: stepName, status: 'retrying', output: retryAt, error, attempts, startedAt })
+
+  if (!(await ctx.storage.sleepRun(ctx.run.id, ctx.run.leaseId, retryAt))) {
+    throw new LeaseExpiredError(ctx.run.id)
+  }
+
+  return { kind: 'suspend', wakeAt: retryAt }
 }
 
 /** True when the run signal aborted for a control-flow reason rather than a genuine error. */
