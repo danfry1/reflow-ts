@@ -164,6 +164,20 @@ describe('createDashboard', () => {
       expect(body.next).toBeNull()
     })
 
+    it("lists each run with its steps' timing, but not their outputs", async () => {
+      await engine.enqueue('order', { id: 'o1' })
+      await engine.tick()
+
+      const body = await (await dashboard()(get('/api/runs'))).json()
+      const steps = body.runs[0].steps
+
+      expect(steps.map((step: { name: string; status: string }) => [step.name, step.status]))
+        .toStrictEqual([['charge', 'completed']])
+      expect(steps[0].history).toHaveLength(1)
+      expect(steps[0]).toHaveProperty('startedAt')
+      expect(steps[0]).not.toHaveProperty('output')
+    })
+
     it('filters runs by status and workflow', async () => {
       await engine.enqueue('order', { id: 'ok' })
       await engine.enqueue('order', { id: 'bad' })

@@ -59,156 +59,180 @@ const STYLES = String.raw`
   --ink: #14213D;
   --ink-soft: #4A5672;
   --ink-faint: #8A93A8;
-  --line: #DCE1EA;
+  --rule: #DCE1EA;
   --focus: #2563EB;
-  --proceed: #23825A;
-  --running: #2563EB;
+  --live: #2563EB;
   --hold: #C98A0B;
+  --proceed: #23825A;
   --stop: #D2463C;
   --withdrawn: #6B7488;
-  --pending: #8A93A8;
-  --stop-wash: #FCEDEB;
-  --hold-wash: #FBF3E1;
-  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --code-bg: #EAEEF4;
+  /* Signage: DIN where the system has it (macOS, Windows), for names and figures. */
+  --sign: "DIN Alternate", Bahnschrift, "DIN Next", "D-DIN", "Barlow Semi Condensed", "Helvetica Neue", Arial, sans-serif;
+  --body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --code: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --canvas: #0E1626;
-    --surface: #152036;
+    --surface: #131D31;
     --ink: #E6EAF2;
     --ink-soft: #A9B3C7;
     --ink-faint: #6E7A93;
-    --line: #26334D;
+    --rule: #24314A;
     --focus: #7AA7FF;
-    --proceed: #4CC08A;
-    --running: #6E9BFF;
+    --live: #6E9BFF;
     --hold: #E8A317;
+    --proceed: #4CC08A;
     --stop: #F06A5F;
     --withdrawn: #8D97AC;
-    --pending: #6E7A93;
-    --stop-wash: #3A1E24;
-    --hold-wash: #33291A;
+    --code-bg: #0A111E;
     color-scheme: dark;
   }
 }
 * { box-sizing: border-box; }
 html { background: var(--canvas); }
-body { margin: 0; font: 15px/1.5 var(--sans); color: var(--ink); background: var(--canvas); font-variant-numeric: tabular-nums; }
+body { margin: 0; font: 15px/1.5 var(--body); color: var(--ink); background: var(--canvas); }
 a { color: inherit; }
-:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 button { font: inherit; color: inherit; }
+.sign, h1, .bar, .filters, .row .when, .facts dd, .sched td { font-family: var(--sign); font-variant-numeric: tabular-nums; }
 
-.bar { display: flex; align-items: center; gap: 24px; padding: 12px 24px; border-bottom: 1px solid var(--line); background: var(--surface); position: sticky; top: 0; z-index: 2; }
-.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 650; font-size: 16px; letter-spacing: -0.01em; color: var(--ink); }
+.bar { display: flex; align-items: center; gap: 28px; padding: 0 24px; height: 56px; border-bottom: 1px solid var(--rule); }
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 700; font-size: 19px; }
 .mark { width: 26px; height: 26px; flex: none; }
-.views { display: flex; gap: 4px; }
-.views a { text-decoration: none; padding: 6px 10px; border-radius: 6px; color: var(--ink-soft); }
-.views a[aria-current="page"] { color: var(--ink); background: var(--canvas); font-weight: 600; }
-.live { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-soft); }
+.views { display: flex; gap: 22px; align-self: stretch; }
+.views a { display: flex; align-items: center; text-decoration: none; color: var(--ink-soft); font-size: 16px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.views a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--ink); }
+.live { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-soft); }
 .live[hidden] { display: none; }
-.live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--proceed); }
+.live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--live); }
 
-main { padding: 20px 24px 48px; max-width: 1440px; margin: 0 auto; }
+main { padding: 24px 24px 56px; max-width: 1480px; margin: 0 auto; }
 
-.signals { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; padding: 0; list-style: none; }
-.signal { display: flex; align-items: baseline; gap: 8px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: pointer; }
-.signal .n { font-weight: 650; font-size: 17px; }
-.signal .label { color: var(--ink-soft); font-size: 13px; }
-.signal[aria-pressed="true"] { border-color: currentColor; box-shadow: inset 0 0 0 1px currentColor; }
-.signal[aria-pressed="true"] .label { color: inherit; }
-.signal.zero .n { color: var(--ink-faint); }
+/* Status lamps: a filled lamp is a settled state, a ring one that will move on. */
+.lamp { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex: none; }
+.lamp.ring { background: transparent; box-shadow: inset 0 0 0 2px currentColor; }
+.s-completed, .s-completed-early { color: var(--proceed); }
+.s-running { color: var(--live); }
+.s-sleeping, .s-waiting, .s-retrying { color: var(--hold); }
+.s-failed { color: var(--stop); }
+.s-cancelled { color: var(--withdrawn); }
+.s-pending, .s-skipped, .s-all { color: var(--ink-faint); }
 
-.c-completed { color: var(--proceed); }
-.c-running { color: var(--running); }
-.c-sleeping, .c-waiting, .c-retrying { color: var(--hold); }
-.c-failed { color: var(--stop); }
-.c-cancelled { color: var(--withdrawn); }
-.c-pending, .c-skipped { color: var(--pending); }
-.c-all { color: var(--ink); }
+.filters { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 26px; margin: 0 0 18px; padding: 0; list-style: none; }
+.filters button { display: flex; align-items: center; gap: 8px; padding: 4px 0; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer; font-family: var(--sign); font-size: 16px; color: var(--ink-soft); }
+.filters .n { font-size: 22px; font-weight: 700; color: var(--ink); }
+.filters .zero .n { color: var(--ink-faint); }
+.filters button[aria-pressed="true"] { color: var(--ink); border-bottom-color: currentColor; }
+.filters button[aria-pressed="true"] .lamp { box-shadow: 0 0 0 3px var(--canvas), 0 0 0 4px currentColor; }
 
-.layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 36px; }
 .layout.open { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); }
-@media (max-width: 980px) { .layout.open { grid-template-columns: minmax(0, 1fr); } .layout.open .list { display: none; } }
+@media (max-width: 1080px) { .layout.open { grid-template-columns: minmax(0, 1fr); } .layout.open .list { display: none; } }
 
-.toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
-.toolbar input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; }
+.search { width: 100%; margin-bottom: 12px; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); color: var(--ink); font: inherit; }
 
-.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
-.rows { list-style: none; margin: 0; padding: 0; }
-.row { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); text-decoration: none; }
+.rows { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+.row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; grid-template-areas: "lamp name when" ". why why" ". trail trail"; gap: 2px 14px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--rule); text-decoration: none; }
 .rows li:first-child .row { border-top: 0; }
-.row:hover, .row[aria-current="true"] { background: var(--canvas); }
-.row .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
-.row .dot.hollow { background: transparent; box-shadow: inset 0 0 0 2px currentColor; }
-.row .wf { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .when { color: var(--ink-soft); font-size: 13px; text-align: right; white-space: nowrap; }
-.row .sub { grid-column: 2 / 4; display: flex; gap: 12px; font-size: 13px; color: var(--ink-soft); min-width: 0; }
-.row .sub .id { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); }
-.row .sub .why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.more { display: block; width: 100%; padding: 10px; border: 0; border-top: 1px solid var(--line); background: none; cursor: pointer; color: var(--ink-soft); border-radius: 0 0 10px 10px; }
-.more:hover { background: var(--canvas); color: var(--ink); }
+.row:hover { background: var(--canvas); }
+.row[aria-current="true"] { background: var(--canvas); box-shadow: inset 3px 0 0 var(--ink); }
+.row .lamp { grid-area: lamp; }
+.row .name { grid-area: name; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .when { grid-area: when; text-align: right; color: var(--ink-soft); font-size: 14px; white-space: nowrap; }
+.row .why { grid-area: why; font-size: 14px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.more { display: block; width: 100%; margin-top: 10px; padding: 9px; border: 1px solid var(--rule); border-radius: 4px; background: none; cursor: pointer; color: var(--ink-soft); }
+.more:hover { color: var(--ink); border-color: var(--ink-soft); }
 
-.empty { padding: 32px 16px; text-align: center; color: var(--ink-soft); }
-.empty strong { display: block; color: var(--ink); margin-bottom: 4px; }
+.empty { padding: 40px 16px; text-align: center; color: var(--ink-soft); background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+.empty strong { display: block; color: var(--ink); font-family: var(--sign); font-size: 18px; margin-bottom: 4px; }
 
-.detail { padding: 20px 22px 24px; }
-.detail-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
-.detail-head h1 { margin: 0; font-size: 22px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 650; }
-.detail-head .runid { display: block; font: 12px var(--mono); color: var(--ink-faint); margin-top: 2px; word-break: break-all; }
-.badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; border: 1px solid currentColor; }
-.actions { margin-left: auto; display: flex; gap: 8px; }
-.btn { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
+/* The detail sits on the canvas, not in a card: the line is the thing to look at. */
+.detail-head { display: flex; align-items: flex-start; gap: 16px; }
+.detail-head h1 { margin: 0; font-size: 32px; line-height: 1.1; font-weight: 700; overflow-wrap: anywhere; }
+.runid { display: block; margin-top: 4px; font-size: 13px; color: var(--ink-faint); overflow-wrap: anywhere; }
+.actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.btn { padding: 7px 14px; border-radius: 4px; border: 1px solid var(--rule); background: var(--surface); cursor: pointer; }
 .btn:hover { border-color: var(--ink-soft); }
 .btn.danger { color: var(--stop); }
-.close { border: 0; background: none; cursor: pointer; color: var(--ink-soft); padding: 4px 6px; font-size: 20px; line-height: 1; }
+.close { border: 0; background: none; cursor: pointer; color: var(--ink-soft); padding: 4px 8px; font-size: 22px; line-height: 1; }
 
-.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 20px; margin: 18px 0; }
-.facts dt { font-size: 12px; color: var(--ink-soft); }
-.facts dd { margin: 0; font-weight: 550; }
+.state { display: flex; align-items: baseline; gap: 10px; margin: 18px 0 0; font-size: 17px; }
+.state .lamp { position: relative; top: 1px; }
+.state .reason { color: var(--ink-soft); overflow-wrap: anywhere; }
+.facts { display: flex; flex-wrap: wrap; gap: 4px 32px; margin: 14px 0 0; }
+.facts div { display: flex; gap: 8px; align-items: baseline; }
+.facts dt { font-size: 13px; color: var(--ink-soft); }
+.facts dd { margin: 0; font-size: 16px; }
 
-.notice { margin: 0 0 18px; padding: 12px 14px; border-radius: 8px; border-left: 3px solid currentColor; }
-.notice p { margin: 0; color: var(--ink); }
-.notice .code { font: 12px var(--mono); color: var(--ink-soft); margin-top: 4px; }
-.notice.stop { background: var(--stop-wash); color: var(--stop); }
-.notice.hold { background: var(--hold-wash); color: var(--hold); }
+h2 { margin: 34px 0 10px; font: 700 18px var(--sign); }
 
-h2 { font-size: 15px; margin: 24px 0 10px; font-weight: 650; }
-
-/* The flow lane: one run, drawn as the signal diagram of its steps. */
-.lane { display: flex; align-items: center; height: 34px; gap: 3px; margin: 6px 0 4px; }
-.seg { position: relative; height: 12px; border-radius: 3px; min-width: 6px; background: currentColor; }
-.seg.queued { height: 2px; background: none; border-top: 2px dotted var(--line); }
-.seg.hold { background: none; height: 0; border-top: 3px dashed currentColor; }
-.seg.skipped { height: 4px; opacity: 0.5; }
-.seg.failed::after { content: ""; position: absolute; right: -5px; top: -6px; width: 4px; height: 24px; border-radius: 2px; background: currentColor; }
-.seg-group { display: flex; flex-direction: column; gap: 2px; min-width: 6px; }
-.seg.thin { height: 4px; min-width: 4px; }
-.seg .tick { position: absolute; top: -4px; width: 2px; height: 20px; background: var(--surface); }
-.seg.live-now { animation: breathe 1.6s ease-in-out infinite; }
-@keyframes breathe { 50% { opacity: 0.45; } }
-@media (prefers-reduced-motion: reduce) { .seg.live-now { animation: none; } }
-.lane-scale { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-faint); }
-
+/* Steps: one row each, with a bar on the run's own time axis. */
 .steps { width: 100%; border-collapse: collapse; font-size: 14px; }
-.steps th { text-align: left; font-weight: 500; font-size: 12px; color: var(--ink-soft); padding: 6px 8px; border-bottom: 1px solid var(--line); }
-.steps td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-.steps tr:last-child td { border-bottom: 0; }
-.steps .name { font-weight: 600; }
-.steps .num { text-align: right; white-space: nowrap; }
-.steps .err { display: block; color: var(--stop); font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
+.steps th { text-align: left; font: 600 13px var(--body); color: var(--ink-soft); padding: 0 12px 8px 0; border-bottom: 1px solid var(--rule); }
+.steps td { padding: 10px 12px 10px 0; border-top: 1px solid var(--rule); vertical-align: middle; }
+.steps tbody tr:first-child td { border-top: 0; }
+.steps .name { font-weight: 600; overflow-wrap: anywhere; }
+.steps .name .aside { display: block; font-weight: 400; font-size: 12.5px; color: var(--ink-faint); }
+.steps .status { white-space: nowrap; }
+.steps .status .lamp { margin-right: 8px; }
+.steps .when { width: 38%; min-width: 120px; }
+.steps .took { text-align: right; white-space: nowrap; font-family: var(--sign); font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+.steps th.took { font-family: var(--body); }
+.axis { display: flex; justify-content: space-between; font-family: var(--sign); font-weight: 400; color: var(--ink-faint); }
+.track { position: relative; height: 10px; border-radius: 2px; background: var(--rule); }
+.seg { position: absolute; top: 0; height: 10px; min-width: 2px; border-radius: 2px; }
+.seg.ok { background: var(--proceed); }
+.seg.bad { background: var(--stop); }
+.seg.live { background: var(--live); }
+.seg.pause { top: 3px; height: 4px; background: var(--hold); opacity: 0.75; }
+.steps tr.attempt td { padding-top: 4px; padding-bottom: 4px; border-top: 0; font-size: 13.5px; color: var(--ink-soft); }
+.steps tr.attempt .name { padding-left: 14px; font-weight: 400; color: var(--ink-soft); }
+.steps tr.attempt .bad { color: var(--stop); }
+.steps tr.attempt .after { color: var(--ink-soft); }
+.steps tr.idle td { font-size: 13.5px; color: var(--hold); padding-left: 0; }
+.note { color: var(--ink-soft); }
+@media (max-width: 640px) {
+  .steps thead { display: none; }
+  .steps, .steps tbody, .steps tr, .steps td { display: block; width: auto; }
+  .steps tr.step { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 12px 0; border-top: 1px solid var(--rule); }
+  .steps tbody tr:first-child { border-top: 0; }
+  .steps tr.step td { padding: 0; border: 0; }
+  .steps tr.step .status { grid-column: 1 / 3; }
+  .steps tr.step .when { grid-column: 1 / 3; width: auto; min-width: 0; }
+  .steps tr.step .took { grid-row: 1; grid-column: 2; }
+  .steps tr.attempt { padding: 2px 0 6px 14px; }
+  .steps tr.attempt td { display: inline; padding: 0; }
+  .steps tr.attempt .name { padding: 0 8px 0 0; }
+  .steps tr.idle td { padding: 8px 0; border-top: 1px solid var(--rule); }
+  .filters { gap: 4px 18px; }
+  .filters button { font-size: 15px; }
+  .filters .n { font-size: 18px; }
+}
 
-pre.json { margin: 0; padding: 12px 14px; background: var(--canvas); border-radius: 8px; overflow: auto; max-height: 320px; font: 12.5px/1.55 var(--mono); }
-.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
-@media (max-width: 640px) { .pair { grid-template-columns: minmax(0, 1fr); } .bar { padding: 10px 16px; gap: 12px; } main { padding: 16px 16px 40px; } }
+/* The list: each run's steps so far, in order. */
+.trail { grid-area: trail; display: flex; flex-wrap: wrap; gap: 2px 16px; margin: 4px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--ink-soft); }
+.trail li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.trail li span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 16em; }
+.trail .lamp { width: 8px; height: 8px; }
+.trail .gap { color: var(--ink-faint); }
 
-.sched { width: 100%; border-collapse: collapse; }
-.sched th, .sched td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); }
-.sched th { font-weight: 500; font-size: 12px; color: var(--ink-soft); }
-.sched tr:last-child td { border-bottom: 0; }
-.sched code { font: 12.5px var(--mono); }
-.problem { padding: 12px 14px; border-radius: 8px; background: var(--stop-wash); color: var(--stop); margin-bottom: 16px; }
+pre.json { margin: 0; padding: 14px 16px; background: var(--code-bg); border-radius: 6px; overflow: auto; max-height: 320px; font: 12.5px/1.6 var(--code); }
+.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+@media (max-width: 640px) {
+  .pair { grid-template-columns: minmax(0, 1fr); }
+  .bar { padding: 0 16px; gap: 18px; }
+  main { padding: 18px 16px 40px; }
+  .detail-head h1 { font-size: 26px; }
+}
+
+.sched { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+.sched th, .sched td { text-align: left; padding: 11px 16px; border-top: 1px solid var(--rule); }
+.sched th { border-top: 0; font: 600 13px var(--body); color: var(--ink-soft); }
+.sched code { font: 13px var(--code); }
+.problem { margin: 0 0 18px; color: var(--stop); font-weight: 600; }
 `
 
 const SCRIPT = String.raw`
@@ -221,14 +245,18 @@ const SCRIPT = String.raw`
     return;
   }
 
-  var STATUS_ORDER = ['running', 'waiting', 'sleeping', 'pending', 'failed', 'completed', 'cancelled'];
+  // Most urgent first: what needs a person, then what is moving, then history.
+  var FILTERS = ['failed', 'running', 'waiting', 'sleeping', 'pending', 'completed', 'cancelled'];
   var STATUS_LABEL = {
-    all: 'All runs', running: 'Running', waiting: 'Waiting', sleeping: 'Sleeping', pending: 'Queued',
+    all: 'All', running: 'Running', waiting: 'Waiting', sleeping: 'Sleeping', pending: 'Queued',
     failed: 'Failed', completed: 'Completed', cancelled: 'Cancelled',
     retrying: 'Retrying', skipped: 'Skipped', 'completed-early': 'Completed early'
   };
   var TERMINAL = { completed: true, failed: true, cancelled: true };
-  var HOLDS = { sleeping: true, waiting: true, retrying: true };
+  // A ring lamp is a state that will move on by itself; a filled one has settled or is live.
+  var RING = { sleeping: true, waiting: true, retrying: true, pending: true };
+  // Time with no step executing, longer than this, is called out between steps.
+  var BREAK_MS = 1000;
 
   var app = document.getElementById('app');
   var liveBadge = document.getElementById('live');
@@ -253,7 +281,6 @@ const SCRIPT = String.raw`
     });
     return el;
   }
-
   function api(path, init) {
     return fetch(path, init).then(function (response) {
       return response.json().then(function (body) {
@@ -283,27 +310,196 @@ const SCRIPT = String.raw`
     return duration(d).split(' ')[0] + ' ago';
   }
   function absolute(ts) { return ts ? new Date(ts).toLocaleString() : ''; }
+  function clock(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    var sameDay = d.toDateString() === new Date().toDateString();
+    return sameDay ? d.toLocaleTimeString() : d.toLocaleString();
+  }
   function time(ts, relative) {
-    return h('time', { datetime: ts ? new Date(ts).toISOString() : null, title: absolute(ts) }, [relative ? ago(ts) : absolute(ts)]);
+    return h('time', { datetime: ts ? new Date(ts).toISOString() : null, title: absolute(ts) }, [relative ? ago(ts) : clock(ts)]);
   }
   function shortId(id) { return id.length > 12 ? id.slice(0, 8) : id; }
   function json(value) { return value === undefined ? 'undefined' : JSON.stringify(value, null, 2); }
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
 
-  function runElapsed(run) {
-    if (!run.startedAt) return null;
-    return (run.finishedAt || Date.now()) - run.startedAt;
+  function lamp(status, title) {
+    return h('span', { class: 'lamp s-' + status + (RING[status] ? ' ring' : ''), title: title || STATUS_LABEL[status], 'aria-hidden': 'true' });
   }
 
   // One line on why a run is where it is — the question the list answers.
   function why(run) {
-    if (run.status === 'failed' && run.error) return run.error.stepName + ': ' + run.error.message;
+    var retrying = (run.steps || []).filter(function (step) { return step.status === 'retrying'; })[0];
+    if (run.status === 'failed' && run.error) return 'Failed at ' + run.error.stepName + ': ' + run.error.message;
+    if (run.status === 'sleeping' && retrying && run.wakeAt) return 'Retrying ' + retrying.name + ' ' + ago(run.wakeAt) + ', after ' + plural(retrying.attempts, 'failed attempt');
     if (run.status === 'waiting') return 'Waiting for ' + (run.waitingFor || 'an event') + (run.wakeAt ? ', times out ' + ago(run.wakeAt) : '');
     if (run.status === 'sleeping' && run.wakeAt) return 'Resumes ' + ago(run.wakeAt);
-    if (run.status === 'pending') return run.startedAt ? 'Queued to resume' : 'Queued';
-    if (run.status === 'running') return 'Running for ' + duration(runElapsed(run));
+    if (run.status === 'pending') return run.startedAt ? 'Queued to carry on' : 'Queued';
+    if (run.status === 'running') return 'Running for ' + duration(Date.now() - run.startedAt);
     if (run.status === 'cancelled') return 'Cancelled' + (run.finishedAt ? ' ' + ago(run.finishedAt) : '');
     if (run.finishedAt && run.startedAt) return 'Took ' + duration(run.finishedAt - run.startedAt);
     return '';
+  }
+
+  // --- Steps: what ran, in order, in words.
+
+  // Parallel branches share a start time and run side by side. A step that
+  // merely began in the millisecond its predecessor ended shares the time
+  // too, so overlap is what tells them apart.
+  function unitsOf(steps) {
+    var units = [];
+    steps.forEach(function (step) {
+      var last = units[units.length - 1];
+      var sibling = last && step.startedAt && last.startedAt === step.startedAt
+        && last.members.some(function (member) { return member.updatedAt > step.startedAt; });
+      if (sibling) last.members.push(step);
+      else units.push({ startedAt: step.startedAt, members: [step] });
+    });
+    return units;
+  }
+
+  // Sleeps and waits have no handler, so they make no attempts.
+  function isPause(step) {
+    return step.attempts === 0 && (step.status === 'sleeping' || step.status === 'waiting' || step.status === 'completed');
+  }
+  function stepStart(step) { return step.startedAt || step.createdAt; }
+  function stepEnd(step) {
+    return step.status === 'sleeping' || step.status === 'waiting' || step.status === 'retrying' ? Date.now() : step.updatedAt;
+  }
+
+  // The status a group of parallel branches shows: its most urgent member's.
+  var URGENCY = ['failed', 'retrying', 'waiting', 'sleeping', 'running', 'skipped', 'completed-early', 'completed'];
+  function unitStatus(unit) {
+    var statuses = unit.members.map(function (step) { return step.status; });
+    for (var i = 0; i < URGENCY.length; i++) if (statuses.indexOf(URGENCY[i]) >= 0) return URGENCY[i];
+    return statuses[0];
+  }
+
+  function stepStatusText(step, run) {
+    if (step.status === 'waiting') return 'Waiting for ' + (run.waitingFor || 'an event');
+    if (step.status === 'sleeping') return 'Sleeping';
+    if (step.status === 'retrying') return 'Retrying ' + (run.wakeAt ? ago(run.wakeAt) : 'soon');
+    if (step.status === 'completed' && isPause(step)) return 'Resumed';
+    if (step.status === 'failed' && step.attempts > 1) return 'Failed after ' + plural(step.attempts, 'attempt');
+    if (step.status === 'completed' && step.attempts > 1) return 'Completed on attempt ' + step.attempts;
+    return STATUS_LABEL[step.status] || step.status;
+  }
+
+  // The list's summary of a run: its steps so far, each with its lamp.
+  function trail(run) {
+    var units = unitsOf(run.steps || []);
+    var items = units.map(function (unit) {
+      var names = unit.members.map(function (step) { return step.name; }).join(' + ');
+      var status = unitStatus(unit);
+      return h('li', { title: names + ': ' + (STATUS_LABEL[status] || status) }, [lamp(status), h('span', { text: names })]);
+    });
+    if (run.status === 'running') items.push(h('li', { class: 'now' }, [lamp('running'), h('span', { text: 'running' })]));
+    if (items.length > 6) {
+      items = items.slice(0, 2).concat([h('li', { class: 'gap', text: (items.length - 5) + ' more' })], items.slice(-3));
+    }
+    return items.length ? h('ol', { class: 'trail', 'aria-label': 'Steps' }, items) : null;
+  }
+
+  // A bar placed on the run's own time axis. Retries draw each attempt, with
+  // the waits between them faint; a sleep or wait is one faint bar.
+  function timeline(step, axis) {
+    var track = h('div', { class: 'track' });
+    function seg(from, to, kind) {
+      var el = h('span', { class: 'seg ' + kind });
+      el.style.left = axis.at(from) + '%';
+      el.style.width = Math.max(0, axis.at(to) - axis.at(from)) + '%';
+      track.appendChild(el);
+    }
+    var history = step.history || [];
+    if (isPause(step)) seg(stepStart(step), stepEnd(step), 'pause');
+    else if (history.length === 0) seg(stepStart(step), stepEnd(step), step.status === 'failed' ? 'bad' : 'ok');
+    else {
+      history.forEach(function (attempt, index) {
+        var prev = history[index - 1];
+        if (prev) seg(prev.finishedAt, attempt.startedAt, 'pause');
+        seg(attempt.startedAt, attempt.finishedAt, attempt.error === null ? 'ok' : 'bad');
+      });
+      if (step.status === 'retrying') seg(history[history.length - 1].finishedAt, Date.now(), 'pause');
+    }
+    return track;
+  }
+
+  function stepsTable(run, steps) {
+    if (steps.length === 0 && run.status !== 'running') {
+      return h('p', { class: 'note', text: run.startedAt ? 'No step has finished yet.' : 'Waiting for an engine to pick it up.' });
+    }
+    var origin = run.startedAt || run.createdAt;
+    var total = Math.max(1, (run.finishedAt || Date.now()) - origin);
+    var axis = { at: function (t) { return Math.max(0, Math.min(100, 100 * (t - origin) / total)); } };
+
+    var rows = [];
+    var cursor = origin;
+    unitsOf(steps).forEach(function (unit) {
+      var from = stepStart(unit.members[0]);
+      if (from - cursor > BREAK_MS) {
+        rows.push(h('tr', { class: 'idle' }, [h('td', { colspan: '4', text: 'Nothing ran for ' + duration(from - cursor) + ', then an engine picked the run up again.' })]));
+      }
+      unit.members.forEach(function (step) {
+        var span = stepEnd(step) - stepStart(step);
+        var open = step.status === 'sleeping' || step.status === 'waiting' || step.status === 'retrying';
+        rows.push(h('tr', { class: 'step' }, [
+          h('td', { class: 'name' }, [
+            h('span', { text: step.name }),
+            unit.members.length > 1 ? h('span', { class: 'aside', text: 'in parallel' }) : null
+          ]),
+          h('td', { class: 'status' }, [lamp(step.status), h('span', { text: stepStatusText(step, run) })]),
+          h('td', { class: 'when' }, [timeline(step, axis)]),
+          h('td', { class: 'took', text: step.status === 'skipped' ? '' : duration(span) + (open ? ' so far' : '') })
+        ]));
+        attemptRows(step, run).forEach(function (row) { rows.push(row); });
+        cursor = Math.max(cursor, stepEnd(step));
+      });
+    });
+    if (run.status === 'running') {
+      rows.push(h('tr', { class: 'step' }, [
+        h('td', { class: 'name' }, [h('span', { class: 'aside', text: 'Next step' })]),
+        h('td', { class: 'status' }, [lamp('running'), h('span', { text: 'Running' })]),
+        h('td', { class: 'when' }, [(function () {
+          var track = h('div', { class: 'track' });
+          var el = h('span', { class: 'seg live' });
+          el.style.left = axis.at(cursor) + '%';
+          el.style.width = (100 - axis.at(cursor)) + '%';
+          track.appendChild(el);
+          return track;
+        })()]),
+        h('td', { class: 'took', text: duration(Date.now() - cursor) + ' so far' })
+      ]));
+    }
+
+    return h('table', { class: 'steps' }, [
+      h('thead', null, [h('tr', null, [
+        h('th', { text: 'Step' }),
+        h('th', { text: 'Status' }),
+        h('th', { class: 'when' }, [h('span', { class: 'axis' }, [h('span', { text: '0s' }), h('span', { text: duration(total) })])]),
+        h('th', { class: 'took', text: 'Took' })
+      ])]),
+      h('tbody', null, rows)
+    ]);
+  }
+
+  // A step that needed more than one try lists each, and the wait after it.
+  function attemptRows(step, run) {
+    var history = step.history || [];
+    if (history.length < 2 && !(history.length === 1 && history[0].error !== null && step.status === 'retrying')) return [];
+    var earlier = step.attempts - history.length;
+    return history.map(function (attempt, index) {
+      var next = history[index + 1];
+      var text = attempt.error === null
+        ? 'Succeeded in ' + duration(attempt.finishedAt - attempt.startedAt) + '.'
+        : 'Failed after ' + duration(attempt.finishedAt - attempt.startedAt) + ': ' + attempt.error;
+      var after = next
+        ? ' Next attempt ' + duration(next.startedAt - attempt.finishedAt) + ' later.'
+        : step.status === 'retrying' && run.wakeAt ? ' Next attempt ' + ago(run.wakeAt) + '.' : '';
+      return h('tr', { class: 'attempt' }, [
+        h('td', { class: 'name', text: 'Attempt ' + (earlier + index + 1) }),
+        h('td', { colspan: '3', class: attempt.error === null ? '' : 'bad' }, [text, after ? h('span', { class: 'after', text: after }) : null])
+      ]);
+    });
   }
 
   // --- Routing
@@ -378,38 +574,42 @@ const SCRIPT = String.raw`
     if (r.view !== 'runs') return;
     app.replaceChildren.apply(app, [
       state.problem ? h('p', { class: 'problem', role: 'alert', text: state.problem }) : null,
-      state.overview ? signals() : null,
+      state.overview ? filters() : null,
       h('div', { class: 'layout' + (state.selected ? ' open' : '') }, [
-        h('section', { class: 'list', 'aria-label': 'Runs' }, [toolbar(), runList()]),
-        state.selected ? detailPanel() : null
+        h('section', { class: 'list', 'aria-label': 'Runs' }, [search(), runList()]),
+        state.selected ? detailView() : null
       ])
     ].filter(Boolean));
   }
 
-  function signals() {
+  function filters() {
     var counts = state.overview.counts;
-    var total = STATUS_ORDER.reduce(function (sum, status) { return sum + (counts[status] || 0); }, 0);
-    function chip(status, n) {
+    var total = FILTERS.reduce(function (sum, status) { return sum + (counts[status] || 0); }, 0);
+    function filter(status, n) {
       return h('li', null, [h('button', {
-        class: 'signal c-' + status + (n === 0 ? ' zero' : ''),
+        class: 's-' + status + (n === 0 ? ' zero' : ''),
         'aria-pressed': String((state.status || 'all') === status),
         onclick: function () { state.status = status === 'all' ? null : status; reloadList(); }
-      }, [h('span', { class: 'n', text: String(n) }), h('span', { class: 'label', text: STATUS_LABEL[status] })])]);
+      }, [
+        status === 'all' ? null : lamp(status),
+        h('span', { class: 'n', text: String(n) }),
+        h('span', { text: STATUS_LABEL[status] })
+      ])]);
     }
-    return h('ul', { class: 'signals', 'aria-label': 'Filter by status' },
-      [chip('all', total)].concat(STATUS_ORDER.map(function (status) { return chip(status, counts[status] || 0); })));
+    return h('ul', { class: 'filters', 'aria-label': 'Filter by status' },
+      FILTERS.map(function (status) { return filter(status, counts[status] || 0); }).concat([filter('all', total)]));
   }
 
   var filterTimer = null;
-  function toolbar() {
-    return h('div', { class: 'toolbar' }, [h('input', {
-      type: 'search', placeholder: 'Filter by workflow name', 'aria-label': 'Filter by workflow name', value: state.workflow,
+  function search() {
+    return h('input', {
+      class: 'search', type: 'search', placeholder: 'Filter by workflow name', 'aria-label': 'Filter by workflow name', value: state.workflow,
       oninput: function (event) {
         var value = event.target.value.trim();
         clearTimeout(filterTimer);
         filterTimer = setTimeout(function () { state.workflow = value; reloadList(); }, 250);
       }
-    })]);
+    });
   }
 
   function reloadList() {
@@ -419,33 +619,34 @@ const SCRIPT = String.raw`
   function runList() {
     if (state.runs.length === 0) {
       var filtered = state.status || state.workflow;
-      return h('div', { class: 'panel' }, [h('div', { class: 'empty' }, [
+      return h('div', { class: 'empty' }, [
         h('strong', { text: filtered ? 'No runs match these filters' : 'No runs yet' }),
         filtered ? 'Clear the status or workflow filter to see every run.' : 'Runs appear here as soon as your app enqueues one.'
-      ])]);
+      ]);
     }
-    return h('div', { class: 'panel' }, [
+    return h('div', null, [
       h('ul', { class: 'rows' }, state.runs.map(function (run) {
         return h('li', null, [h('a', {
           class: 'row',
           href: '#/runs/' + encodeURIComponent(run.id),
           'aria-current': String(run.id === state.selected)
         }, [
-          h('span', { class: 'dot c-' + run.status + (HOLDS[run.status] || run.status === 'pending' ? ' hollow' : ''), title: STATUS_LABEL[run.status] }),
-          h('span', { class: 'wf', text: run.workflow }),
+          lamp(run.status),
+          h('span', { class: 'name', text: run.workflow, title: run.id }),
           h('span', { class: 'when' }, [time(run.createdAt, true)]),
-          h('span', { class: 'sub' }, [h('span', { class: 'id', text: shortId(run.id) }), h('span', { class: 'why', text: why(run) })])
+          h('span', { class: 'why', text: why(run) || STATUS_LABEL[run.status] }),
+          trail(run)
         ])]);
       })),
       state.next ? h('button', { class: 'more', onclick: loadMore, text: 'Load older runs' }) : null
     ]);
   }
 
-  function detailPanel() {
+  function detailView() {
     var detail = state.detail;
     var close = h('button', { class: 'close', 'aria-label': 'Close run', onclick: function () { location.hash = '#/'; }, text: '×' });
     if (!detail) {
-      return h('section', { class: 'panel detail', 'aria-label': 'Run' }, [
+      return h('section', { class: 'detail', 'aria-label': 'Run' }, [
         h('div', { class: 'detail-head' }, [h('h1', { text: 'Run not found' }), h('div', { class: 'actions' }, [close])]),
         h('p', { text: 'It may have been pruned, or the link is wrong.' })
       ]);
@@ -459,18 +660,15 @@ const SCRIPT = String.raw`
     }
     actions.push(close);
 
-    return h('section', { class: 'panel detail', 'aria-label': 'Run ' + run.id }, [
+    return h('section', { class: 'detail', 'aria-label': 'Run ' + run.id }, [
       h('div', { class: 'detail-head' }, [
         h('div', null, [h('h1', { text: run.workflow }), h('span', { class: 'runid', text: run.id })]),
-        h('span', { class: 'badge c-' + run.status, text: STATUS_LABEL[run.status] }),
         h('div', { class: 'actions' }, actions)
       ]),
-      facts(run, steps),
-      notice(run, steps),
-      h('h2', { text: 'Flow' }),
-      lane(run, steps),
+      statement(run, steps),
+      facts(run),
       h('h2', { text: 'Steps' }),
-      stepTable(steps),
+      stepsTable(run, steps),
       h('div', { class: 'pair' }, [
         h('div', null, [h('h2', { text: 'Input' }), h('pre', { class: 'json', text: json(run.input) })]),
         run.status === 'completed' ? h('div', null, [h('h2', { text: 'Output' }), h('pre', { class: 'json', text: json(run.output) })]) : null
@@ -478,131 +676,38 @@ const SCRIPT = String.raw`
     ]);
   }
 
-  function facts(run, steps) {
-    var items = [
-      ['Enqueued', time(run.createdAt, false)],
-      ['Started', run.startedAt ? time(run.startedAt, false) : 'Not yet'],
-      ['Finished', run.finishedAt ? time(run.finishedAt, false) : 'Not yet'],
-      [run.finishedAt ? 'Took' : 'Elapsed', run.startedAt ? duration(runElapsed(run)) : '—']
-    ];
-    return h('dl', { class: 'facts' }, items.reduce(function (nodes, item) {
-      return nodes.concat([h('div', null, [h('dt', { text: item[0] }), h('dd', null, [item[1]])])]);
-    }, []));
-  }
-
-  function notice(run, steps) {
+  // Where the run stands, as one sentence beside its lamp.
+  function statement(run, steps) {
     var retrying = steps.filter(function (step) { return step.status === 'retrying'; })[0];
-    if (run.status === 'sleeping' && retrying && run.wakeAt) {
-      return h('div', { class: 'notice hold', role: 'note' }, [
-        h('p', { text: 'Retrying ' + retrying.name + ' ' + ago(run.wakeAt) + ', after ' + retrying.attempts + (retrying.attempts === 1 ? ' failed attempt.' : ' failed attempts.') }),
-        retrying.error ? h('div', { class: 'code', text: retrying.error }) : null
-      ]);
-    }
+    var failedStep = run.error ? steps.filter(function (step) { return step.name === run.error.stepName; })[0] : null;
+    var head = STATUS_LABEL[run.status];
+    var reason = '';
     if (run.status === 'failed' && run.error) {
-      return h('div', { class: 'notice stop', role: 'note' }, [
-        h('p', { text: 'Failed at ' + run.error.stepName + ': ' + run.error.message }),
-        run.error.code ? h('div', { class: 'code', text: run.error.code }) : null
-      ]);
+      head = 'Failed at ' + run.error.stepName + (failedStep && failedStep.attempts > 1 ? ' after ' + plural(failedStep.attempts, 'attempt') : '');
+      reason = run.error.message + (run.error.code ? ' (' + run.error.code + ')' : '');
+    } else if (run.status === 'sleeping' && retrying && run.wakeAt) {
+      head = 'Retrying ' + retrying.name + ' ' + ago(run.wakeAt);
+      reason = plural(retrying.attempts, 'attempt') + ' so far' + (retrying.error ? '; last error: ' + retrying.error : '');
+    } else if (run.status === 'waiting') {
+      head = 'Waiting for ' + (run.waitingFor || 'an event');
+      reason = run.wakeAt ? 'Times out at ' + clock(run.wakeAt) : 'No timeout';
+    } else if (run.status === 'sleeping' && run.wakeAt) {
+      head = 'Sleeping until ' + clock(run.wakeAt);
+    } else if (run.status === 'pending') {
+      head = run.startedAt ? 'Queued to carry on' : 'Queued';
+    } else if (run.status === 'running') {
+      head = 'Running';
     }
-    if (run.status === 'waiting') {
-      return h('div', { class: 'notice hold', role: 'note' }, [h('p', {
-        text: 'Waiting for the "' + (run.waitingFor || '') + '" event' + (run.wakeAt ? '. Times out ' + absolute(run.wakeAt) + '.' : '. No timeout.')
-      })]);
-    }
-    if (run.status === 'sleeping' && run.wakeAt) {
-      return h('div', { class: 'notice hold', role: 'note' }, [h('p', { text: 'Paused until ' + absolute(run.wakeAt) + '.' })]);
-    }
-    return null;
+    return h('p', { class: 'state' }, [lamp(run.status), h('span', null, [head + (reason ? ':' : ''), reason ? h('span', { class: 'reason', text: ' ' + reason }) : null])]);
   }
 
-  // Each step becomes a segment as wide as its share of the run's time, so
-  // where a run spent itself — working, holding, or stopped — reads at a glance.
-  function lane(run, steps) {
-    var origin = run.createdAt;
-    var end = run.finishedAt || Date.now();
-    var parts = [];
-    var cursor = run.startedAt || end;
-    if (run.startedAt) parts.push({ kind: 'queued', label: 'Queued', from: origin, to: run.startedAt });
-    steps.forEach(function (step) {
-      var from = step.startedAt || step.createdAt;
-      var to = HOLDS[step.status] ? Math.max(from, Math.min(end, Date.now())) : step.updatedAt;
-      var part = { kind: step.status, label: step.name, from: from, to: to, attempts: step.attempts };
-      // Branches of a parallel group share a start time: stack them, since
-      // they ran side by side rather than one after another.
-      var last = parts[parts.length - 1];
-      if (last && step.startedAt && last.from === step.startedAt && last.kind !== 'queued') {
-        if (last.kind !== 'group') {
-          parts[parts.length - 1] = last = { kind: 'group', label: 'Parallel', from: last.from, to: last.to, members: [last] };
-        }
-        last.members.push(part);
-        last.to = Math.max(last.to, to);
-      } else {
-        parts.push(part);
-      }
-      cursor = Math.max(cursor, to);
-    });
-    if (run.status === 'running') parts.push({ kind: 'running', label: 'In progress', from: cursor, to: Date.now(), live: true });
-
-    var total = Math.max(1, end - origin);
-    function describe(part) {
-      return part.label + ', ' + (STATUS_LABEL[part.kind] || part.kind) + ', ' + duration(Math.max(0, part.to - part.from)) + (part.attempts > 1 ? ', ' + part.attempts + ' attempts' : '');
-    }
-    var segments = parts.map(function (part) {
-      var span = Math.max(0, part.to - part.from);
-      if (part.kind === 'group') {
-        var group = h('div', { class: 'seg-group', title: part.members.map(describe).join('\n') }, part.members.map(function (member) {
-          var bar = h('div', { class: 'seg thin c-' + member.kind + (member.kind === 'failed' ? ' failed' : '') });
-          bar.style.width = Math.max(8, 100 * (member.to - member.from) / Math.max(1, span)) + '%';
-          return bar;
-        }));
-        group.style.flexGrow = String(Math.max(span / total, 0.015));
-        group.style.flexBasis = '0';
-        return group;
-      }
-      var classes = 'seg c-' + part.kind;
-      if (part.kind === 'queued') classes = 'seg queued';
-      else if (HOLDS[part.kind]) classes += ' hold';
-      else if (part.kind === 'skipped') classes += ' skipped';
-      else if (part.kind === 'failed') classes += ' failed';
-      if (part.live) classes += ' live-now';
-      var el = h('div', { class: classes, title: describe(part) });
-      el.style.flexGrow = String(Math.max(span / total, 0.015));
-      el.style.flexBasis = '0';
-      for (var i = 1; i < (part.attempts || 0); i++) {
-        var tick = h('span', { class: 'tick' });
-        tick.style.left = (100 * i / part.attempts) + '%';
-        el.appendChild(tick);
-      }
-      return el;
-    });
-
-    return h('div', null, [
-      h('div', { class: 'lane', role: 'img', 'aria-label': parts.map(function (part) {
-        return part.kind === 'group' ? part.members.map(describe).join('; ') : describe(part);
-      }).join('; ') }, segments),
-      h('div', { class: 'lane-scale' }, [
-        h('span', { text: 'Enqueued' }),
-        h('span', { text: run.finishedAt ? duration(total) : duration(total) + ' so far' + (run.wakeAt ? ', resumes ' + ago(run.wakeAt) : '') })
-      ])
-    ]);
-  }
-
-  function stepTable(steps) {
-    if (steps.length === 0) return h('p', { class: 'empty', text: 'No step has run yet.' });
-    return h('table', { class: 'steps' }, [
-      h('thead', null, [h('tr', null, [
-        h('th', { text: 'Step' }), h('th', { text: 'Status' }), h('th', { class: 'num', text: 'Attempts' }), h('th', { class: 'num', text: 'Took' })
-      ])]),
-      h('tbody', null, steps.map(function (step) {
-        var took = step.startedAt && !HOLDS[step.status] ? duration(step.updatedAt - step.startedAt) : '';
-        return h('tr', null, [
-          h('td', null, [h('span', { class: 'name', text: step.name }), step.error ? h('span', { class: 'err', text: step.error }) : null]),
-          h('td', { class: 'c-' + step.status, text: STATUS_LABEL[step.status] || step.status }),
-          h('td', { class: 'num', text: String(step.attempts) }),
-          h('td', { class: 'num', text: took })
-        ]);
-      }))
-    ]);
+  function facts(run) {
+    var items = [['Enqueued', time(run.createdAt, false)]];
+    if (run.startedAt) items.push([run.finishedAt ? 'Ran' : 'Running for', duration((run.finishedAt || Date.now()) - run.startedAt)]);
+    if (run.finishedAt) items.push(['Finished', time(run.finishedAt, false)]);
+    return h('dl', { class: 'facts' }, items.map(function (item) {
+      return h('div', null, [h('dt', { text: item[0] }), h('dd', null, [item[1]])]);
+    }));
   }
 
   function act(run, action) {
@@ -617,13 +722,13 @@ const SCRIPT = String.raw`
 
   function renderSchedules(schedules) {
     if (schedules.length === 0) {
-      app.replaceChildren(h('div', { class: 'panel' }, [h('div', { class: 'empty' }, [
+      app.replaceChildren(h('div', { class: 'empty' }, [
         h('strong', { text: 'No schedules registered' }),
         'Schedules registered with engine.schedule() appear here.'
-      ])]));
+      ]));
       return;
     }
-    app.replaceChildren(h('div', { class: 'panel' }, [h('table', { class: 'sched' }, [
+    app.replaceChildren(h('table', { class: 'sched' }, [
       h('thead', null, [h('tr', null, [h('th', { text: 'Workflow' }), h('th', { text: 'Repeats' }), h('th', { text: 'Next run' }), h('th', { text: 'Key' })])]),
       h('tbody', null, schedules.map(function (schedule) {
         var repeats = schedule.recurrence.kind === 'cron'
@@ -636,7 +741,7 @@ const SCRIPT = String.raw`
           h('td', null, [h('code', { text: schedule.key })])
         ]);
       }))
-    ])]));
+    ]));
   }
 
   // --- Updates: live from the engine when available, otherwise polling.

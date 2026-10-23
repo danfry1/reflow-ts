@@ -24,7 +24,14 @@
 import { randomBytes } from 'node:crypto'
 import type { Engine } from '../core/engine'
 import { toError } from '../core/errors'
-import { RUN_STATUSES, type ListRunsFilter, type RunStatus, type StorageAdapter, type WorkflowRun } from '../core/types'
+import {
+  RUN_STATUSES,
+  type ListRunsFilter,
+  type RunStatus,
+  type StepResult,
+  type StorageAdapter,
+  type WorkflowRun,
+} from '../core/types'
 import { renderPage } from './page'
 
 export { toNodeHandler } from './node'
@@ -232,9 +239,14 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       ? { before: last.createdAt, beforeId: last.id }
       : null
 
-    // Inputs and outputs can be large; the list shows neither, and the detail
-    // endpoint returns them for the one run being looked at.
-    return json(200, { runs: runs.map(summarize), next })
+    // Each row draws its run as a line, which needs the steps' timing but not
+    // their outputs. Inputs and outputs can be large; the list sends neither,
+    // and the detail endpoint returns them for the one run being looked at.
+    const steps = await Promise.all(runs.map((run) => storage.getStepResults(run.id)))
+    return json(200, {
+      runs: runs.map((run, index) => ({ ...summarize(run), steps: (steps[index] ?? []).map(outline) })),
+      next,
+    })
   }
 
   function page(): Response {
@@ -263,6 +275,12 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
 function summarize(run: WorkflowRun): Omit<WorkflowRun, 'input' | 'output'> {
   const { input: _input, output: _output, ...summary } = run
   return summary
+}
+
+/** A step without its output: what a run's line needs and nothing more. */
+function outline(step: StepResult): Omit<StepResult, 'output' | 'id' | 'runId'> {
+  const { output: _output, id: _id, runId: _runId, ...rest } = step
+  return rest
 }
 
 /**
