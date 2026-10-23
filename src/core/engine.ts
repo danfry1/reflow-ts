@@ -163,8 +163,11 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    * `failed`, or `cancelled` — check `status`, `output`, and `error` to see
    * which. Resolves at once for a run that has already finished.
    *
-   * A run finishing on this engine resolves the wait immediately; one finished
-   * by another process is noticed on the next read of storage. Throws
+   * A run finishing on this engine resolves the wait once its hooks and
+   * `onFailure` have run; one finished by any other engine instance — in
+   * another process or this one — is noticed on the next read of storage.
+   * The wait polls storage itself, so it works on an engine that was never
+   * started, and outlives `stop()`: pass a `signal` to bound it. Throws
    * {@link RunNotFoundError} for an unknown run.
    *
    * ```ts
@@ -436,8 +439,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   async function waitForRun(runId: string, options: WaitForRunOptions = {}): Promise<WorkflowRun> {
     const { signal } = options
     const pollIntervalMs = options.pollIntervalMs ?? 1000
-    if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
-      throw new ConfigError('waitForRun pollIntervalMs must be a positive number')
+    if (!isTimerDelay(pollIntervalMs)) {
+      throw new ConfigError(`waitForRun pollIntervalMs must be a positive number of milliseconds up to ${MAX_TIMER_DELAY_MS}`)
     }
 
     for (;;) {
@@ -469,9 +472,13 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   }
 
   /**
-   * A promise that settles when `runId` finishes on this engine, after
-   * `timeoutMs` (for runs finished elsewhere), or rejects when `signal`
-   * aborts — whichever comes first. `cancel()` disarms it without settling.
+   * A promise that resolves when `runId` finishes on this engine, after
+   * `timeoutMs` (for runs finished elsewhere), or when `signal` aborts —
+   * whichever comes first. `cancel()` disarms it.
+   *
+   * It never rejects. An abort that lands while the caller is still reading
+   * storage would otherwise reject a promise nobody is waiting on yet — an
+   * unhandled rejection — so the caller checks `signal.aborted` itself.
    */
   function armFinishWait(
     runId: string,
@@ -479,17 +486,13 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     signal: AbortSignal | undefined,
   ): { settled: Promise<void>; cancel(): void } {
     let disarm = noop
-    const settled = new Promise<void>((resolve, reject) => {
+    const settled = new Promise<void>((resolve) => {
       const waiters = finishWaiters.get(runId) ?? new Set<() => void>()
       finishWaiters.set(runId, waiters)
 
       const wake = () => {
         disarm()
         resolve()
-      }
-      const onAbort = () => {
-        disarm()
-        reject(toError(signal?.reason))
       }
       const timer = setTimeout(wake, timeoutMs)
 
@@ -499,11 +502,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         if (waiters.size === 0 && finishWaiters.get(runId) === waiters) {
           finishWaiters.delete(runId)
         }
-        signal?.removeEventListener('abort', onAbort)
+        signal?.removeEventListener('abort', wake)
       }
 
       waiters.add(wake)
-      signal?.addEventListener('abort', onAbort, { once: true })
+      signal?.addEventListener('abort', wake, { once: true })
     })
 
     return { settled, cancel: () => disarm() }
@@ -826,9 +829,13 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     if (!completed) {
       return
     }
-    notifyFinished(run.id)
-
-    await ctx.emit({ type: 'runComplete', runId: run.id, workflow: run.workflow, output })
+    // Waiters wake only after the run's hooks have had their turn, so code
+    // that awaits a run and then stops the engine cannot cut them short.
+    try {
+      await ctx.emit({ type: 'runComplete', runId: run.id, workflow: run.workflow, output })
+    } finally {
+      notifyFinished(run.id)
+    }
   }
 
   /** Mark a run failed, announce it, then invoke the workflow's `onFailure`. No-ops if the lease was lost. */
@@ -847,18 +854,22 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     if (!failed) {
       return
     }
-    notifyFinished(run.id)
+    // Waiters wake once `onFailure` has run, so awaiting a run and then
+    // stopping the engine cannot skip its compensation.
+    try {
+      await ctx.emit({ type: 'runFailed', runId: run.id, workflow: run.workflow, stepName, error })
 
-    await ctx.emit({ type: 'runFailed', runId: run.id, workflow: run.workflow, stepName, error })
-
-    if (wf.failureHandler) {
-      try {
-        await wf.failureHandler({ error, stepName, input: run.input })
-      } catch (failureError) {
-        // Compensation logic must not change the run's outcome — it is already
-        // failed — but a broken `onFailure` is reported rather than lost.
-        reportError(new HookError('onFailure handler', { cause: toError(failureError) }))
+      if (wf.failureHandler) {
+        try {
+          await wf.failureHandler({ error, stepName, input: run.input })
+        } catch (failureError) {
+          // Compensation logic must not change the run's outcome — it is already
+          // failed — but a broken `onFailure` is reported rather than lost.
+          reportError(new HookError('onFailure handler', { cause: toError(failureError) }))
+        }
       }
+    } finally {
+      notifyFinished(run.id)
     }
   }
 
@@ -1164,8 +1175,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   }
 
   async function start(pollIntervalMs = 1000): Promise<void> {
-    if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
-      throw new ConfigError('Engine pollIntervalMs must be a positive number')
+    if (!isTimerDelay(pollIntervalMs)) {
+      throw new ConfigError(`Engine pollIntervalMs must be a positive number of milliseconds up to ${MAX_TIMER_DELAY_MS}`)
     }
 
     await storage.initialize()
@@ -1466,6 +1477,13 @@ const TERMINAL_STATUSES: readonly TerminalRunStatus[] = ['completed', 'failed', 
 function isTerminalStatus(status: RunStatus): status is TerminalRunStatus {
   const terminal: readonly RunStatus[] = TERMINAL_STATUSES
   return terminal.includes(status)
+}
+
+/** The longest delay `setTimeout` honours; anything larger silently fires after 1ms. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+
+function isTimerDelay(ms: number): boolean {
+  return Number.isFinite(ms) && ms > 0 && ms <= MAX_TIMER_DELAY_MS
 }
 
 /** How far ahead {@link scheduleWake} sets a local timer; later wakes are left to polling. */

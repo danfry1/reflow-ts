@@ -2,7 +2,7 @@
 
 0.8 makes runs inspectable — every run records when it started and finished, what it returned, and why it failed — and fixes running several processes against one SQLite database.
 
-**If you use the built-in storage adapters, you can upgrade without changing any code.** The SQLite adapters migrate their tables on `initialize()`. Everything on `engine` is additive.
+**If you use the built-in storage adapters, you can upgrade without changing any code.** The SQLite adapters migrate their tables on `initialize()`. Everything on `engine` is additive — though code that implements the `Engine` interface itself, such as a hand-written mock, gains `waitForRun`, `countRuns`, and `prune` to provide.
 
 A few behaviours change in ways your code could notice:
 

@@ -307,6 +307,52 @@ describe('engine.waitForRun', () => {
     await expect(engine.waitForRun(id, { signal: AbortSignal.timeout(20) })).rejects.toMatchObject({ name: 'TimeoutError' })
   })
 
+  it('leaves no unhandled rejection when the signal aborts during a storage read', async () => {
+    const slow = delegatingAdapter(storage, {
+      getRun: async (runId) => {
+        await new Promise((resolve) => setTimeout(resolve, 30))
+        return storage.getRun(runId)
+      },
+    })
+    const engine = createEngine({ storage: slow, workflows: [job] })
+    const { id } = await engine.enqueue('job', { fail: false })
+    await engine.tick()
+
+    // Aborts 10ms into the 30ms read, which then finds the run finished.
+    const run = await engine.waitForRun(id, { signal: AbortSignal.timeout(10) })
+
+    expect(run.status).toBe('completed')
+  })
+
+  it('resolves only after onFailure has run', async () => {
+    const order: string[] = []
+    const compensated = createWorkflow({ name: 'compensated', input: z.object({}) })
+      .step('a', async () => {
+        throw new Error('boom')
+      })
+      .onFailure(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        order.push('onFailure')
+      })
+    const engine = createEngine({ storage, workflows: [compensated] })
+    await engine.start(60_000)
+    const { id } = await engine.enqueue('compensated', {})
+
+    await engine.waitForRun(id)
+    order.push('waited')
+    await engine.stop()
+
+    expect(order).toStrictEqual(['onFailure', 'waited'])
+  })
+
+  it('rejects a poll interval setTimeout cannot honour', async () => {
+    const engine = createEngine({ storage, workflows: [job] })
+    const { id } = await engine.enqueue('job', { fail: false })
+
+    await expect(engine.waitForRun(id, { pollIntervalMs: 3e9 })).rejects.toBeInstanceOf(ConfigError)
+    await expect(engine.start(3e9)).rejects.toBeInstanceOf(ConfigError)
+  })
+
   it('rejects for a run that does not exist', async () => {
     const engine = createEngine({ storage, workflows: [job] })
 
