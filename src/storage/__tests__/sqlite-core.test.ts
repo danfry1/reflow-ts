@@ -218,6 +218,27 @@ describe('SqliteStorageBase query plans', () => {
   })
 })
 
+describe('SqliteStorageBase claiming across many workflows', () => {
+  beforeEach(removeDatabase)
+  afterEach(removeDatabase)
+
+  // Claims read workflows in chunks of a hundred; the oldest due run must win
+  // whichever chunk it is in.
+  it('claims the oldest due run when it belongs to a later chunk of workflows', async () => {
+    const storage = new SQLiteStorage(DB_PATH)
+    await storage.initialize()
+    const names = Array.from({ length: 250 }, (_, index) => `w${index}`)
+    for (const [index, name] of names.entries()) {
+      await storage.createRun(makeRun({ id: `run-${name}`, workflow: name, createdAt: 10_000 + index, updatedAt: 10_000 + index }))
+    }
+    await storage.createRun(makeRun({ id: 'oldest', workflow: 'w240', createdAt: 5_000, updatedAt: 5_000 }))
+
+    expect((await storage.claimNextRun(names))?.id).toBe('oldest')
+    expect((await storage.claimNextRun(names))?.id).toBe('run-w0')
+    storage.close()
+  })
+})
+
 describe('SqliteStorageBase listing by status', () => {
   beforeEach(removeDatabase)
   afterEach(removeDatabase)
