@@ -211,18 +211,55 @@ describe('createDashboard', () => {
         .toStrictEqual([['approval', null], ['order', null]])
     })
 
-    it('labels each run by its input, so runs of one workflow can be told apart', async () => {
-      const short = await engine.enqueue('order', { id: 'o1' })
-      const long = await engine.enqueue('order', { id: 'x'.repeat(200) })
+    it("names runs by their workflow's label, else their idempotency key, else not at all", async () => {
+      const labelled = createWorkflow({ name: 'labelled', input: z.object({ userId: z.string() }), label: (input) => `user ${input.userId}` })
+        .step('a', async () => ({}))
+      const broken = createWorkflow({ name: 'broken', input: z.object({}), label: () => { throw new Error('no name') } })
+        .step('a', async () => ({}))
+      const labelling = createEngine({ storage, workflows: [wf, labelled, broken] })
+      const named = await labelling.enqueue('labelled', { userId: 'u_42' })
+      const keyed = await labelling.enqueue('order', { id: 'secret' }, { idempotencyKey: 'order-1001' })
+      const plain = await labelling.enqueue('order', { id: 'secret' })
+      const failing = await labelling.enqueue('broken', {})
+      const long = await labelling.enqueue('labelled', { userId: 'x'.repeat(200) })
 
-      const listed = await (await dashboard()(get('/api/runs'))).json()
-      const detail = await (await dashboard({ workflows: [wf] })(get(`/api/runs/${long.id}`))).json()
-      const labels = new Map(listed.runs.map((run: { id: string; label: string }) => [run.id, run.label]))
+      const handler = dashboard({ workflows: [wf, labelled, broken] })
+      const listed = await (await handler(get('/api/runs'))).json()
+      const labels = new Map(listed.runs.map((run: { id: string; label: string | null }) => [run.id, run.label]))
+      const detail = await (await handler(get(`/api/runs/${named.id}`))).json()
 
-      expect(labels.get(short.id)).toBe('id: o1')
+      expect(labels.get(named.id)).toBe('user u_42')
+      expect(labels.get(keyed.id)).toBe('order-1001')
+      expect(labels.get(plain.id)).toBeNull()
+      expect(labels.get(failing.id)).toBe('label() threw: no name')
       expect(labels.get(long.id)).toHaveLength(80)
-      expect(detail.label).toMatch(/^id: x+…$/)
-      expect(detail.outline).toStrictEqual([{ kind: 'step', name: 'charge' }])
+      expect(detail.label).toBe('user u_42')
+      expect(detail.outline).toStrictEqual([{ kind: 'step', name: 'a' }])
+    })
+
+    it("sums up a workflow's recent runs: how far they got, what they failed with, and when", async () => {
+      const pipeline = createWorkflow({ name: 'pipeline', input: z.object({ fail: z.string().optional() }) })
+        .step('fetch', async () => ({}))
+        .step('charge', async ({ input }) => {
+          if (input.fail) throw new Error(input.fail)
+          return {}
+        })
+        .waitForEvent('shipped')
+      const local = createEngine({ storage, workflows: [pipeline] })
+      for (const fail of [undefined, undefined, 'card declined', 'card declined', 'gateway down']) {
+        await local.enqueue('pipeline', fail ? { fail } : {})
+      }
+      for (let index = 0; index < 5; index++) await local.tick()
+
+      const body = await (await dashboard({ workflows: [pipeline] })(get('/api/workflows/pipeline/insights'))).json()
+
+      expect({ sample: body.sample, complete: body.complete }).toStrictEqual({ sample: 5, complete: true })
+      expect(body.pipeline.map((stage: Record<string, unknown>) => [stage.name, stage.reached, stage.completed, stage.failed, stage.here]))
+        .toStrictEqual([['fetch', 5, 5, 0, 0], ['charge', 5, 2, 3, 0], ['shipped', 2, 0, 0, 2]])
+      expect(body.failures.map((group: Record<string, unknown>) => [group.stepName, group.message, group.count]))
+        .toStrictEqual([['charge', 'card declined', 2], ['charge', 'gateway down', 1]])
+      expect(body.activity.started.reduce((sum: number, n: number) => sum + n, 0)).toBe(5)
+      expect(body.activity.failed.reduce((sum: number, n: number) => sum + n, 0)).toBe(3)
     })
 
     it('filters runs by status and workflow', async () => {

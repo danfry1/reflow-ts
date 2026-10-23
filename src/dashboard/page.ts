@@ -175,14 +175,17 @@ main { min-width: 0; }
 .search { width: 100%; margin-bottom: 12px; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); color: var(--ink); font: inherit; }
 
 .rows { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
-.row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; grid-template-areas: "lamp name when" ". why why" ". trail trail"; gap: 2px 14px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--rule); text-decoration: none; }
+.row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; grid-template-areas: "lamp name when" ". why why"; gap: 1px 12px; align-items: center; padding: 9px 14px; border-top: 1px solid var(--rule); text-decoration: none; }
+.row.changed { animation: changed 1.6s ease-out; }
+@keyframes changed { from { background: color-mix(in srgb, var(--live) 22%, transparent); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .row.changed { animation: none; } }
 .rows li:first-child .row { border-top: 0; }
 .row:hover { background: var(--canvas); }
 .row[aria-current="true"] { background: var(--canvas); box-shadow: inset 3px 0 0 var(--ink); }
 .row .lamp { grid-area: lamp; }
 .row .name { grid-area: name; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .when { grid-area: when; text-align: right; color: var(--ink-soft); font-size: 14px; white-space: nowrap; }
-.row .why { grid-area: why; font-size: 14px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .why { grid-area: why; font-size: 13.5px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .more { display: block; width: 100%; margin-top: 10px; padding: 9px; border: 1px solid var(--rule); border-radius: 4px; background: none; cursor: pointer; color: var(--ink-soft); }
 .more:hover { color: var(--ink); border-color: var(--ink-soft); }
 
@@ -279,15 +282,44 @@ h2 { margin: 34px 0 10px; font: 700 18px var(--sign); }
 .count { display: flex; align-items: center; gap: 7px; }
 .count .n { font: 700 15px var(--sign); color: var(--ink); }
 .row .name .label { display: block; font-weight: 400; font-size: 13px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; }
-.trail .unreached { color: var(--ink-faint); }
 .steps tr.unreached .name, .steps tr.unreached .status { color: var(--ink-faint); }
 
-/* The list: each run's steps so far, in order. */
-.trail { grid-area: trail; display: flex; flex-wrap: wrap; gap: 2px 16px; margin: 4px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--ink-soft); }
-.trail li { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.trail li span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 16em; }
-.trail .lamp { width: 8px; height: 8px; }
-.trail .gap { color: var(--ink-faint); }
+/* A workflow's picture: where runs get to, why they fail, how busy it is. */
+.pipeline { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0; margin: 0; padding: 0; list-style: none; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); overflow: hidden; }
+.stage { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px 16px; border-left: 1px solid var(--rule); min-width: 0; }
+.stage:first-child { border-left: 0; }
+.stage .kind { font: 600 12px var(--body); color: var(--ink-faint); white-space: pre; }
+.stage-name { font: 700 16px var(--sign); overflow-wrap: anywhere; }
+.reach { display: block; height: 4px; border-radius: 2px; background: var(--rule); }
+.reach .fill { display: block; height: 100%; border-radius: 2px; background: var(--ink-soft); }
+.reached { font-size: 13px; color: var(--ink-soft); }
+.reached .n { font: 700 22px var(--sign); color: var(--ink); margin-right: 2px; }
+.outcomes { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--ink-soft); }
+.outcomes li, .outcomes button { display: flex; align-items: center; gap: 6px; }
+.outcomes .lamp { width: 8px; height: 8px; }
+.outcomes .held { color: var(--hold); }
+.linkish { padding: 0; border: 0; background: none; cursor: pointer; color: var(--ink-soft); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--rule); }
+.linkish:hover { color: var(--ink); text-decoration-color: currentColor; }
+.linkish.bad { color: var(--stop); }
+.failures { margin: 0; padding: 0; list-style: none; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); overflow: hidden; }
+.failures li + li { border-top: 1px solid var(--rule); }
+.failure { display: grid; grid-template-columns: 3.2em minmax(0, 1fr) auto; gap: 14px; align-items: baseline; width: 100%; padding: 11px 16px; border: 0; background: none; text-align: left; cursor: pointer; }
+.failure:hover { background: var(--canvas); }
+.failure .count { font: 700 20px var(--sign); color: var(--stop); text-align: right; }
+.failure .what { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.failure .where { display: block; font-size: 13px; color: var(--ink-soft); }
+.failure .last { font-size: 13px; color: var(--ink-faint); white-space: nowrap; }
+.activity .cols { display: flex; align-items: flex-end; gap: 2px; height: 72px; padding: 0 1px; border-bottom: 1px solid var(--rule); }
+.activity .col { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.activity .bar { position: relative; display: block; width: 100%; min-height: 0; background: var(--proceed); border-radius: 2px 2px 0 0; opacity: 0.85; }
+.activity .bar .bad { position: absolute; left: 0; right: 0; bottom: 0; background: var(--stop); }
+.activity .axis { margin-top: 4px; font-size: 12px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 8px 0 0; font-size: 13.5px; color: var(--ink-soft); }
+.legend > span { display: flex; align-items: center; gap: 6px; }
+.legend .n { font: 700 15px var(--sign); color: var(--ink); }
+.scope { display: flex; gap: 10px; align-items: baseline; margin: 0 0 10px; font-size: 13.5px; color: var(--stop); }
+.runid .linkish { margin-left: 4px; font-size: 13px; }
+
 
 pre.json { margin: 0; padding: 14px 16px; background: var(--code-bg); border-radius: 6px; overflow: auto; max-height: 320px; font: 12.5px/1.6 var(--code); }
 .pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
@@ -329,7 +361,7 @@ const SCRIPT = String.raw`
 
   var app = document.getElementById('app');
   var liveBadge = document.getElementById('live');
-  var state = { overview: null, workflows: null, schedules: null, status: null, workflow: '', search: '', scope: null, runs: [], next: null, detail: null, problem: null };
+  var state = { overview: null, workflows: null, schedules: null, insights: null, status: null, workflow: '', search: '', find: '', stepFilter: null, scope: null, runs: [], next: null, detail: null, problem: null };
 
   // --- DOM helpers: every piece of run data goes in as text, never markup.
   function h(tag, props, children) {
@@ -452,41 +484,6 @@ const SCRIPT = String.raw`
     if (step.status === 'failed' && step.attempts > 1) return 'Failed after ' + plural(step.attempts, 'attempt');
     if (step.status === 'completed' && step.attempts > 1) return 'Completed on attempt ' + step.attempts;
     return STATUS_LABEL[step.status] || step.status;
-  }
-
-  // A run's steps as a short chain: those it ran, with their lamps, and —
-  // when the workflow's definition is known — those it has not reached yet.
-  function trail(run, outline) {
-    var steps = run.steps || [];
-    var entries;
-    if (outline) {
-      var byName = {};
-      steps.forEach(function (step) { byName[step.name] = step; });
-      entries = outline.map(function (unit) {
-        var names = unit.kind === 'parallel' ? unit.branches : [unit.name];
-        var ran = names.map(function (name) { return byName[name]; }).filter(Boolean);
-        return { label: names.join(' + '), status: ran.length ? unitStatus({ members: ran }) : null };
-      });
-      if (run.status === 'running') {
-        var next = entries.filter(function (entry) { return entry.status === null; })[0];
-        if (next) next.status = 'running';
-      }
-    } else {
-      entries = unitsOf(steps).map(function (unit) {
-        return { label: unit.members.map(function (step) { return step.name; }).join(' + '), status: unitStatus(unit) };
-      });
-      if (run.status === 'running') entries.push({ label: 'next step', status: 'running' });
-    }
-    var items = entries.map(function (entry) {
-      var reached = entry.status !== null;
-      return h('li', { class: reached ? null : 'unreached', title: entry.label + ': ' + (reached ? STATUS_LABEL[entry.status] || entry.status : 'not reached') }, [
-        lamp(reached ? entry.status : 'pending'), h('span', { text: entry.label })
-      ]);
-    });
-    if (items.length > 7) {
-      items = items.slice(0, 3).concat([h('li', { class: 'gap', text: (items.length - 6) + ' more' })], items.slice(-3));
-    }
-    return items.length ? h('ol', { class: 'trail', 'aria-label': 'Steps' }, items) : null;
   }
 
   // A bar placed on the run's own time axis. Retries draw each attempt, with
@@ -638,7 +635,8 @@ const SCRIPT = String.raw`
     return 'api/runs?' + params.toString();
   }
   function loadRuns() {
-    return api(query({})).then(function (page) { state.runs = page.runs; state.next = page.next; });
+    // A step filter applies to what is loaded, so it loads a longer page.
+    return api(query(state.stepFilter ? { limit: '200' } : {})).then(function (page) { state.runs = page.runs; state.next = page.next; });
   }
   function loadMore() {
     if (!state.next) return;
@@ -664,9 +662,20 @@ const SCRIPT = String.raw`
       if (state.scope !== scope) {
         state.scope = scope;
         state.status = null;
+        state.stepFilter = null;
+        state.find = '';
       }
       state.workflow = r.view === 'workflow' ? r.workflow : state.search || '';
       loads.push(loadRuns());
+    }
+    // Insights read a sample of runs, so they refresh at most every few seconds.
+    if (r.view === 'workflow' && !r.runId) {
+      var cached = state.insights && state.insights.name === r.workflow && Date.now() - state.insights.at < 4000;
+      if (!cached) {
+        loads.push(api('api/workflows/' + encodeURIComponent(r.workflow) + '/insights').then(function (body) {
+          state.insights = { name: r.workflow, at: Date.now(), body: body };
+        }));
+      }
     }
     if (r.runId) {
       loads.push(api('api/runs/' + encodeURIComponent(r.runId)).then(
@@ -804,73 +813,176 @@ const SCRIPT = String.raw`
 
   var searchTimer = null;
   function listPane(r) {
+    var head;
     if (r.view === 'workflow') {
       var entry = workflowEntry(r.workflow);
-      return [
+      head = [
         h('h1', { text: r.workflow }),
-        h('p', { class: 'intro', text: 'Each row is one run, started separately. Newest first.' }),
-        entry ? statusFilters(entry.counts) : null,
-        runRows(r, false, entry ? entry.steps : null)
+        entry ? statusFilters(entry.counts) : null
+      ];
+    } else {
+      head = [
+        h('h1', { text: 'All runs' }),
+        statusFilters(state.overview ? state.overview.counts : {})
       ];
     }
-    return [
-      h('h1', { text: 'All runs' }),
-      h('p', { class: 'intro', text: 'Every run of every workflow, newest first.' }),
-      statusFilters(state.overview ? state.overview.counts : {}),
+    return head.concat([
       h('input', {
-        class: 'search', type: 'search', placeholder: 'Filter by workflow name', 'aria-label': 'Filter by workflow name', value: state.search || '',
+        class: 'search', type: 'search',
+        placeholder: r.view === 'workflow' ? 'Find a run by name' : 'Filter by workflow name',
+        'aria-label': r.view === 'workflow' ? 'Find a run by name' : 'Filter by workflow name',
+        value: r.view === 'workflow' ? state.find : state.search || '',
         oninput: function (event) {
           var value = event.target.value.trim();
           clearTimeout(searchTimer);
-          searchTimer = setTimeout(function () { state.search = value; state.workflow = value; reloadList(); }, 250);
+          searchTimer = setTimeout(function () {
+            if (r.view === 'workflow') { state.find = value; render(); }
+            else { state.search = value; state.workflow = value; reloadList(); }
+          }, 200);
         }
       }),
-      runRows(r, true, null)
-    ];
+      state.stepFilter ? h('p', { class: 'scope' }, [
+        'Failed at ' + state.stepFilter + ' ',
+        h('button', { class: 'linkish', onclick: function () { state.stepFilter = null; state.status = null; reloadList(); }, text: 'Show all' })
+      ]) : null,
+      runRows(r, r.view !== 'workflow')
+    ]);
   }
 
-  // With no run picked: what this workflow is, so the right side is never empty.
+  // With no run picked, the workflow's picture: where runs get to, why they
+  // fail, and how busy it has been.
   function detailPane(r) {
     if (r.runId) return runView(r);
-    if (r.view === 'workflow') {
-      var entry = workflowEntry(r.workflow);
-      return [
-        h('h1', { class: 'detail-title', text: r.workflow }),
-        entry && entry.steps ? h('div', { class: 'recipe-block' }, [h('p', { class: 'label', text: 'Every run takes these steps, in order:' }), recipe(entry.steps)]) : null,
-        entry ? countsLine(entry.counts) : null,
-        h('div', { class: 'placeholder' }, [h('strong', { text: 'Pick a run' }), 'Its steps, attempts, input, and output show here.'])
-      ];
+    if (r.view !== 'workflow') {
+      return [h('div', { class: 'placeholder' }, [h('strong', { text: 'Pick a run' }), 'Its steps, attempts, input, and output show here.'])];
     }
-    return [h('div', { class: 'placeholder' }, [h('strong', { text: 'Pick a run' }), 'Its steps, attempts, input, and output show here.'])];
+    var insights = state.insights && state.insights.name === r.workflow ? state.insights.body : null;
+    var entry = workflowEntry(r.workflow);
+    var out = [
+      h('div', { class: 'detail-head' }, [h('div', null, [
+        h('p', { class: 'kicker', text: 'Workflow' }),
+        h('h1', { class: 'detail-title', text: r.workflow })
+      ])]),
+      entry ? h('p', { class: 'intro', text: 'A recipe of ' + plural(entry.steps ? entry.steps.length : 0, 'step') + '. Every run takes them in order, on its own; pick a run on the left to follow one.' }) : null
+    ];
+    if (!insights) return out;
+    var sampleNote = insights.complete
+      ? 'From all ' + plural(insights.sample, 'run') + '.'
+      : 'From the latest ' + insights.sample + ' runs, since ' + clock(insights.since) + '.';
+    out.push(h('h2', { text: 'Where runs get to' }), pipelineView(insights, entry), h('p', { class: 'note', text: sampleNote }));
+    out.push(h('h2', { text: 'Why runs fail' }), failuresView(insights));
+    out.push(h('h2', { text: 'Last hour' }), activityView(insights.activity));
+    return out;
+  }
+
+  function pipelineView(insights, entry) {
+    var outline = entry && entry.steps;
+    return h('ol', { class: 'pipeline' }, insights.pipeline.map(function (stage, index) {
+      var unit = outline ? outline[index] : null;
+      var kind = unit ? (unit.kind === 'sleep' ? 'Sleep' : unit.kind === 'wait' ? 'Wait for event' : unit.kind === 'parallel' ? 'In parallel' : 'Step') : 'Step';
+      var share = insights.sample ? stage.reached / insights.sample : 0;
+      var bar = h('span', { class: 'reach' }, [h('span', { class: 'fill' })]);
+      bar.firstChild.style.width = Math.round(share * 100) + '%';
+      return h('li', { class: 'stage' }, [
+        h('span', { class: 'kind', text: (index + 1) + '  ' + kind }),
+        h('span', { class: 'stage-name', text: stage.name }),
+        bar,
+        h('span', { class: 'reached' }, [h('span', { class: 'n', text: String(stage.reached) }), ' reached']),
+        h('ul', { class: 'outcomes' }, [
+          stage.completed ? h('li', null, [lamp('completed'), stage.completed + ' done']) : null,
+          stage.here ? h('li', { class: 'held' }, [lamp(stage.retrying ? 'retrying' : 'sleeping'), stage.here + (stage.retrying ? ' here, retrying' : ' here now')]) : null,
+          stage.failed ? h('li', null, [h('button', {
+            class: 'linkish bad', onclick: function () { filterFailedAt(stage.name); }
+          }, [lamp('failed'), stage.failed + ' failed'])]) : null,
+          stage.skipped ? h('li', null, [lamp('skipped'), stage.skipped + ' skipped']) : null
+        ])
+      ]);
+    }));
+  }
+
+  function failuresView(insights) {
+    if (insights.failures.length === 0) return h('p', { class: 'note', text: 'None of these runs failed.' });
+    return h('ul', { class: 'failures' }, insights.failures.map(function (group) {
+      return h('li', null, [h('button', { class: 'failure', onclick: function () { filterFailedAt(group.stepName); } }, [
+        h('span', { class: 'count', text: String(group.count) }),
+        h('span', { class: 'msg' }, [
+          h('span', { class: 'what', text: group.message || 'Failed without a message' }),
+          h('span', { class: 'where', text: 'at ' + group.stepName + (group.attempts > 1 ? ', after ' + plural(group.attempts, 'attempt') : '') + (group.code ? ' (' + group.code + ')' : '') })
+        ]),
+        h('span', { class: 'last' }, ['last ', agoEl(group.lastAt)])
+      ])]);
+    }));
+  }
+
+  // One column a minute: started runs as the column, failures in red at its foot.
+  function activityView(activity) {
+    var peak = Math.max.apply(null, activity.started.concat(activity.completed, activity.failed, [1]));
+    var total = function (list) { return list.reduce(function (sum, n) { return sum + n; }, 0); };
+    var columns = activity.started.map(function (started, minute) {
+      var failed = activity.failed[minute];
+      var done = activity.completed[minute];
+      var col = h('span', { class: 'col', title: clock(activity.start + minute * activity.bucketMs) + ': ' + started + ' started, ' + done + ' completed, ' + failed + ' failed' });
+      var bar = h('span', { class: 'bar' });
+      bar.style.height = Math.round(100 * Math.max(started, done + failed) / peak) + '%';
+      var bad = h('span', { class: 'bad' });
+      bad.style.height = Math.max(started, done + failed) ? Math.round(100 * failed / Math.max(started, done + failed)) + '%' : '0';
+      bar.appendChild(bad);
+      col.appendChild(bar);
+      return col;
+    });
+    return h('div', { class: 'activity' }, [
+      h('div', { class: 'cols', role: 'img', 'aria-label': total(activity.started) + ' runs started, ' + total(activity.completed) + ' completed, and ' + total(activity.failed) + ' failed in the last hour' }, columns),
+      h('div', { class: 'axis' }, [h('span', { text: '60 min ago' }), h('span', { text: 'now' })]),
+      h('p', { class: 'legend' }, [
+        h('span', null, [h('span', { class: 'n', text: String(total(activity.started)) }), ' started']),
+        h('span', null, [lamp('completed'), h('span', { class: 'n', text: String(total(activity.completed)) }), ' completed']),
+        h('span', null, [lamp('failed'), h('span', { class: 'n', text: String(total(activity.failed)) }), ' failed'])
+      ])
+    ]);
+  }
+
+  function filterFailedAt(stepName) {
+    state.status = 'failed';
+    state.stepFilter = stepName;
+    reloadList();
   }
 
   function reloadList() {
     loadRuns().then(render, showProblem);
   }
 
-  function runRows(r, showWorkflow, outline) {
-    if (state.runs.length === 0) {
+  // Runs whose status changed since the last render flash once, so a change
+  // arriving live is noticed without being hunted for.
+  var seenStatus = {};
+  function runRows(r, showWorkflow) {
+    var runs = state.runs.filter(function (run) {
+      if (state.stepFilter && !(run.error && run.error.stepName === state.stepFilter)) return false;
+      if (r.view === 'workflow' && state.find) {
+        var hay = (run.label || '') + ' ' + run.id;
+        if (hay.toLowerCase().indexOf(state.find.toLowerCase()) < 0) return false;
+      }
+      return true;
+    });
+    if (runs.length === 0) {
       return h('div', { class: 'empty' }, [
-        h('strong', { text: state.status ? 'No ' + STATUS_LABEL[state.status].toLowerCase() + ' runs' : 'No runs yet' }),
-        state.status ? 'Choose All to see every run.' : 'Runs appear here as soon as your app enqueues one.'
+        h('strong', { text: state.find ? 'No run matches "' + state.find + '"' : state.status ? 'No ' + STATUS_LABEL[state.status].toLowerCase() + ' runs' : 'No runs yet' }),
+        state.find || state.status ? 'Clear the search or choose All.' : 'Runs appear here as soon as your app enqueues one.'
       ]);
     }
-    return h('div', null, [
-      h('ul', { class: 'rows' }, state.runs.map(function (run) {
-        var title = showWorkflow ? run.workflow : run.label || 'Run ' + shortId(run.id);
-        return h('li', null, [h('a', { class: 'row', href: runHref(r, run.id), 'aria-current': String(run.id === r.runId), 'data-run': run.id }, [
-          lamp(run.status),
-          h('span', { class: 'name' }, [
-            h('span', { text: title }),
-            showWorkflow && run.label ? h('span', { class: 'label', text: run.label }) : null
-          ]),
-          h('span', { class: 'when' }, [time(run.createdAt, true)]),
-          h('span', { class: 'why', text: why(run) || STATUS_LABEL[run.status] }),
-          trail(run, showWorkflow ? outlineFor(run.workflow) : outline)
-        ])]);
-      })),
-      state.next ? h('button', { class: 'more', onclick: loadMore, text: 'Load older runs' }) : null
-    ]);
+    var rows = h('ul', { class: 'rows' }, runs.map(function (run) {
+      var title = showWorkflow ? run.workflow : run.label || 'Run ' + shortId(run.id);
+      var changed = seenStatus[run.id] && seenStatus[run.id] !== run.status;
+      seenStatus[run.id] = run.status;
+      return h('li', null, [h('a', {
+        class: 'row' + (changed ? ' changed' : ''), href: runHref(r, run.id), 'aria-current': String(run.id === r.runId)
+      }, [
+        lamp(run.status),
+        h('span', { class: 'name', text: title, title: run.label || run.id }),
+        h('span', { class: 'why', text: (showWorkflow && run.label ? run.label + ': ' : '') + (why(run) || STATUS_LABEL[run.status]) }),
+        h('span', { class: 'when' }, [agoEl(run.createdAt)])
+      ])]);
+    }));
+    return h('div', null, [rows, state.next ? h('button', { class: 'more', onclick: loadMore, text: 'Load older runs' }) : null]);
   }
 
   function runView(r) {
@@ -886,15 +998,19 @@ const SCRIPT = String.raw`
       if (!TERMINAL[run.status]) actions.push(h('button', { class: 'btn danger', onclick: function () { act(run, 'cancel'); }, text: 'Cancel run' }));
       if (run.status === 'failed' || run.status === 'cancelled') actions.push(h('button', { class: 'btn', onclick: function () { act(run, 'resume'); }, text: 'Resume run' }));
     }
+    actions.push(h('a', { class: 'close', href: listHref(r), 'aria-label': 'Close run', title: 'Close (Esc)', text: '×' }));
+    var copy = h('button', { class: 'linkish copy', title: 'Copy run id', onclick: function () {
+      if (navigator.clipboard) navigator.clipboard.writeText(run.id).then(function () { copy.textContent = 'Copied'; setTimeout(function () { copy.textContent = 'Copy id'; }, 1200); });
+    }, text: 'Copy id' });
     return [
       back,
       h('div', { class: 'detail-head' }, [
         h('div', null, [
           h('p', { class: 'kicker' }, [h('a', { href: workflowHref(run.workflow), text: run.workflow }), ' run']),
           h('h1', { class: 'detail-title', text: detail.label || 'Run ' + shortId(run.id) }),
-          h('span', { class: 'runid', text: 'id ' + run.id })
+          h('span', { class: 'runid' }, [h('span', { text: run.id }), copy])
         ]),
-        actions.length ? h('div', { class: 'actions' }, actions) : null
+        h('div', { class: 'actions' }, actions)
       ]),
       statement(run, steps),
       facts(run),
@@ -907,12 +1023,24 @@ const SCRIPT = String.raw`
     ];
   }
 
+  // Relative times keep counting between refreshes.
+  function agoEl(ts) {
+    return h('time', { 'data-ago': String(ts), datetime: new Date(ts).toISOString(), title: absolute(ts) }, [ago(ts)]);
+  }
+  setInterval(function () {
+    document.querySelectorAll('[data-ago]').forEach(function (el) { el.textContent = ago(Number(el.getAttribute('data-ago'))); });
+  }, 1000);
+
   // Up and down move through the runs beside the one being looked at.
   document.addEventListener('keydown', function (event) {
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     if (event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
     var r = route();
     if (r.view !== 'workflow' && r.view !== 'runs') return;
+    if (event.key === 'Escape' && r.runId) {
+      location.hash = listHref(r);
+      return;
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     var ids = state.runs.map(function (run) { return run.id; });
     if (ids.length === 0) return;
     var index = r.runId ? ids.indexOf(r.runId) : -1;

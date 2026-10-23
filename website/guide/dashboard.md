@@ -81,6 +81,24 @@ A sidebar lists every workflow, with how many of its runs have failed or are sti
 - **All runs**, across workflows, for triage — every failed run, say.
 - **Schedules**, with when each next fires.
 
+## Naming runs
+
+Ten runs of `user-signup` are easier to tell apart by who signed up than by id. Give the workflow a `label`, computed from each run's typed input:
+
+```typescript
+const signup = createWorkflow({
+  name: 'user-signup',
+  input: z.object({ userId: z.string(), email: z.string() }),
+  label: (input) => input.userId,
+})
+```
+
+Without one, a run is shown by its idempotency key if it has one, or else by its short id. The dashboard never shows input in the list unless a `label` puts it there.
+
+A label is shown in every list, so choose something that is fine for anyone with dashboard access to see: an id or an order number rather than an email address or a name. If personal data is the useful handle, mask it — `` `${input.email.slice(0, 2)}…@${input.email.split('@')[1]}` ``. The run's full input is still shown on its own page, to anyone `authorize` lets in.
+
+The dashboard reads labels from the definitions passed as `workflows`.
+
 ## Security
 
 Run inputs and outputs are your application's data, so the dashboard is built to be safe to expose behind your own auth:

@@ -23,10 +23,11 @@
 
 import { randomBytes } from 'node:crypto'
 import type { Engine } from '../core/engine'
-import { assertNever, toError } from '../core/errors'
+import { assertNever, errorMessage, toError } from '../core/errors'
 import {
   RUN_STATUSES,
   type ListRunsFilter,
+  type PersistedValue,
   type RunStatus,
   type StepResult,
   type StorageAdapter,
@@ -89,6 +90,8 @@ export interface DashboardOptions {
 export interface DescribedWorkflow {
   readonly name: string
   readonly executionUnits: readonly ExecutionUnit[]
+  /** The workflow's run label — see `createWorkflow({ label })`. */
+  label?(input: PersistedValue): string
 }
 
 /** One entry in a workflow's outline, as the page draws it. */
@@ -100,6 +103,54 @@ type OutlineUnit =
 
 /** How many recent runs are read for workflow names when no definitions are given. */
 const RECENT_RUNS_FOR_NAMES = 500
+
+/** How many of a workflow's latest runs its insights are read from. */
+const INSIGHT_SAMPLE = 200
+const ACTIVITY_MINUTES = 60
+const MINUTE_MS = 60_000
+
+/** One step of a workflow, and how its recent runs fared there. */
+interface PipelineStage {
+  readonly name: string
+  /** Runs that got as far as this step. */
+  reached: number
+  completed: number
+  failed: number
+  skipped: number
+  /** Runs paused or executing at this step right now. */
+  here: number
+  /** Of those paused here, the ones backing off before another attempt. */
+  retrying: number
+}
+
+/** Failed runs that stopped at the same step with the same message. */
+interface FailureGroup {
+  readonly stepName: string
+  readonly message: string
+  readonly code: string | null
+  count: number
+  lastAt: number
+  /** Attempts the step made in the first run of the group. */
+  readonly attempts: number
+}
+
+interface WorkflowInsights {
+  /** How many runs these figures come from. */
+  readonly sample: number
+  /** Whether that is every run of the workflow. */
+  readonly complete: boolean
+  /** When the oldest of them was enqueued. */
+  readonly since: number | null
+  readonly pipeline: readonly PipelineStage[]
+  readonly failures: readonly FailureGroup[]
+  readonly activity: {
+    readonly start: number
+    readonly bucketMs: number
+    readonly started: number[]
+    readonly completed: number[]
+    readonly failed: number[]
+  }
+}
 
 /** A Fetch API request handler. */
 export type DashboardHandler = (request: Request) => Promise<Response>
@@ -125,6 +176,28 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
   const basePath = normalizeBasePath(options.basePath ?? '/')
   const title = options.title ?? 'Reflow'
   const outlines = new Map((options.workflows ?? []).map((workflow) => [workflow.name, outlineOf(workflow)]))
+  const labellers = new Map((options.workflows ?? []).map((workflow) => [workflow.name, workflow]))
+
+  /**
+   * A run's name for people: what its workflow's `label` returns, else its
+   * idempotency key, else nothing — the page then shows its short id. Input
+   * is never shown here unless the workflow's author chose to.
+   */
+  function labelOf(run: WorkflowRun): string | null {
+    const workflow = labellers.get(run.workflow)
+    let label: string | null = run.idempotencyKey
+    if (workflow?.label) {
+      try {
+        label = String(workflow.label(run.input))
+      } catch (error) {
+        // Shown in place of the label, so a broken labeller is visible
+        // rather than quietly falling back.
+        label = `label() threw: ${errorMessage(toError(error))}`
+      }
+    }
+    if (label === null || label === '') return null
+    return label.length > LABEL_LENGTH ? `${label.slice(0, LABEL_LENGTH - 1)}…` : label
+  }
 
   return async (request) => {
     const url = new URL(request.url)
@@ -193,6 +266,11 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       return listWorkflows()
     }
 
+    if (second === 'workflows' && third !== undefined && fourth === 'insights' && segments.length === 4) {
+      if (method !== 'GET') return methodNotAllowed('GET')
+      return json(200, await insightsFor(third))
+    }
+
     if (second === 'runs' && segments.length === 2) {
       if (method !== 'GET') return methodNotAllowed('GET')
       return listRuns(url.searchParams)
@@ -204,7 +282,7 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       if (!run) return json(404, { error: `No run with id "${third}"` })
       return json(200, {
         run,
-        label: labelOf(run.input),
+        label: labelOf(run),
         steps: await storage.getStepResults(third),
         outline: outlines.get(run.workflow) ?? null,
       })
@@ -253,6 +331,89 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
     return json(200, { workflows, source: known ? 'definitions' : 'recent-runs' })
   }
 
+  /**
+   * How a workflow's recent runs are going: how far they get through its
+   * steps and where they are now, what they fail with, and how many started,
+   * completed, and failed each minute of the last hour.
+   *
+   * Read from the latest {@link INSIGHT_SAMPLE} runs rather than aggregated
+   * in storage, which keeps no per-step counts; the page says so.
+   */
+  async function insightsFor(name: string): Promise<WorkflowInsights> {
+    const runs = await storage.listRuns({ workflow: name, limit: INSIGHT_SAMPLE })
+    const stepsByRun = await Promise.all(runs.map((run) => storage.getStepResults(run.id)))
+    const outlined = outlines.get(name)
+    const units = outlined ? outlined.map(unitNames) : namesInOrder(stepsByRun)
+    const now = Date.now()
+
+    const pipeline = units.map((names): PipelineStage => ({
+      name: names.join(' + '),
+      reached: 0, completed: 0, failed: 0, skipped: 0, here: 0, retrying: 0,
+    }))
+    const failures = new Map<string, FailureGroup>()
+
+    runs.forEach((run, index) => {
+      const steps = new Map((stepsByRun[index] ?? []).map((step) => [step.name, step]))
+      let lastReached = -1
+      units.forEach((names, position) => {
+        const stage = pipeline[position]
+        const members = names.map((member) => steps.get(member)).filter((step) => step !== undefined)
+        if (!stage || members.length === 0) return
+        lastReached = position
+        stage.reached++
+        if (members.some((step) => step.status === 'failed')) stage.failed++
+        else if (members.every((step) => step.status === 'skipped')) stage.skipped++
+        else if (members.every((step) => step.status === 'completed' || step.status === 'completed-early' || step.status === 'skipped')) stage.completed++
+        if (members.some((step) => step.status === 'retrying')) stage.retrying++
+        if (members.some((step) => step.status === 'retrying' || step.status === 'sleeping' || step.status === 'waiting')) stage.here++
+      })
+      // A running run is executing the step after the last one it saved.
+      const next = pipeline[lastReached + 1]
+      if (run.status === 'running' && next) next.here++
+
+      if (run.status === 'failed' && run.error) {
+        const key = `${run.error.stepName}\u0000${run.error.message}`
+        const group = failures.get(key)
+        const attempts = steps.get(run.error.stepName)?.attempts ?? 0
+        if (group) {
+          group.count++
+          group.lastAt = Math.max(group.lastAt, run.finishedAt ?? run.updatedAt)
+        } else {
+          failures.set(key, {
+            stepName: run.error.stepName, message: run.error.message, code: run.error.code,
+            count: 1, lastAt: run.finishedAt ?? run.updatedAt, attempts,
+          })
+        }
+      }
+    })
+
+    const start = now - ACTIVITY_MINUTES * MINUTE_MS
+    const bucket = (at: number | null): number => at === null || at < start ? -1 : Math.min(ACTIVITY_MINUTES - 1, Math.floor((at - start) / MINUTE_MS))
+    const activity = {
+      start,
+      bucketMs: MINUTE_MS,
+      started: new Array<number>(ACTIVITY_MINUTES).fill(0),
+      completed: new Array<number>(ACTIVITY_MINUTES).fill(0),
+      failed: new Array<number>(ACTIVITY_MINUTES).fill(0),
+    }
+    for (const run of runs) {
+      const started = bucket(run.createdAt)
+      if (started >= 0) activity.started[started] = (activity.started[started] ?? 0) + 1
+      const finished = bucket(run.finishedAt)
+      if (finished >= 0 && run.status === 'completed') activity.completed[finished] = (activity.completed[finished] ?? 0) + 1
+      if (finished >= 0 && run.status === 'failed') activity.failed[finished] = (activity.failed[finished] ?? 0) + 1
+    }
+
+    return {
+      sample: runs.length,
+      complete: runs.length < INSIGHT_SAMPLE,
+      since: runs.at(-1)?.createdAt ?? null,
+      pipeline,
+      failures: [...failures.values()].sort((a, b) => b.count - a.count || b.lastAt - a.lastAt),
+      activity,
+    }
+  }
+
   async function listRuns(params: URLSearchParams): Promise<Response> {
     const filter: ListRunsFilter = { limit: 50 }
 
@@ -298,7 +459,7 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
     return json(200, {
       runs: runs.map((run, index) => ({
         ...summarize(run),
-        label: labelOf(run.input),
+        label: labelOf(run),
         steps: (steps[index] ?? []).map(outline),
       })),
       next,
@@ -333,6 +494,26 @@ function summarize(run: WorkflowRun): Omit<WorkflowRun, 'input' | 'output'> {
   return summary
 }
 
+/** The step names a unit covers: one, or each branch of a parallel group. */
+function unitNames(unit: OutlineUnit): readonly string[] {
+  return unit.kind === 'parallel' ? unit.branches : [unit.name]
+}
+
+/** Without definitions, steps in the order runs first recorded them. */
+function namesInOrder(stepsByRun: readonly (readonly StepResult[])[]): string[][] {
+  const seen = new Set<string>()
+  const order: string[][] = []
+  for (const steps of stepsByRun) {
+    for (const step of steps) {
+      if (!seen.has(step.name)) {
+        seen.add(step.name)
+        order.push([step.name])
+      }
+    }
+  }
+  return order
+}
+
 /** A workflow's units as names and kinds, without handlers or schemas. */
 function outlineOf(workflow: DescribedWorkflow): OutlineUnit[] {
   return workflow.executionUnits.map((unit): OutlineUnit => {
@@ -353,23 +534,6 @@ function outlineOf(workflow: DescribedWorkflow): OutlineUnit[] {
 
 /** Longest label sent for a run; its full input is in the run's detail. */
 const LABEL_LENGTH = 80
-
-/**
- * A short line telling a run apart from others of its workflow: its input's
- * top-level values, such as `email: ada@example.com`. The page shows it in
- * place of a run id nobody can read.
- */
-function labelOf(input: unknown): string {
-  let label: string
-  if (typeof input === 'object' && input !== null && !Array.isArray(input)) {
-    label = Object.entries(input)
-      .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value) ?? String(value)}`)
-      .join(', ')
-  } else {
-    label = JSON.stringify(input) ?? ''
-  }
-  return label.length > LABEL_LENGTH ? `${label.slice(0, LABEL_LENGTH - 1)}…` : label
-}
 
 /** A step without its output: what a run's row needs and nothing more. */
 function outline(step: StepResult): Omit<StepResult, 'output' | 'id' | 'runId'> {

@@ -151,6 +151,12 @@ export interface Workflow<
   readonly inputSchema: StandardSchemaV1<TInput>
   readonly executionUnits: readonly ExecutionUnit[]
   readonly failureHandler?: (ctx: FailureContext<TInput>) => Promise<void>
+  /**
+   * Names a run for people looking at it, such as in the dashboard: the
+   * customer's email, an order number. Given the run's input. Without it a
+   * run is shown by its idempotency key, or else its id.
+   */
+  readonly label?: (input: TInput) => string
 
   step<TStepName extends string, TOutput extends PersistedValue | void>(
     name: TStepName,
@@ -274,8 +280,10 @@ export type PrettyStepsMap<T extends Record<string, unknown>> = Prettify<T>
 export function createWorkflow<TName extends string, TInput extends PersistedValue>(config: {
   name: TName
   input: StandardSchemaV1<TInput>
+  /** A name for each run, from its input, shown wherever runs are listed. See {@link Workflow.label}. */
+  label?: (input: TInput) => string
 }): Workflow<TName, TInput, undefined, {}> {
-  return buildWorkflow(config.name, config.input, [])
+  return buildWorkflow(config.name, config.input, [], undefined, config.label)
 }
 
 function getAllStepNames(units: readonly ExecutionUnit[]): Set<string> {
@@ -304,12 +312,14 @@ function buildWorkflow<
   inputSchema: StandardSchemaV1<TInput>,
   executionUnits: ExecutionUnit[],
   failureHandler?: (ctx: FailureContext<TInput>) => Promise<void>,
+  label?: (input: TInput) => string,
 ): Workflow<TName, TInput, TPrev, TSteps> {
   return {
     name,
     inputSchema,
     executionUnits,
     failureHandler,
+    label,
 
     step<TStepName extends string, TOutput extends PersistedValue | void>(
       stepName: TStepName,
@@ -349,6 +359,7 @@ function buildWorkflow<
         inputSchema,
         [...executionUnits, { kind: 'step', definition: newStep }],
         failureHandler,
+        label,
       )
     },
 
@@ -407,6 +418,7 @@ function buildWorkflow<
         inputSchema,
         [...executionUnits, { kind: 'parallel', branches: branchDefs }],
         failureHandler,
+        label,
       )
     },
 
@@ -422,6 +434,7 @@ function buildWorkflow<
         inputSchema,
         [...executionUnits, { kind: 'sleep', name: sleepName, durationMs }],
         failureHandler,
+        label,
       )
     },
 
@@ -449,13 +462,14 @@ function buildWorkflow<
           },
         ],
         failureHandler,
+        label,
       )
     },
 
     onFailure(
       handler: (ctx: FailureContext<TInput>) => Promise<void>,
     ): Workflow<TName, TInput, TPrev, TSteps> {
-      return buildWorkflow(name, inputSchema, executionUnits, handler)
+      return buildWorkflow(name, inputSchema, executionUnits, handler, label)
     },
 
     parseInput(input: unknown): TInput {
