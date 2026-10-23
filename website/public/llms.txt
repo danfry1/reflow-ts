@@ -541,6 +541,10 @@ Recurring workflow enqueue. Returns scheduleId. Cancel with engine.unschedule(sc
 
 Returns { run, steps } or null. run carries status, startedAt, finishedAt, output (completed runs), error ({ stepName, message, code } for failed runs), wakeAt, and waitingFor. Each step carries status, output, error, attempts, startedAt, and updatedAt.
 
+### engine.waitForRun(runId, { signal?, pollIntervalMs? })
+
+Resolves with the run once completed, failed, or cancelled (a failed run resolves, it does not reject). Use AbortSignal.timeout(ms) as signal for a deadline. Throws RunNotFoundError for an unknown run.
+
 ### engine.countRuns(filter?)
 
 Returns a count for every run status, optionally for one workflow.

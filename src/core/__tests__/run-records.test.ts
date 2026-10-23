@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { z } from 'zod'
-import { createWorkflow, createEngine, ConfigError } from '../../index'
+import { createWorkflow, createEngine, ConfigError, RunNotFoundError } from '../../index'
 import { MemoryStorage } from '../../storage/memory'
 import { at, delegatingAdapter } from '../../__tests__/helpers'
 
@@ -231,5 +231,85 @@ describe('engine.prune', () => {
     await expect(
       engine.prune({ olderThan: 0, statuses: ['pending' as never] }),
     ).rejects.toBeInstanceOf(ConfigError)
+  })
+})
+
+describe('engine.waitForRun', () => {
+  let storage: MemoryStorage
+
+  beforeEach(async () => {
+    storage = new MemoryStorage()
+    await storage.initialize()
+  })
+
+  const job = createWorkflow({ name: 'job', input: z.object({ fail: z.boolean() }) })
+    .step('a', async ({ input }) => {
+      if (input.fail) throw new Error('boom')
+      return { done: true }
+    })
+  const gated = createWorkflow({ name: 'gated', input: z.object({}) }).waitForEvent('go')
+
+  it('resolves with the completed run once a started engine finishes it', async () => {
+    const engine = createEngine({ storage, workflows: [job] })
+    await engine.start(60_000)
+    const { id } = await engine.enqueue('job', { fail: false })
+
+    const run = await engine.waitForRun(id)
+
+    expect(run).toMatchObject({ id, status: 'completed', output: { done: true } })
+    await engine.stop()
+  })
+
+  it('resolves with a failed run rather than rejecting', async () => {
+    const engine = createEngine({ storage, workflows: [job] })
+    const { id } = await engine.enqueue('job', { fail: true })
+    const waiting = engine.waitForRun(id)
+
+    await engine.tick()
+
+    expect(await waiting).toMatchObject({ status: 'failed', error: { stepName: 'a', message: 'boom' } })
+  })
+
+  it('resolves when the run is cancelled', async () => {
+    const engine = createEngine({ storage, workflows: [gated] })
+    const { id } = await engine.enqueue('gated', {})
+    await engine.tick()
+    const waiting = engine.waitForRun(id, { pollIntervalMs: 60_000 })
+
+    await engine.cancel(id)
+
+    expect((await waiting).status).toBe('cancelled')
+  })
+
+  it('resolves at once for a run that already finished', async () => {
+    const engine = createEngine({ storage, workflows: [job] })
+    const { id } = await engine.enqueue('job', { fail: false })
+    await engine.tick()
+
+    expect((await engine.waitForRun(id, { pollIntervalMs: 60_000 })).status).toBe('completed')
+  })
+
+  it('notices a run finished by another engine on its next read', async () => {
+    const waiter = createEngine({ storage, workflows: [job] })
+    const worker = createEngine({ storage, workflows: [job] })
+    const { id } = await waiter.enqueue('job', { fail: false })
+    const waiting = waiter.waitForRun(id, { pollIntervalMs: 10 })
+
+    await worker.tick()
+
+    expect((await waiting).status).toBe('completed')
+  })
+
+  it('rejects with the signal\'s reason when it aborts first', async () => {
+    const engine = createEngine({ storage, workflows: [gated] })
+    const { id } = await engine.enqueue('gated', {})
+
+    await expect(engine.waitForRun(id, { signal: AbortSignal.timeout(20) })).rejects.toMatchObject({ name: 'TimeoutError' })
+  })
+
+  it('rejects for a run that does not exist', async () => {
+    const engine = createEngine({ storage, workflows: [job] })
+
+    await expect(engine.waitForRun('missing')).rejects.toBeInstanceOf(RunNotFoundError)
   })
 })

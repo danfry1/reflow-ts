@@ -956,6 +956,10 @@ Returns `Promise<readonly WorkflowSchedule[]>` — every registered schedule, or
 
 Returns `{ run, steps }` with the run's current status and all step results, or `null` if not found. The run records `startedAt`, `finishedAt`, `output`, `error`, `wakeAt`, and `waitingFor`.
 
+### `engine.waitForRun(runId, { signal?, pollIntervalMs? })`
+
+Resolves with the run once it is `completed`, `failed`, or `cancelled`. Immediate for runs finishing on this engine; runs finished elsewhere are noticed by polling storage. Pass `AbortSignal.timeout(ms)` as `signal` for a deadline.
+
 ### `engine.countRuns(filter?)`
 
 Returns how many runs are in each status, optionally for one `workflow`.
