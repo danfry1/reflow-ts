@@ -152,13 +152,21 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     version: 4,
-    description: 'indexes for listing runs newest first, and counting them by workflow, status, or time',
+    description: 'indexes for claiming by due time, and for listing and counting runs by workflow, status, or time',
     // Without them listing runs sorts the whole table, which a dashboard
     // refreshing on every change would do continuously. None changes when a
     // run's status does, so they add nothing to claiming or finishing runs;
     // an index on (status, created_at) would, and was left out for that.
     up(db) {
       db.exec(`
+        -- The claim seeks the oldest due run per workflow and status, so the
+        -- status indexes carry when runs became due. They are the indexes a
+        -- status change already updated, now one column wider.
+        DROP INDEX IF EXISTS idx_runs_status;
+        DROP INDEX IF EXISTS idx_runs_wake;
+        CREATE INDEX idx_runs_status ON workflow_runs(status, workflow, updated_at, created_at);
+        CREATE INDEX idx_runs_wake ON workflow_runs(status, workflow, wake_at, created_at);
+
         CREATE INDEX idx_runs_created ON workflow_runs(created_at, id);
         CREATE INDEX idx_runs_workflow_created ON workflow_runs(workflow, created_at, id);
         CREATE INDEX idx_runs_workflow_finished ON workflow_runs(workflow, finished_at) WHERE finished_at IS NOT NULL;

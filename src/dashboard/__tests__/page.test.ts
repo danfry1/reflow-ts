@@ -50,8 +50,12 @@ async function seed(): Promise<void> {
   for (let index = 0; index < 3; index++) await engine.tick()
 }
 
+/** Requests whose path contains a key here are answered after its delay. */
+let delays: Record<string, number> = {}
+
 /** Open the dashboard at a hash route and wait for its first render. */
 async function open(hash = '#/', options: Partial<DashboardOptions> = {}): Promise<Window> {
+  delays = {}
   const handler = createDashboard({ storage, authorize: () => true, workflows: [order, approval], ...options })
   const page = new Window({ url: `${ORIGIN}/${hash}`, settings: { enableJavaScriptEvaluation: true } })
   window = page
@@ -60,7 +64,10 @@ async function open(hash = '#/', options: Partial<DashboardOptions> = {}): Promi
     value: async (input: unknown, init?: RequestInit): Promise<Response> => {
       inFlight++
       try {
-        return await handler(new Request(new URL(String(input), page.location.href), init))
+        const url = new URL(String(input), page.location.href)
+        const delay = Object.entries(delays).find(([key]) => url.href.includes(key))?.[1]
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
+        return await handler(new Request(url, init))
       } finally {
         inFlight--
       }
@@ -199,6 +206,84 @@ describe('dashboard page', () => {
     await settle()
     expect(window?.location.hash).toBe('#/workflows/order')
     expect(doc().querySelector('.stage-name')).not.toBeNull()
+  })
+
+  it('keeps focus and the caret in the search box while the list re-renders', async () => {
+    await seed()
+    await open('#/workflows/order')
+    const search = doc().querySelector('.pane-list .search')
+    if (!search || !('value' in search) || !('focus' in search) || typeof search.focus !== 'function') throw new Error('No search box')
+
+    search.focus()
+    search.value = '100 '
+    search.dispatchEvent(new (window as Window).Event('input'))
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    await settle()
+
+    const active = doc().activeElement
+    expect(active?.getAttribute('data-key')).toBe('search')
+    expect(active && 'value' in active ? active.value : null).toBe('100 ')
+    expect(texts('.pane-list .row .name').sort()).toStrictEqual(['Order 1001', 'Order 1002'])
+  })
+
+  it('never shows an earlier run under a later one\'s address when answers arrive out of order', async () => {
+    await seed()
+    await open('#/workflows/order')
+    const ids = [...doc().querySelectorAll('.pane-list .row')].map((row) => (row.getAttribute('data-key') ?? '').slice('run:'.length))
+    const [slow, fast] = ids
+    if (!slow || !fast || !window) throw new Error('Expected two runs')
+    delays = { [`api/runs/${slow}`]: 120 }
+
+    window.location.hash = `#/workflows/order/runs/${slow}`
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    window.location.hash = `#/workflows/order/runs/${fast}`
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await settle()
+
+    const shown = doc().querySelector('.runid span')?.textContent
+    expect(shown).toBe(fast)
+  })
+
+  it('moves only through the runs the search leaves shown', async () => {
+    await seed()
+    await open('#/workflows/order')
+    const search = doc().querySelector('.pane-list .search')
+    if (!search || !('value' in search)) throw new Error('No search box')
+    search.value = '1001'
+    search.dispatchEvent(new (window as Window).Event('input'))
+    // The newest run, first in the full list, is the one hidden.
+    await vi.waitFor(() => {
+      expect(texts('.pane-list .row .name')).toStrictEqual(['Order 1001'])
+    })
+    doc().body.dispatchEvent(new (window as Window).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await settle()
+    doc().body.dispatchEvent(new (window as Window).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await settle()
+
+    expect(doc().querySelector('.detail-title')?.textContent).toBe('Order 1001')
+  })
+
+  it("filters a parallel step's failures to runs that failed in any of its branches", async () => {
+    const fanout = createWorkflow({ name: 'fanout', input: z.object({ fail: z.boolean() }), label: (input) => (input.fail ? 'fails' : 'fine') })
+      .parallel({
+        left: async () => ({}),
+        right: async ({ input }) => {
+          if (input.fail) throw new Error('right broke')
+          return {}
+        },
+      })
+    const engine = createEngine({ storage, workflows: [fanout] })
+    await engine.enqueue('fanout', { fail: true })
+    await engine.enqueue('fanout', { fail: false })
+    await engine.tick()
+    await engine.tick()
+    await open('#/workflows/fanout', { workflows: [fanout] })
+
+    click('.stage .linkish.bad')
+    await settle()
+
+    expect(doc().querySelector('.scope')?.textContent).toContain('Failed at left or right')
+    expect(texts('.pane-list .row .name')).toStrictEqual(['fails'])
   })
 
   it('renders run data as text, never as markup', async () => {

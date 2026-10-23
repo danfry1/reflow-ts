@@ -185,14 +185,15 @@ describe('SqliteStorageBase query plans', () => {
 
   // The dashboard's indexes lead with workflow. Chosen for a claim, one scans
   // every run of the workflow, finished ones included, so claims slow down as
-  // history grows; the claim must reach only the claimable runs.
+  // history grows; one led by status alone reads every other workflow's
+  // queue. The claim must reach only this workflow's claimable runs.
   it('claims through the status indexes, never an index that leads with workflow', async () => {
     const db = new Database(DB_PATH)
     const seen: { claim?: { sql: string; params: readonly unknown[] } } = {}
     const driver: SqliteDriver = {
       exec: (sql) => { db.exec(sql) },
       get: <T>(sql: string, params: readonly unknown[]) => {
-        if (sql.includes('ORDER BY CASE status')) seen.claim = { sql, params }
+        if (sql.includes('claim_order')) seen.claim = { sql, params }
         return db.prepare(sql).get(...params) as T | undefined
       },
       all: <T>(sql: string, params: readonly unknown[]) => db.prepare(sql).all(...params) as T[],
@@ -207,8 +208,54 @@ describe('SqliteStorageBase query plans', () => {
     expect(claim).toBeDefined()
     const plan: unknown[] = claim ? db.prepare(`EXPLAIN QUERY PLAN ${claim.sql}`).all(...claim.params) : []
     const details = plan.map((row) => typeof row === 'object' && row !== null && 'detail' in row ? String(row.detail) : '')
-    expect(details.some((detail) => /idx_runs_workflow_/.test(detail))).toBe(false)
-    expect(details.some((detail) => /idx_runs_(status|wake)/.test(detail))).toBe(true)
+    // Each of the four branches — pending, sleeping, waiting, stale — seeks
+    // its oldest due run on a status index already in due order, so it reads
+    // one entry: none sorts, reads a workflow-led index, or scans the table.
+    const seeks = details.filter((detail) => /SEARCH workflow_runs USING (COVERING )?INDEX idx_runs_(status|wake) \(status=\? AND workflow=\?/.test(detail))
+    expect(seeks).toHaveLength(4)
+    expect(details.some((detail) => /idx_runs_workflow_|SCAN workflow_runs/.test(detail))).toBe(false)
+    storage.close()
+  })
+})
+
+describe('SqliteStorageBase listing by status', () => {
+  beforeEach(removeDatabase)
+  afterEach(removeDatabase)
+
+  // A few runs in a status are sorted; many are found by walking the
+  // newest-first index. Either way the page must be the same.
+  it('returns the same newest runs whether a status has few runs or many', async () => {
+    const storage = new SQLiteStorage(DB_PATH)
+    await storage.initialize()
+    const db = new Database(DB_PATH)
+    const insert = db.prepare(`INSERT INTO workflow_runs (id, workflow, input, status, created_at, updated_at) VALUES (?, ?, '{}', ?, ?, ?)`)
+    db.transaction(() => {
+      // 12,000 failed runs (more than are sorted) and 30 waiting ones,
+      // interleaved in time, across two workflows.
+      for (let index = 0; index < 12_030; index++) {
+        const status = index % 401 === 0 && index / 401 < 30 ? 'waiting' : 'failed'
+        insert.run(`r${String(index).padStart(5, '0')}`, index % 2 ? 'a' : 'b', status, 1_000 + Math.floor(index / 3), 1_000)
+      }
+    })()
+    db.close()
+
+    // What any correct listing returns: newest first, ties broken by id.
+    const expected = (status: string, workflow?: string) => {
+      const all = new Database(DB_PATH)
+      const rows = all.prepare(
+        `SELECT id FROM workflow_runs NOT INDEXED WHERE status = ?${workflow ? ' AND workflow = ?' : ''} ORDER BY created_at DESC, id DESC LIMIT 7`,
+      ).all(...(workflow ? [status, workflow] : [status]))
+        .map((row) => (typeof row === 'object' && row !== null && 'id' in row ? String(row.id) : ''))
+      all.close()
+      return rows
+    }
+    const ids = async (filter: { status: 'failed' | 'waiting'; workflow?: string }) =>
+      (await storage.listRuns({ ...filter, limit: 7 })).map((run) => run.id)
+
+    expect(await ids({ status: 'failed' })).toStrictEqual(expected('failed'))
+    expect(await ids({ status: 'failed', workflow: 'a' })).toStrictEqual(expected('failed', 'a'))
+    expect(await ids({ status: 'waiting' })).toStrictEqual(expected('waiting'))
+    expect(await ids({ status: 'waiting', workflow: 'b' })).toStrictEqual(expected('waiting', 'b'))
     storage.close()
   })
 })

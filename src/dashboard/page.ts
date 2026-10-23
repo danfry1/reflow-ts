@@ -34,7 +34,8 @@ export function renderPage({ title, nonce }: PageOptions): string {
   <nav id="nav" aria-label="Workflows and views"></nav>
   <span class="live" id="live" hidden>Live</span>
 </aside>
-<main id="app" aria-live="polite"></main>
+<main id="app"></main>
+<p id="announce" class="sr-only" aria-live="polite"></p>
 </div>
 <script nonce="${nonce}">${SCRIPT}</script>
 </body>
@@ -97,6 +98,9 @@ html { background: var(--canvas); }
 body { margin: 0; font: 15px/1.5 var(--body); color: var(--ink); background: var(--canvas); }
 a { color: inherit; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* Inside containers that clip to their rounded corners, the ring sits within. */
+.rows a:focus-visible, .wfs a:focus-visible, .failure:focus-visible, .pipeline :focus-visible { outline-offset: -2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 button { font: inherit; color: inherit; }
 .sign, h1, .bar, .filters, .row .when, .facts dd, .sched td { font-family: var(--sign); font-variant-numeric: tabular-nums; }
 
@@ -637,27 +641,35 @@ const SCRIPT = String.raw`
     for (var key in extra) params.set(key, extra[key]);
     return 'api/runs?' + params.toString();
   }
-  function loadRuns() {
+  function runsQuery() {
     // A step filter applies to what is loaded, so it loads a longer page.
-    return api(query(state.stepFilter ? { limit: '200' } : {})).then(function (page) { state.runs = page.runs; state.next = page.next; });
+    return query(state.stepFilter ? { limit: '200' } : {});
   }
   function loadMore() {
     if (!state.next) return;
+    var seq = refreshSeq;
     api(query({ before: state.next.before, beforeId: state.next.beforeId })).then(function (page) {
+      if (seq !== refreshSeq) return;
       state.runs = state.runs.concat(page.runs);
       state.next = page.next;
       render();
     }, showProblem);
   }
 
+  // Each refresh is numbered, and only the latest one's answers are shown:
+  // stepping quickly through runs must not leave an earlier run's detail on
+  // screen under a later run's address, where Cancel would act on it.
+  var refreshSeq = 0;
   function refresh() {
+    var seq = ++refreshSeq;
     var r = route();
+    var got = {};
     var loads = [
-      api('api/overview').then(function (overview) { state.overview = overview; }),
-      api('api/workflows').then(function (body) { state.workflows = body; })
+      api('api/overview').then(function (overview) { got.overview = overview; }),
+      api('api/workflows').then(function (body) { got.workflows = body; })
     ];
     if (r.view === 'schedules') {
-      loads.push(api('api/schedules').then(function (body) { state.schedules = body.schedules; }));
+      loads.push(api('api/schedules').then(function (body) { got.schedules = body.schedules; }));
     }
     if (r.view === 'workflow' || r.view === 'runs') {
       // Switching lists starts unfiltered; moving between runs keeps the filter.
@@ -668,27 +680,39 @@ const SCRIPT = String.raw`
         state.stepFilter = null;
         state.find = '';
       }
-      state.workflow = r.view === 'workflow' ? r.workflow : state.search || '';
-      loads.push(loadRuns());
+      state.workflow = r.view === 'workflow' ? r.workflow : (state.search || '').trim();
+      loads.push(api(runsQuery()).then(function (page) { got.page = page; }));
     }
     // Insights read a sample of runs, so they refresh at most every few seconds.
     if (r.view === 'workflow' && !r.runId) {
       var cached = state.insights && state.insights.name === r.workflow && Date.now() - state.insights.at < 4000;
       if (!cached) {
-        loads.push(api('api/workflows/' + encodeURIComponent(r.workflow) + '/insights').then(function (body) {
-          state.insights = { name: r.workflow, at: Date.now(), body: body };
+        loads.push(api('api/insights?workflow=' + encodeURIComponent(r.workflow)).then(function (body) {
+          got.insights = { name: r.workflow, at: Date.now(), body: body };
         }));
       }
     }
     if (r.runId) {
       loads.push(api('api/runs/' + encodeURIComponent(r.runId)).then(
-        function (detail) { state.detail = detail; },
-        function () { state.detail = null; }
+        function (detail) { got.detail = detail; },
+        function () { got.detail = null; }
       ));
     } else {
-      state.detail = null;
+      got.detail = null;
     }
-    return Promise.all(loads).then(function () { state.problem = null; render(); }, showProblem);
+    return Promise.all(loads).then(function () {
+      if (seq !== refreshSeq) return;
+      if ('overview' in got) state.overview = got.overview;
+      if ('workflows' in got) state.workflows = got.workflows;
+      if ('schedules' in got) state.schedules = got.schedules;
+      if ('page' in got) { state.runs = got.page.runs; state.next = got.page.next; }
+      if ('insights' in got) state.insights = got.insights;
+      state.detail = got.detail;
+      state.problem = null;
+      render();
+    }, function (error) {
+      if (seq === refreshSeq) showProblem(error);
+    });
   }
 
   function showProblem(error) {
@@ -697,7 +721,37 @@ const SCRIPT = String.raw`
   }
 
   // --- Views
+  // Rendering replaces the page's elements, so focus and a search box's caret
+  // are found again by key afterwards: typing and keyboard use survive the
+  // once-a-second refresh.
   function render() {
+    var active = document.activeElement;
+    var key = active && active.getAttribute ? active.getAttribute('data-key') : null;
+    var caret = key && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
+    draw();
+    if (key) {
+      var again = [].filter.call(document.querySelectorAll('[data-key]'), function (el) { return el.getAttribute('data-key') === key; })[0];
+      if (again) {
+        again.focus({ preventScroll: true });
+        if (caret && again.setSelectionRange) again.setSelectionRange(caret[0], caret[1]);
+      }
+    }
+    announce();
+  }
+
+  // Screen readers hear when the open run moves on, not every refresh.
+  var announced = { runId: null, text: '' };
+  function announce() {
+    var r = route();
+    var line = document.querySelector('.state');
+    var text = line ? line.textContent : '';
+    if (r.runId && announced.runId === r.runId && text && text !== announced.text) {
+      document.getElementById('announce').textContent = text;
+    }
+    announced = { runId: r.runId || null, text: text };
+  }
+
+  function draw() {
     var r = route();
     renderNav(r);
     var problem = state.problem ? h('p', { class: 'problem', role: 'alert', text: state.problem }) : null;
@@ -717,7 +771,7 @@ const SCRIPT = String.raw`
   function renderNav(r) {
     var nav = document.getElementById('nav');
     function item(href, label, current, tally) {
-      return h('li', null, [h('a', { class: 'nav-item', href: href, 'aria-current': current ? 'page' : null }, [
+      return h('li', null, [h('a', { class: 'nav-item', href: href, 'data-key': 'nav:' + href, 'aria-current': current ? 'page' : null }, [
         h('span', { class: 'nm', text: label, title: label }), tally || null
       ])]);
     }
@@ -730,8 +784,8 @@ const SCRIPT = String.raw`
           var c = workflow.counts;
           var held = (c.running || 0) + (c.waiting || 0) + (c.sleeping || 0) + (c.pending || 0);
           var tally = h('span', { class: 'tally' }, [
-            c.failed ? h('span', { class: 'bad', title: c.failed + ' failed' }, [lamp('failed'), String(c.failed)]) : null,
-            held ? h('span', { class: 'busy', title: held + ' in progress' }, [lamp('sleeping'), String(held)]) : null
+            c.failed ? h('span', { class: 'bad', title: c.failed + ' failed' }, [lamp('failed'), String(c.failed), h('span', { class: 'sr-only', text: ' failed' })]) : null,
+            held ? h('span', { class: 'busy', title: held + ' in progress' }, [lamp('sleeping'), String(held), h('span', { class: 'sr-only', text: ' in progress' })]) : null
           ]);
           return item(workflowHref(workflow.name), workflow.name, r.view === 'workflow' && r.workflow === workflow.name, tally);
         }))
@@ -801,6 +855,7 @@ const SCRIPT = String.raw`
     function filter(status, n) {
       return h('li', null, [h('button', {
         class: 's-' + status + (n === 0 ? ' zero' : ''),
+        'data-key': 'filter:' + status,
         'aria-pressed': String((state.status || 'all') === status),
         onclick: function () { state.status = status === 'all' ? null : status; reloadList(); }
       }, [
@@ -831,21 +886,22 @@ const SCRIPT = String.raw`
     }
     return head.concat([
       h('input', {
-        class: 'search', type: 'search',
+        class: 'search', type: 'search', 'data-key': 'search',
         placeholder: r.view === 'workflow' ? 'Find a run by name' : 'Filter by workflow name',
         'aria-label': r.view === 'workflow' ? 'Find a run by name' : 'Filter by workflow name',
         value: r.view === 'workflow' ? state.find : state.search || '',
         oninput: function (event) {
-          var value = event.target.value.trim();
+          // Kept as typed, so the box shows what was typed; matching trims it.
+          var value = event.target.value;
           clearTimeout(searchTimer);
           searchTimer = setTimeout(function () {
             if (r.view === 'workflow') { state.find = value; render(); }
-            else { state.search = value; state.workflow = value; reloadList(); }
+            else { state.search = value; reloadList(); }
           }, 200);
         }
       }),
       state.stepFilter ? h('p', { class: 'scope' }, [
-        'Failed at ' + state.stepFilter + ' ',
+        'Failed at ' + state.stepFilter.join(' or ') + ' ',
         h('button', { class: 'linkish', onclick: function () { state.stepFilter = null; state.status = null; reloadList(); }, text: 'Show all' })
       ]) : null,
       runRows(r, r.view !== 'workflow')
@@ -895,7 +951,7 @@ const SCRIPT = String.raw`
           stage.completed ? h('li', null, [lamp('completed'), stage.completed + ' done']) : null,
           stage.here ? h('li', { class: 'held' }, [lamp(stage.retrying ? 'retrying' : 'sleeping'), stage.here + (stage.retrying ? ' here, retrying' : ' here now')]) : null,
           stage.failed ? h('li', null, [h('button', {
-            class: 'linkish bad', onclick: function () { filterFailedAt(stage.name); }
+            class: 'linkish bad', 'data-key': 'stage:' + stage.name, onclick: function () { filterFailedAt(stage.steps || [stage.name]); }
           }, [lamp('failed'), stage.failed + ' failed'])]) : null,
           stage.skipped ? h('li', null, [lamp('skipped'), stage.skipped + ' skipped']) : null
         ])
@@ -906,7 +962,7 @@ const SCRIPT = String.raw`
   function failuresView(insights) {
     if (insights.failures.length === 0) return h('p', { class: 'note', text: 'None of these runs failed.' });
     return h('ul', { class: 'failures' }, insights.failures.map(function (group) {
-      return h('li', null, [h('button', { class: 'failure', onclick: function () { filterFailedAt(group.stepName); } }, [
+      return h('li', null, [h('button', { class: 'failure', 'data-key': 'failure:' + group.stepName + ':' + group.message, onclick: function () { filterFailedAt([group.stepName]); } }, [
         h('span', { class: 'count', text: String(group.count) }),
         h('span', { class: 'msg' }, [
           h('span', { class: 'what', text: group.message || 'Failed without a message' }),
@@ -951,14 +1007,14 @@ const SCRIPT = String.raw`
     ]);
   }
 
-  function filterFailedAt(stepName) {
+  function filterFailedAt(stepNames) {
     state.status = 'failed';
-    state.stepFilter = stepName;
+    state.stepFilter = stepNames;
     reloadList();
   }
 
   function reloadList() {
-    loadRuns().then(render, showProblem);
+    refresh();
   }
 
   // Runs whose status changed since the last render flash once, so a change
@@ -966,25 +1022,25 @@ const SCRIPT = String.raw`
   var seenStatus = {};
   function runRows(r, showWorkflow) {
     var runs = state.runs.filter(function (run) {
-      if (state.stepFilter && !(run.error && run.error.stepName === state.stepFilter)) return false;
-      if (r.view === 'workflow' && state.find) {
-        var hay = (run.label || '') + ' ' + run.id;
-        if (hay.toLowerCase().indexOf(state.find.toLowerCase()) < 0) return false;
-      }
+      if (state.stepFilter && !(run.error && state.stepFilter.indexOf(run.error.stepName) >= 0)) return false;
+      var find = r.view === 'workflow' ? (state.find || '').trim().toLowerCase() : '';
+      if (find && ((run.label || '') + ' ' + run.id).toLowerCase().indexOf(find) < 0) return false;
       return true;
     });
+    var more = state.next ? h('button', { class: 'more', 'data-key': 'more', onclick: loadMore, text: 'Load older runs' }) : null;
     if (runs.length === 0) {
-      return h('div', { class: 'empty' }, [
-        h('strong', { text: state.find ? 'No run matches "' + state.find + '"' : state.status ? 'No ' + STATUS_LABEL[state.status].toLowerCase() + ' runs' : 'No runs yet' }),
-        state.find || state.status ? 'Clear the search or choose All.' : 'Runs appear here as soon as your app enqueues one.'
-      ]);
+      var searching = (state.find || '').trim();
+      return h('div', null, [h('div', { class: 'empty' }, [
+        h('strong', { text: searching ? 'No loaded run matches "' + searching + '"' : state.status ? 'No ' + STATUS_LABEL[state.status].toLowerCase() + ' runs' + (state.next ? ' loaded' : '') : 'No runs yet' }),
+        searching || state.status ? (state.next ? 'Load older runs, or clear the search or choose All.' : 'Clear the search or choose All.') : 'Runs appear here as soon as your app enqueues one.'
+      ]), more]);
     }
     var rows = h('ul', { class: 'rows' }, runs.map(function (run) {
       var title = showWorkflow ? run.workflow : run.label || 'Run ' + shortId(run.id);
       var changed = seenStatus[run.id] && seenStatus[run.id] !== run.status;
       seenStatus[run.id] = run.status;
       return h('li', null, [h('a', {
-        class: 'row' + (changed ? ' changed' : ''), href: runHref(r, run.id), 'aria-current': String(run.id === r.runId)
+        class: 'row' + (changed ? ' changed' : ''), href: runHref(r, run.id), 'data-key': 'run:' + run.id, 'aria-current': String(run.id === r.runId)
       }, [
         lamp(run.status),
         h('span', { class: 'name', text: title, title: run.label || run.id }),
@@ -992,7 +1048,7 @@ const SCRIPT = String.raw`
         h('span', { class: 'when' }, [agoEl(run.createdAt)])
       ])]);
     }));
-    return h('div', null, [rows, state.next ? h('button', { class: 'more', onclick: loadMore, text: 'Load older runs' }) : null]);
+    return h('div', null, [rows, more]);
   }
 
   function runView(r) {
@@ -1005,11 +1061,11 @@ const SCRIPT = String.raw`
     var steps = detail.steps;
     var actions = [];
     if (state.overview && state.overview.actions) {
-      if (!TERMINAL[run.status]) actions.push(h('button', { class: 'btn danger', onclick: function () { act(run, 'cancel'); }, text: 'Cancel run' }));
-      if (run.status === 'failed' || run.status === 'cancelled') actions.push(h('button', { class: 'btn', onclick: function () { act(run, 'resume'); }, text: 'Resume run' }));
+      if (!TERMINAL[run.status]) actions.push(h('button', { class: 'btn danger', 'data-key': 'act:cancel', onclick: function () { act(run, detail.label, 'cancel'); }, text: 'Cancel run' }));
+      if (run.status === 'failed' || run.status === 'cancelled') actions.push(h('button', { class: 'btn', 'data-key': 'act:resume', onclick: function () { act(run, detail.label, 'resume'); }, text: 'Resume run' }));
     }
-    actions.push(h('a', { class: 'close', href: listHref(r), 'aria-label': 'Close run', title: 'Close (Esc)', text: '×' }));
-    var copy = h('button', { class: 'linkish copy', title: 'Copy run id', onclick: function () {
+    actions.push(h('a', { class: 'close', 'data-key': 'close', href: listHref(r), 'aria-label': 'Close run', title: 'Close (Esc)', text: '×' }));
+    var copy = h('button', { class: 'linkish copy', 'data-key': 'copy', title: 'Copy run id', onclick: function () {
       if (navigator.clipboard) navigator.clipboard.writeText(run.id).then(function () { copy.textContent = 'Copied'; setTimeout(function () { copy.textContent = 'Copy id'; }, 1200); });
     }, text: 'Copy id' });
     return [
@@ -1043,7 +1099,11 @@ const SCRIPT = String.raw`
 
   // Up and down move through the runs beside the one being looked at.
   document.addEventListener('keydown', function (event) {
-    if (event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
+    var target = event.target;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (target && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(target.tagName)) return;
+    // Inside the run, the arrows scroll it as usual.
+    if (target && target.closest && target.closest('.pane-detail')) return;
     var r = route();
     if (r.view !== 'workflow' && r.view !== 'runs') return;
     if (event.key === 'Escape' && r.runId) {
@@ -1051,7 +1111,10 @@ const SCRIPT = String.raw`
       return;
     }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-    var ids = state.runs.map(function (run) { return run.id; });
+    // The runs shown, in order — not those a filter or search has hidden.
+    var ids = [].map.call(document.querySelectorAll('.pane-list .row[data-key]'), function (row) {
+      return row.getAttribute('data-key').slice('run:'.length);
+    });
     if (ids.length === 0) return;
     var index = r.runId ? ids.indexOf(r.runId) : -1;
     var next = event.key === 'ArrowDown' ? Math.min(ids.length - 1, index + 1) : Math.max(0, index - 1);
@@ -1094,9 +1157,10 @@ const SCRIPT = String.raw`
     }));
   }
 
-  function act(run, action) {
+  function act(run, label, action) {
     var verb = action === 'cancel' ? 'Cancel' : 'Resume';
-    if (!window.confirm(verb + ' this ' + run.workflow + ' run?')) return;
+    // Names the run, so the dialog says exactly which one will change.
+    if (!window.confirm(verb + ' the ' + run.workflow + ' run ' + (label ? '"' + label + '" ' : '') + '(' + run.id + ')?')) return;
     api('api/runs/' + encodeURIComponent(run.id) + '/' + action, { method: 'POST', headers: { 'x-reflow-dashboard': '1' } })
       .then(function (result) {
         if (!result.done) state.problem = verb + ' had no effect: the run has already moved on.';

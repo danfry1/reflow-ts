@@ -251,7 +251,7 @@ describe('createDashboard', () => {
       }
       for (let index = 0; index < 5; index++) await local.tick()
 
-      const body = await (await dashboard({ workflows: [pipeline] })(get('/api/workflows/pipeline/insights'))).json()
+      const body = await (await dashboard({ workflows: [pipeline] })(get('/api/insights?workflow=pipeline'))).json()
 
       expect({ sample: body.sample, complete: body.complete }).toStrictEqual({ sample: 5, complete: true })
       expect(body.pipeline.map((stage: Record<string, unknown>) => [stage.name, stage.reached, stage.completed, stage.failed, stage.here]))
@@ -285,8 +285,8 @@ describe('createDashboard', () => {
       const counting = delegatingAdapter(storage, { listRuns: (filter) => { lists++; return storage.listRuns(filter) } })
       const handler = createDashboard({ storage: counting, authorize: () => true, workflows: [wf] })
 
-      await handler(get('/api/workflows/order/insights'))
-      await handler(get('/api/workflows/order/insights'))
+      await handler(get('/api/insights?workflow=order'))
+      await handler(get('/api/insights?workflow=order'))
 
       expect(lists).toBe(1)
     })
@@ -303,11 +303,74 @@ describe('createDashboard', () => {
       // The helper adapter forwards only the required methods, so no runActivity.
       const plain = delegatingAdapter(storage)
 
-      const body = await (await createDashboard({ storage: plain, authorize: () => true, workflows: [wf] })(get('/api/workflows/order/insights'))).json()
+      const body = await (await createDashboard({ storage: plain, authorize: () => true, workflows: [wf] })(get('/api/insights?workflow=order'))).json()
 
       const oldestSampled = now - 200 * 1_000
       expect(body.activity.coveredFrom).toBe(oldestSampled)
       expect(body.activity.started.reduce((sum: number, n: number) => sum + n, 0)).toBe(200)
+    })
+
+    it('counts only runs that can still move on as being at a step now', async () => {
+      const napper = createWorkflow({ name: 'napper', input: z.object({}) }).step('first', async () => ({})).sleep('nap', 60_000)
+      const local = createEngine({ storage, workflows: [napper] })
+      const kept = await local.enqueue('napper', {})
+      const cancelled = await local.enqueue('napper', {})
+      await local.tick()
+      await local.tick()
+      await local.cancel(cancelled.id)
+
+      const body = await (await dashboard({ workflows: [napper] })(get('/api/insights?workflow=napper'))).json()
+
+      expect(kept.id).not.toBe(cancelled.id)
+      expect(body.pipeline.map((stage: { name: string; here: number }) => [stage.name, stage.here])).toStrictEqual([['first', 0], ['nap', 1]])
+    })
+
+    it('places a running run at a parallel group a branch of which is still going', async () => {
+      const fanout = createWorkflow({ name: 'fanout', input: z.object({}) })
+        .step('first', async () => ({}))
+        .parallel({ left: async () => ({}), right: async () => ({}) })
+        .step('last', async () => ({}))
+      const now = Date.now()
+      await storage.createRun({
+        id: 'r1', workflow: 'fanout', input: {}, idempotencyKey: null, status: 'running',
+        createdAt: now, updatedAt: now, startedAt: now, finishedAt: null, output: undefined, error: null, wakeAt: null, waitingFor: null,
+      })
+      const step = (name: string) => ({
+        id: `r1-${name}`, runId: 'r1', name, status: 'completed' as const, output: {}, error: null, attempts: 1,
+        createdAt: now, updatedAt: now, startedAt: now, history: [],
+      })
+      await storage.saveStepResult(step('first'))
+      await storage.saveStepResult(step('left'))
+
+      const body = await (await dashboard({ workflows: [fanout] })(get('/api/insights?workflow=fanout'))).json()
+
+      expect(body.pipeline.map((stage: { name: string; here: number }) => [stage.name, stage.here]))
+        .toStrictEqual([['first', 0], ['left + right', 1], ['last', 0]])
+      expect(body.pipeline[1].steps).toStrictEqual(['left', 'right'])
+    })
+
+    it('says so when a label() returns a Promise instead of a string', async () => {
+      // The types forbid an async label; JavaScript callers are not held to them.
+      const promising = Object.defineProperty(
+        createWorkflow({ name: 'promising', input: z.object({}) }).step('a', async () => ({})),
+        'label',
+        { value: async () => 'never shown' },
+      )
+      await createEngine({ storage, workflows: [promising] }).enqueue('promising', {})
+
+      const body = await (await dashboard({ workflows: [promising] })(get('/api/runs'))).json()
+
+      expect(body.runs[0].label).toBe('label() returned a Promise; it must return a string')
+    })
+
+    it('serves insights for a workflow whose name a path would resolve away', async () => {
+      const dots = createWorkflow({ name: '..', input: z.object({}) }).step('a', async () => ({}))
+      await createEngine({ storage, workflows: [dots] }).enqueue('..', {})
+
+      const response = await dashboard({ workflows: [dots] })(get(`/api/insights?workflow=${encodeURIComponent('..')}`))
+
+      expect(response.status).toBe(200)
+      expect((await response.json()).sample).toBe(1)
     })
 
     it('filters runs by status and workflow', async () => {

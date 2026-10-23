@@ -36,6 +36,7 @@ import {
 } from '../core/types'
 import type { ExecutionUnit } from '../core/workflow'
 import { renderPage } from './page'
+import { RecentReads } from './recent'
 
 export { toNodeHandler } from './node'
 
@@ -122,24 +123,15 @@ interface RunPage {
   readonly next: { readonly before: number; readonly beforeId: string } | null
 }
 
-/** Reads made recently, by key, with when each began. */
-type RecentReads<T> = Map<string, { at: number; value: Promise<T> }>
-
-/** The read under `key` if it began within `ttlMs`, otherwise a fresh one. */
-function shared<T>(reads: RecentReads<T>, key: string, ttlMs: number, read: () => Promise<T>): Promise<T> {
-  const recent = reads.get(key)
-  if (recent && Date.now() - recent.at < ttlMs) return recent.value
-  const value = read()
-  reads.set(key, { at: Date.now(), value })
-  // A failed read is not kept, so the next request tries again.
-  value.catch(() => reads.delete(key))
-  return value
-}
+/** Most distinct reads of one kind held at once. */
+const RECENT_CAPACITY = 64
 const MINUTE_MS = 60_000
 
 /** One step of a workflow, and how its recent runs fared there. */
 interface PipelineStage {
   readonly name: string
+  /** The step names it covers: one, or each branch of a parallel group. */
+  readonly steps: readonly string[]
   /** Runs that got as far as this step. */
   reached: number
   completed: number
@@ -209,10 +201,10 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
   const labellers = new Map((options.workflows ?? []).map((workflow) => [workflow.name, workflow]))
   // Counts and insights scan many rows; several viewers, or one refreshing
   // on every change, share a recent result rather than each reading again.
-  const insightCache: RecentReads<WorkflowInsights> = new Map()
-  const countCache: RecentReads<RunCounts> = new Map()
+  const insightCache = new RecentReads<WorkflowInsights>(INSIGHT_TTL_MS, RECENT_CAPACITY)
+  const countCache = new RecentReads<RunCounts>(COUNTS_TTL_MS, RECENT_CAPACITY)
   // A page of runs, shared between identical requests the same way.
-  const pageCache: RecentReads<RunPage> = new Map()
+  const pageCache = new RecentReads<RunPage>(COUNTS_TTL_MS, RECENT_CAPACITY)
 
   /**
    * A run's name for people: what its workflow's `label` returns, else its
@@ -224,7 +216,10 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
     let label: string | null = run.idempotencyKey
     if (workflow?.label) {
       try {
-        label = String(workflow.label(run.input))
+        const named: unknown = workflow.label(run.input)
+        label = isThenable(named)
+          ? 'label() returned a Promise; it must return a string'
+          : String(named)
       } catch (error) {
         // Shown in place of the label, so a broken labeller is visible
         // rather than quietly falling back.
@@ -291,7 +286,7 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       if (method !== 'GET') return methodNotAllowed('GET')
       return json(200, {
         title,
-        counts: await shared(countCache, '', COUNTS_TTL_MS, () => storage.countRuns()),
+        counts: await countCache.shared('all', () => storage.countRuns()),
         actions: engine !== undefined,
         live: engine !== undefined,
       })
@@ -302,9 +297,13 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       return listWorkflows()
     }
 
-    if (second === 'workflows' && third !== undefined && fourth === 'insights' && segments.length === 4) {
+    // The workflow goes in the query, not the path: a name such as `..`
+    // would otherwise be resolved away by the browser before it was sent.
+    if (second === 'insights' && segments.length === 2) {
       if (method !== 'GET') return methodNotAllowed('GET')
-      return json(200, await insightsFor(third))
+      const name = url.searchParams.get('workflow')
+      if (name === null) return json(400, { error: 'insights needs a workflow' })
+      return json(200, await insightsFor(name))
     }
 
     if (second === 'runs' && segments.length === 2) {
@@ -362,7 +361,7 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
     const workflows = await Promise.all(names.map(async (name) => ({
       name,
       steps: outlines.get(name) ?? null,
-      counts: await shared(countCache, name, COUNTS_TTL_MS, () => storage.countRuns({ workflow: name })),
+      counts: await countCache.shared(`workflow:${name}`, () => storage.countRuns({ workflow: name })),
     })))
     return json(200, { workflows, source: known ? 'definitions' : 'recent-runs' })
   }
@@ -385,7 +384,7 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
   }
 
   function insightsFor(name: string): Promise<WorkflowInsights> {
-    return shared(insightCache, name, INSIGHT_TTL_MS, () => computeInsights(name))
+    return insightCache.shared(name, () => computeInsights(name))
   }
 
   async function computeInsights(name: string): Promise<WorkflowInsights> {
@@ -398,28 +397,35 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
 
     const pipeline = units.map((names): PipelineStage => ({
       name: names.join(' + '),
+      steps: names,
       reached: 0, completed: 0, failed: 0, skipped: 0, here: 0, retrying: 0,
     }))
     const failures = new Map<string, FailureGroup>()
 
     runs.forEach((run, index) => {
       const steps = new Map((stepsByRun[index] ?? []).map((step) => [step.name, step]))
-      let lastReached = -1
+      // Only a run that can still move on is anywhere "now": a cancelled run
+      // keeps the step rows it had, sleeping or waiting, but is going nowhere.
+      const paused = run.status === 'sleeping' || run.status === 'waiting'
+      let current = -1
       units.forEach((names, position) => {
         const stage = pipeline[position]
         const members = names.map((member) => steps.get(member)).filter((step) => step !== undefined)
         if (!stage || members.length === 0) return
-        lastReached = position
         stage.reached++
         if (members.some((step) => step.status === 'failed')) stage.failed++
         else if (members.every((step) => step.status === 'skipped')) stage.skipped++
         else if (members.every((step) => step.status === 'completed' || step.status === 'completed-early' || step.status === 'skipped')) stage.completed++
-        if (members.some((step) => step.status === 'retrying')) stage.retrying++
-        if (members.some((step) => step.status === 'retrying' || step.status === 'sleeping' || step.status === 'waiting')) stage.here++
+        if (paused && members.some((step) => step.status === 'retrying')) stage.retrying++
+        if (paused && members.some((step) => step.status === 'retrying' || step.status === 'sleeping' || step.status === 'waiting')) stage.here++
+        // A running run is executing in the first stage it has not finished:
+        // one partly saved, such as a parallel group with a branch still going,
+        // or else the one after the last it saved.
+        const finished = members.length === names.length && members.every((step) => step.status !== 'running')
+        current = finished ? position + 1 : position
       })
-      // A running run is executing the step after the last one it saved.
-      const next = pipeline[lastReached + 1]
-      if (run.status === 'running' && next) next.here++
+      const executing = pipeline[current === -1 ? 0 : current]
+      if (run.status === 'running' && executing) executing.here++
 
       if (run.status === 'failed' && run.error) {
         const key = `${run.error.stepName}\u0000${run.error.message}`
@@ -511,7 +517,7 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       if (beforeId !== null) filter.beforeId = beforeId
     }
 
-    return json(200, await shared(pageCache, JSON.stringify(filter), COUNTS_TTL_MS, () => readPage(filter)))
+    return json(200, await pageCache.shared(JSON.stringify(filter), () => readPage(filter)))
   }
 
   async function readPage(filter: ListRunsFilter): Promise<RunPage> {
@@ -581,6 +587,11 @@ function namesInOrder(stepsByRun: readonly (readonly StepResult[])[]): string[][
     }
   }
   return order
+}
+
+/** Whether a value is a Promise or something awaitable like one. */
+function isThenable(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && 'then' in value && typeof value.then === 'function'
 }
 
 /** A workflow's units as names and kinds, without handlers or schemas. */
