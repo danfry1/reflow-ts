@@ -17,3 +17,8 @@ export function randomBytes(size: number): { toString(encoding: 'base64'): strin
 export function createHash(): never {
   throw new Error('createHash is not available in the docs playground')
 }
+
+/** Used only by the dashboard's `basicAuth`, which the playground does not use. */
+export function timingSafeEqual(): never {
+  throw new Error('timingSafeEqual is not available in the docs playground')
+}

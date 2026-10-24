@@ -5,42 +5,79 @@ A web view of your runs: what is running, what is waiting and on what, what fail
 <img class="dashboard-shot shot-light" src="/dashboard-light.jpg" alt="The Reflow dashboard: workflows in a sidebar, a charge-invoice workflow's runs in a list, and one run open showing its capture step failing after four attempts, with the wait before each retry" width="2000" height="1194" />
 <img class="dashboard-shot shot-dark" src="/dashboard-dark.jpg" alt="The Reflow dashboard: workflows in a sidebar, a charge-invoice workflow's runs in a list, and one run open showing its capture step failing after four attempts, with the wait before each retry" width="2000" height="1194" />
 
+There is nothing to sign up for and nothing hosted by us. The dashboard ships in the `reflow-ts` package and runs on your own machine or server, so your run data never leaves it. There are two ways to open it:
+
+- **The command line**, to look at a database file. Nothing to write.
+- **Inside your app**, a few lines that serve it from your own server, behind your own sign-in, with buttons to cancel and resume runs.
+
 ## From the command line
 
-Point it at a SQLite database to look around:
+Point it at the SQLite file your app uses:
 
 ```bash
-npx reflow-ts dashboard ./reflow.db
+npx reflow-ts dashboard ./app.db
 # http://127.0.0.1:4400/  (read-only)
 ```
 
-It serves on `127.0.0.1` by default and cannot change anything: with no engine attached there is nothing to cancel or resume with. It opens the database read-only, so the file is left exactly as it was — safe for a live database or a backup. It answers only to requests addressed to the host and port it is bound on, so a website you visit cannot reach it by re-pointing its own domain at your machine. Pass `--port` to pick a port, and `--host` to bind elsewhere — anyone who can reach that address can read every run's input and output.
+Open the address it prints. That is all: it needs Node 22.5 or later, or Bun, and nothing else.
+
+It cannot change anything. It opens the file read-only, so it is safe to point at a live database or a backup, and with no engine attached there is nothing to cancel or resume with. It listens only on your own machine (`127.0.0.1`), and answers only to requests addressed to that host and port. Pass `--port` to pick another port.
 
 A database from an older version of Reflow is refused rather than upgraded behind your back; start your app on the new version once, or pass `--migrate`. The command never creates a database at a path that does not exist.
 
+### On a server
+
+To look at a production database without opening any port to the internet, run the command on the server and reach it through SSH:
+
+```bash
+ssh -L 4400:127.0.0.1:4400 you@your-server 'cd /srv/app && npx reflow-ts dashboard ./app.db'
+```
+
+Then open `http://127.0.0.1:4400/` on your own machine. The dashboard stays bound to the server's loopback address, so only someone who can SSH in can see it, and it stops when you close the connection. Keep the same port number on both sides of `-L`.
+
+`--host 0.0.0.0` serves it to the network instead, with no sign-in: anyone who can reach that address can read every run's input and output. Use SSH, or the dashboard inside your app.
+
 ## In your app
 
-`createDashboard()` returns a standard Fetch API handler — `(request: Request) => Promise<Response>` — so it mounts directly wherever your server speaks Request and Response:
+`createDashboard()` returns a request handler. Pass it the storage and engine you already have, and choose who can see it:
 
 ```typescript
-import { createDashboard } from 'reflow-ts/dashboard'
+import { createServer } from 'node:http'
+import { createEngine } from 'reflow-ts'
+import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+import { basicAuth, createDashboard, toNodeHandler } from 'reflow-ts/dashboard'
+import { order, signup } from './workflows'
+
+const storage = new SQLiteStorage('./app.db')
+const engine = createEngine({ storage, workflows: [order, signup] })
+await engine.start()
 
 const dashboard = createDashboard({
   storage,
-  engine, // optional — see below
-  workflows: [signup, invoice], // optional — the list you pass to createEngine
-  authorize: (request) => request.headers.get('authorization') === `Bearer ${process.env.REFLOW_ADMIN_TOKEN}`,
+  engine, // lets it cancel and resume runs, and update live
+  workflows: [order, signup], // lets it show every step, including ones not reached yet
+  authorize: basicAuth({ username: 'admin', password: process.env.REFLOW_DASHBOARD_PASSWORD }),
 })
+
+createServer(toNodeHandler(dashboard)).listen(4400)
 ```
+
+Set `REFLOW_DASHBOARD_PASSWORD`, start the app, and open `http://localhost:4400/`. The browser asks for the username and password once. If the variable is not set, `basicAuth` throws at startup rather than serving the dashboard with no password.
+
+### Mounting it in your server
+
+The handler is a standard Fetch API one — `(request: Request) => Promise<Response>` — so it drops into most servers as it is. To serve it under a path of your app instead of on its own port:
 
 ::: code-group
 
-```typescript [Bun]
-Bun.serve({ port: 4400, fetch: dashboard })
+```typescript [Express]
+import { toNodeHandler } from 'reflow-ts/dashboard'
+
+// Express removes the mount path before the handler sees it, so leave basePath unset
+app.use('/admin/reflow', toNodeHandler(dashboard))
 ```
 
 ```typescript [Hono]
-const app = new Hono()
 const reflow = createDashboard({ storage, engine, authorize, basePath: '/admin/reflow' })
 app.all('/admin/reflow/*', (c) => reflow(c.req.raw))
 ```
@@ -52,26 +89,66 @@ export const GET = reflow
 export const POST = reflow
 ```
 
-```typescript [Express / node:http]
-import { toNodeHandler } from 'reflow-ts/dashboard'
+```typescript [Bun]
+const reflow = createDashboard({ storage, engine, authorize, basePath: '/admin/reflow' })
 
-// Express strips the mount path, so leave basePath as '/'
-app.use('/admin/reflow', toNodeHandler(dashboard))
-
-// or on its own
-createServer(toNodeHandler(dashboard)).listen(4400)
+Bun.serve({
+  fetch(request) {
+    if (new URL(request.url).pathname.startsWith('/admin/reflow')) return reflow(request)
+    return app(request)
+  },
+})
 ```
 
 :::
 
+Servers that pass the full path to the handler — Hono, Next.js, Bun — need `basePath` set to the mount path. Express and `node:http` do not.
+
+### Who can see it
+
+`authorize` is required: the dashboard shows your runs' inputs and outputs, so there is no default that shows them to anyone. It is called for the page and every request the page makes, and returns `true` to let the request in. Pick the one that fits your app:
+
+**A password.** For an app with no sign-in of its own. The browser shows its own sign-in prompt, and sends the password with every request — encoded, not encrypted — so serve it over HTTPS anywhere but localhost.
+
+```typescript
+authorize: basicAuth({
+  username: 'admin',
+  password: process.env.REFLOW_DASHBOARD_PASSWORD,
+}),
+```
+
+**Your app's own sign-in.** Check the session the browser already sends, with whatever your app uses to read it. Return a `Response` to send it instead of the dashboard — here, a redirect to your login page:
+
+```typescript
+authorize: async (request) => {
+  // Your app's own session lookup
+  const user = await getSessionUser(request)
+  if (!user) {
+    return Response.redirect(new URL('/login', request.url), 302)
+  }
+  return user.role === 'admin'
+}
+```
+
+Returning `false` answers 401.
+
+**A private network.** When the dashboard is only reachable inside a VPN or a private network, you may skip the check — but then list the addresses it is served at, so a website someone visits cannot reach it through their browser:
+
+```typescript
+authorize: () => true,
+allowedHosts: ['reflow.internal:4400'],
+```
+
+### Options
+
 | Option | Description |
 |---|---|
 | `storage` | The storage to read runs from — the same one your engine uses. |
-| `authorize(request)` | **Required.** Return `true` to let the request through, `false` to answer 401. Called for the page and every API request; may be `async`. Check what the request carries — a session, a token — not where it comes from. |
+| `authorize(request)` | **Required.** Return `true` to let the request in, `false` to answer 401, or a `Response` to send instead. Called for the page and every request it makes; may be `async`. Check what the request carries — a session, a password — not where it comes from. |
 | `allowedHosts` | The `Host` values to answer to, such as `['localhost:4400']`; anything else gets 421. **Set it whenever `authorize` checks no credentials.** Also list your public host if a proxy in front rewrites `Host`. |
 | `engine` | Optional. Enables cancelling and resuming runs, and live updates. Without it the dashboard is read-only and refreshes every few seconds. |
 | `workflows` | Optional. The workflows your engine runs, as passed to `createEngine`. With them the dashboard lists every workflow with its steps in order, and shows which steps a run has not reached yet. Without them it lists the workflows seen in recent runs, and only the steps that have run. |
-| `basePath` | The path it is mounted at, when your server passes full paths (Bun, Hono, Next.js). Default `/`. |
+| `basePath` | The path it is mounted at, when your server passes full paths (Hono, Next.js, Bun). Default `/`. |
 | `title` | Shown in the header and the browser tab. Default `Reflow`. |
 
 ## What it shows
