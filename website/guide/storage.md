@@ -75,7 +75,7 @@ const storage = new PostgresStorage({ pool })
 
 Every process runs the same engine against the same database, and they share the work: claiming takes each due run with `FOR UPDATE SKIP LOCKED`, so no two workers take one run and none waits on another. Crash recovery, leases, schedules, events, and [per-workflow concurrency limits](/guide/concurrency#limiting-one-workflow) all hold across machines. On a table of a million runs, a claim takes a few milliseconds.
 
-Leases compare times written by different machines, so keep their clocks in sync — NTP, which every cloud provides, is plenty: a few hundred milliseconds of drift against a 30-second lease changes nothing.
+Leases compare times written by different machines, so keep their clocks in sync — NTP, which every cloud provides, is plenty. A machine whose clock runs ahead of another's by more than the lease less the heartbeat interval (20 seconds with the defaults) would see that machine's live runs as stale and take them over, running their steps twice; a few hundred milliseconds of drift changes nothing. Give every process the same `runLeaseDurationMs`.
 
 The [dashboard](/guide/dashboard) works the same against Postgres when mounted in your app. The `npx reflow-ts dashboard` command reads SQLite files only.
 
