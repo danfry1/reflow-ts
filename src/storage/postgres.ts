@@ -125,12 +125,15 @@ const MIGRATIONS: ReadonlyArray<(schema: string) => string> = [
       updated_at   BIGINT NOT NULL
     );
 
-    -- Claiming seeks the oldest due run of each workflow, one per way a run
-    -- becomes due: pending, a sleep or wait past its wake time, a stale lease.
-    CREATE INDEX runs_pending ON ${s}.workflow_runs (workflow, updated_at, created_at) WHERE status = 'pending';
-    CREATE INDEX runs_sleeping ON ${s}.workflow_runs (workflow, wake_at, created_at) WHERE status = 'sleeping';
-    CREATE INDEX runs_waiting ON ${s}.workflow_runs (workflow, wake_at, created_at) WHERE status = 'waiting' AND wake_at IS NOT NULL;
-    CREATE INDEX runs_running ON ${s}.workflow_runs (workflow, updated_at) WHERE status = 'running';
+    -- Claiming reads the oldest due run of each way a run becomes due —
+    -- pending, a sleep or wait past its wake time, a stale lease — in the
+    -- order it became due, across workflows.
+    CREATE INDEX runs_pending ON ${s}.workflow_runs (updated_at, created_at, id) WHERE status = 'pending';
+    CREATE INDEX runs_sleeping ON ${s}.workflow_runs (wake_at, created_at, id) WHERE status = 'sleeping';
+    CREATE INDEX runs_waiting ON ${s}.workflow_runs (wake_at, created_at, id) WHERE status = 'waiting' AND wake_at IS NOT NULL;
+    CREATE INDEX runs_running ON ${s}.workflow_runs (updated_at, created_at, id) WHERE status = 'running';
+    -- Counting a workflow's live runs against its concurrency limit.
+    CREATE INDEX runs_running_workflow ON ${s}.workflow_runs (workflow, updated_at) WHERE status = 'running';
 
     -- Listing, newest first, overall, by workflow, and by status.
     CREATE INDEX runs_created ON ${s}.workflow_runs (created_at DESC, id DESC);
@@ -219,6 +222,9 @@ export class PostgresStorage implements StorageAdapter {
   private readonly pool: Pool
   private readonly ownsPool: boolean
   private readonly schema: string
+  /** The schema name as an identifier: quoted, so a name that is also an SQL keyword still works. */
+  private readonly quoted: string
+  private ending: Promise<void> | null = null
 
   constructor(options: PostgresStorageOptions) {
     const schema = options.schema ?? 'reflow'
@@ -226,6 +232,7 @@ export class PostgresStorage implements StorageAdapter {
       throw new ConfigError(`PostgresStorage schema "${schema}" must be lowercase letters, digits, and underscores, starting with a letter or underscore`)
     }
     this.schema = schema
+    this.quoted = `"${schema}"`
     if (options.pool) {
       this.pool = options.pool
       this.ownsPool = false
@@ -241,11 +248,17 @@ export class PostgresStorage implements StorageAdapter {
    * migration runs exactly once.
    */
   async initialize(): Promise<void> {
+    // Already current: nothing to create, so nothing that needs a role able to
+    // create tables. An app can migrate once as the schema's owner and run as
+    // a role that may only read and write rows.
+    if (await this.storedVersion(this.pool) === POSTGRES_SCHEMA_VERSION) {
+      return
+    }
     await this.transaction(async (db) => {
       await this.exec(db, `SELECT pg_advisory_xact_lock(${MIGRATION_LOCK})`)
-      await this.exec(db, `CREATE SCHEMA IF NOT EXISTS ${this.schema}`)
-      await this.exec(db, `CREATE TABLE IF NOT EXISTS ${this.schema}.reflow_schema (version INTEGER NOT NULL)`)
-      const row = await this.one<{ version: number }>(db, `SELECT version FROM ${this.schema}.reflow_schema`)
+      await this.exec(db, `CREATE SCHEMA IF NOT EXISTS ${this.quoted}`)
+      await this.exec(db, `CREATE TABLE IF NOT EXISTS ${this.t('reflow_schema')} (version INTEGER NOT NULL)`)
+      const row = await this.one<{ version: number }>(db, `SELECT version FROM ${this.t('reflow_schema')}`)
       const current = row?.version ?? 0
       if (current > POSTGRES_SCHEMA_VERSION) {
         throw new ConfigError(
@@ -253,14 +266,27 @@ export class PostgresStorage implements StorageAdapter {
         )
       }
       for (const migration of MIGRATIONS.slice(current)) {
-        await this.exec(db, migration(this.schema))
+        await this.exec(db, migration(this.quoted))
       }
       if (row === null) {
-        await this.exec(db, `INSERT INTO ${this.schema}.reflow_schema (version) VALUES ($1)`, POSTGRES_SCHEMA_VERSION)
+        await this.exec(db, `INSERT INTO ${this.t('reflow_schema')} (version) VALUES ($1)`, POSTGRES_SCHEMA_VERSION)
       } else if (current < POSTGRES_SCHEMA_VERSION) {
-        await this.exec(db, `UPDATE ${this.schema}.reflow_schema SET version = $1`, POSTGRES_SCHEMA_VERSION)
+        await this.exec(db, `UPDATE ${this.t('reflow_schema')} SET version = $1`, POSTGRES_SCHEMA_VERSION)
       }
     })
+  }
+
+  /** The schema version recorded in the database, or null before Reflow has created its tables. */
+  private async storedVersion(db: Queryable): Promise<number | null> {
+    const table = await this.one<{ exists: boolean }>(
+      db,
+      `SELECT to_regclass($1) IS NOT NULL AS exists`,
+      `${this.quoted}.reflow_schema`,
+    )
+    if (table?.exists !== true) {
+      return null
+    }
+    return (await this.one<{ version: number }>(db, `SELECT version FROM ${this.t('reflow_schema')}`))?.version ?? null
   }
 
   async createRun(run: WorkflowRun): Promise<CreateRunResult> {
@@ -303,102 +329,131 @@ export class PostgresStorage implements StorageAdapter {
   }
 
   async claimNextRun(
-    allWorkflowNames: readonly string[],
+    workflowNames: readonly string[],
     staleBefore?: number,
     limits?: ReadonlyMap<string, number>,
   ): Promise<ClaimedRun | null> {
-    if (allWorkflowNames.length === 0) {
+    if (workflowNames.length === 0) {
       return null
     }
 
     return this.transaction(async (db) => {
-      const workflowNames = limits ? await this.belowLimit(db, allWorkflowNames, staleBefore, limits) : allWorkflowNames
-      if (workflowNames.length === 0) {
-        return null
-      }
-
       const now = Date.now()
-      // The oldest due run of each workflow, per way of becoming due, each
-      // found by seeking its partial index and locked as it is read. Runs
-      // another claim has locked are skipped rather than waited on, so
-      // claimers never queue behind one another.
-      const oldest = (due: string, where: string, order: string): string =>
-        `SELECT runs.*, ${due} AS due
-         FROM unnest($1::text[]) AS w(name)
-         CROSS JOIN LATERAL (
-           SELECT * FROM ${this.t('workflow_runs')}
-           WHERE workflow = w.name AND ${where}
-           ORDER BY ${order}, created_at, id
-           LIMIT 1
-           FOR UPDATE SKIP LOCKED
-         ) AS runs`
-      const branches = [
-        oldest('runs.updated_at', `status = 'pending'`, 'updated_at'),
-        oldest('runs.wake_at', `status = 'sleeping' AND wake_at <= $2`, 'wake_at'),
-        oldest('runs.wake_at', `status = 'waiting' AND wake_at IS NOT NULL AND wake_at <= $2`, 'wake_at'),
-      ]
-      const params: SqlParam[] = [workflowNames, now]
-      if (staleBefore !== undefined) {
-        // A stale run became due when its lease expired.
-        branches.push(oldest('runs.updated_at + $3', `status = 'running' AND updated_at <= $4`, 'updated_at'))
-        params.push(now - staleBefore, staleBefore)
-      }
-      const candidates = await this.all<Candidate>(db, branches.join(' UNION ALL '), ...params)
-      const chosen = candidates.reduce<Candidate | null>((best, row) =>
-        best === null || row.due < best.due || (row.due === best.due && row.created_at < best.created_at) ? row : best, null)
-      if (!chosen) {
-        return null
-      }
+      // Workflows found at their limit are left out and the candidates read
+      // again; each pass rules out one workflow, so this ends.
+      const full: string[] = []
+      let holdsLimitLock = false
+      for (;;) {
+        const candidates = await this.lockCandidates(db, workflowNames, full, now, staleBefore)
+        const chosen = candidates[0]
+        if (!chosen) {
+          return null
+        }
 
-      const leaseId = randomUUID()
-      const claimed = await this.one<WorkflowRunRow>(
-        db,
-        `UPDATE ${this.t('workflow_runs')}
-         SET status = 'running', lease_id = $1, wake_at = NULL, waiting_for = NULL, updated_at = $2,
-             started_at = COALESCE(started_at, $2)
-         WHERE id = $3
-         RETURNING *`,
-        leaseId,
-        now,
-        chosen.id,
-      )
-      if (!claimed) {
-        throw new InternalError(`Run "${chosen.id}" vanished while locked for claiming`)
+        const limit = limits?.get(chosen.workflow)
+        if (limit !== undefined) {
+          // Counted under a lock on this workflow alone, held to COMMIT, so
+          // two claims cannot both take its last place. Only the first such
+          // lock may wait; a later one is only tried, and a workflow another
+          // claim is counting right now is passed over this time, so no two
+          // claims can each wait on a lock the other holds.
+          const locked = await this.lockWorkflow(db, chosen.workflow, holdsLimitLock)
+          holdsLimitLock = true
+          if (!locked || await this.liveRuns(db, chosen.workflow, staleBefore, limit) >= limit) {
+            full.push(chosen.workflow)
+            continue
+          }
+        }
+
+        const leaseId = randomUUID()
+        const claimed = await this.one<WorkflowRunRow>(
+          db,
+          `UPDATE ${this.t('workflow_runs')}
+           SET status = 'running', lease_id = $1, wake_at = NULL, waiting_for = NULL, updated_at = $2,
+               started_at = COALESCE(started_at, $2)
+           WHERE id = $3
+           RETURNING *`,
+          leaseId,
+          now,
+          chosen.id,
+        )
+        if (!claimed) {
+          throw new InternalError(`Run "${chosen.id}" vanished while locked for claiming`)
+        }
+        return { ...mapRun(claimed), status: 'running', leaseId }
       }
-      return { ...mapRun(claimed), status: 'running', leaseId }
     })
   }
 
   /**
-   * These workflows, less any already running as many runs as `limits`
-   * allows. Each limited workflow is locked for the rest of the claim's
-   * transaction first, in name order so two claims cannot deadlock, so no
-   * other claim can count it until this one has taken its place.
+   * The oldest due run of each way a run becomes due — pending, a sleep or
+   * wait past its wake time, a stale lease — across these workflows, each
+   * read in due order from its partial index and locked as it is read, earliest
+   * due first. Runs other claims hold are skipped rather than waited on, so
+   * concurrent claimers each take the next run along. At most one run per way
+   * is locked, and the ones not chosen are released when the claim commits.
    */
-  private async belowLimit(
+  private async lockCandidates(
     db: Queryable,
     workflowNames: readonly string[],
+    full: readonly string[],
+    now: number,
     staleBefore: number | undefined,
-    limits: ReadonlyMap<string, number>,
-  ): Promise<string[]> {
-    const limited = workflowNames.filter((name) => limits.has(name)).sort()
-    const full = new Set<string>()
-    for (const name of limited) {
-      await this.exec(db, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, `${this.schema}:limit:${name}`)
-      const row = await this.one<{ live: number }>(
-        db,
-        `SELECT count(*) AS live FROM (
-           SELECT 1 FROM ${this.t('workflow_runs')}
-           WHERE status = 'running' AND workflow = $1 AND updated_at > $2
-           LIMIT $3
-         ) AS live`,
-        name,
-        staleBefore ?? Number.MIN_SAFE_INTEGER,
-        limits.get(name) ?? 0,
-      )
-      if ((row?.live ?? 0) >= (limits.get(name) ?? 0)) full.add(name)
+  ): Promise<Candidate[]> {
+    const oldest = (name: string, due: string, where: string, order: string): string =>
+      `${name} AS (
+         SELECT *, ${due} AS due FROM ${this.t('workflow_runs')}
+         WHERE ${where} AND workflow = ANY($1::text[]) AND workflow <> ALL($2::text[])
+         ORDER BY ${order}, created_at, id
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED
+       )`
+    const branches = [
+      oldest('pending', 'updated_at', `status = 'pending'`, 'updated_at'),
+      oldest('sleeping', 'wake_at', `status = 'sleeping' AND wake_at <= $3`, 'wake_at'),
+      oldest('waiting', 'wake_at', `status = 'waiting' AND wake_at IS NOT NULL AND wake_at <= $3`, 'wake_at'),
+    ]
+    const params: SqlParam[] = [workflowNames, full, now]
+    if (staleBefore !== undefined) {
+      // A stale run became due when its lease expired.
+      branches.push(oldest('stale', 'updated_at + $4', `status = 'running' AND updated_at <= $5`, 'updated_at'))
+      params.push(now - staleBefore, staleBefore)
     }
-    return workflowNames.filter((name) => !full.has(name))
+    const names = staleBefore === undefined ? ['pending', 'sleeping', 'waiting'] : ['pending', 'sleeping', 'waiting', 'stale']
+    return this.all<Candidate>(
+      db,
+      `WITH ${branches.join(', ')}
+       SELECT * FROM (${names.map((name) => `SELECT * FROM ${name}`).join(' UNION ALL ')}) AS candidates
+       ORDER BY due, created_at, id`,
+      ...params,
+    )
+  }
+
+  /** Take the transaction-scoped lock that serialises counting this workflow's places. */
+  private async lockWorkflow(db: Queryable, workflow: string, tryOnly: boolean): Promise<boolean> {
+    const key = `${this.schema}:limit:${workflow}`
+    if (!tryOnly) {
+      await this.exec(db, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key)
+      return true
+    }
+    const row = await this.one<{ locked: boolean }>(db, `SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS locked`, key)
+    return row?.locked === true
+  }
+
+  /** How many of this workflow's runs hold a live lease, counting no further than `limit`. */
+  private async liveRuns(db: Queryable, workflow: string, staleBefore: number | undefined, limit: number): Promise<number> {
+    const row = await this.one<{ live: number }>(
+      db,
+      `SELECT count(*) AS live FROM (
+         SELECT 1 FROM ${this.t('workflow_runs')}
+         WHERE status = 'running' AND workflow = $1 AND updated_at > $2
+         LIMIT $3
+       ) AS live`,
+      workflow,
+      staleBefore ?? Number.MIN_SAFE_INTEGER,
+      limit,
+    )
+    return row?.live ?? 0
   }
 
   async heartbeatRun(runId: string, leaseId: string): Promise<boolean> {
@@ -829,27 +884,32 @@ export class PostgresStorage implements StorageAdapter {
    * for it.
    */
   close(): void {
-    if (this.ownsPool) {
-      // Ending is asynchronous and close() is not; a failure to end still
-      // surfaces as an unhandled rejection rather than being dropped.
-      void this.pool.end()
-    }
+    // Ending is asynchronous and close() is not; a failure to end still
+    // surfaces as an unhandled rejection rather than being dropped.
+    void this.endPool()
   }
 
-  /** Like {@link PostgresStorage.close}, but resolves once the pool has ended. */
+  /** Like {@link PostgresStorage.close}, but resolves once the pool has ended. Safe to call after close(), or twice. */
   async end(): Promise<void> {
-    if (this.ownsPool) {
-      await this.pool.end()
+    await this.endPool()
+  }
+
+  /** End the pool Reflow owns, once, however many times this is asked. */
+  private endPool(): Promise<void> {
+    if (!this.ownsPool) {
+      return Promise.resolve()
     }
+    this.ending ??= this.pool.end()
+    return this.ending
   }
 
   /** A table's name, qualified by Reflow's schema. */
   private t(table: string): string {
-    return `${this.schema}.${table}`
+    return `${this.quoted}.${table}`
   }
 
   private async all<Row extends object>(db: Queryable, text: string, ...values: SqlParam[]): Promise<Row[]> {
-    return (await db.query<Row>({ text, values, types })).rows
+    return (await db.query<Row>({ text, values: wholeNumbers(values), types })).rows
   }
 
   private async one<Row extends object>(db: Queryable, text: string, ...values: SqlParam[]): Promise<Row | null> {
@@ -857,11 +917,11 @@ export class PostgresStorage implements StorageAdapter {
   }
 
   private async exec(db: Queryable, text: string, ...values: SqlParam[]): Promise<void> {
-    await db.query({ text, values, types })
+    await db.query({ text, values: wholeNumbers(values), types })
   }
 
   private async changes(db: Queryable, text: string, ...values: SqlParam[]): Promise<number> {
-    return (await db.query({ text, values, types })).rowCount ?? 0
+    return (await db.query({ text, values: wholeNumbers(values), types })).rowCount ?? 0
   }
 
   /**
@@ -893,6 +953,15 @@ export class PostgresStorage implements StorageAdapter {
       client.release(broken)
     }
   }
+}
+
+/**
+ * Every number bound here is epoch milliseconds, a duration, or a count, all
+ * stored as BIGINT, which refuses a fraction. A fractional time — a delay of
+ * `2.5` — is rounded up, so a wake is never early.
+ */
+function wholeNumbers(values: SqlParam[]): SqlParam[] {
+  return values.map((value) => typeof value === 'number' && !Number.isInteger(value) && Number.isFinite(value) ? Math.ceil(value) : value)
 }
 
 function mapRun(row: WorkflowRunRow): WorkflowRun {

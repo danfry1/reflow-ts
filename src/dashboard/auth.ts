@@ -27,7 +27,8 @@ export interface BasicAuthOptions {
  *
  * @throws {ConfigError} if the username or password is empty or missing, so
  *   an unset environment variable fails at startup rather than locking
- *   everyone out — or letting an empty password in.
+ *   everyone out — or letting an empty password in; or if the realm could
+ *   not be sent in a header.
  */
 export function basicAuth(options: BasicAuthOptions): (request: Request) => true | Response {
   const { username, password } = options
@@ -38,7 +39,12 @@ export function basicAuth(options: BasicAuthOptions): (request: Request) => true
     throw new ConfigError('basicAuth: password is empty or missing; is its environment variable set?')
   }
   const expected = Buffer.from(`${username}:${password}`, 'utf8')
-  const realm = (options.realm ?? 'Reflow').replaceAll('"', '')
+  const realm = options.realm ?? 'Reflow'
+  // It goes into a quoted header value: a quote or backslash would end or
+  // escape it, and a control character makes every challenge unsendable.
+  if (/["\\\p{Cc}]/u.test(realm)) {
+    throw new ConfigError('basicAuth: realm must not contain quotes, backslashes, or control characters')
+  }
   const challenge = `Basic realm="${realm}", charset="UTF-8"`
 
   return (request) => {

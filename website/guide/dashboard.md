@@ -30,12 +30,12 @@ A database from an older version of Reflow is refused rather than upgraded behin
 To look at a production database without opening any port to the internet, run the command on the server and reach it through SSH:
 
 ```bash
-ssh -L 4400:127.0.0.1:4400 you@your-server 'cd /srv/app && npx reflow-ts dashboard ./app.db'
+ssh -t -L 4400:127.0.0.1:4400 you@your-server 'cd /srv/app && npx reflow-ts dashboard ./app.db'
 ```
 
-Then open `http://127.0.0.1:4400/` on your own machine. The dashboard stays bound to the server's loopback address, so only someone who can SSH in can see it, and it stops when you close the connection. Keep the same port number on both sides of `-L`.
+Then open `http://127.0.0.1:4400/` on your own machine. The dashboard listens only on the server's loopback address, so it is not exposed to the network — only to you through the tunnel, and to anyone already logged in to that server. `-t` makes closing the connection stop it; press Ctrl+C or close the session when you are done. Keep the same port number on both sides of `-L`.
 
-`--host 0.0.0.0` serves it to the network instead, with no sign-in: anyone who can reach that address can read every run's input and output. Use SSH, or the dashboard inside your app.
+`--host` with one of the server's own addresses serves it to the network instead, with no sign-in: anyone who can reach that address can read every run's input and output. (`--host 0.0.0.0` is refused, because the dashboard answers only to the address it is reached by.) Use SSH, or the dashboard inside your app.
 
 ## In your app
 

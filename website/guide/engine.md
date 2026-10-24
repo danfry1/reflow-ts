@@ -70,7 +70,7 @@ const engine = createEngine({
 })
 ```
 
-`heartbeatIntervalMs` must be smaller than `runLeaseDurationMs`.
+`heartbeatIntervalMs` must be smaller than `runLeaseDurationMs`. Give every process sharing the storage the same `runLeaseDurationMs`: each judges whether another's runs are still alive by its own, so a process with a shorter lease would reclaim runs that are still running.
 
 ## Polling vs. manual ticks
 

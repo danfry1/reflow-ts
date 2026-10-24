@@ -33,7 +33,9 @@ const syncCrm = createWorkflow({
 
 The limit holds across every engine sharing the storage, not just one process: storage counts the workflow's running runs in the same transaction that claims the next one, so two workers cannot both take the last place. Runs past the limit wait as `pending` and start as places free up, in the order they were enqueued. Other workflows are not held back.
 
-Only runs actually running count. A run that is sleeping, waiting for an event, or waiting out a retry backoff holds no place, and neither does a run whose process died — once its lease expires it is reclaimed into a free place like any other. The built-in adapters enforce the limit; an engine whose workflows set one refuses a [custom adapter](/guide/storage#custom-adapters) that does not.
+Only runs actually running count. A run that is sleeping, waiting for an event, or waiting out a retry backoff holds no place. A run whose process died holds its place until its lease expires — `runLeaseDurationMs`, 30 seconds by default — and is then reclaimed into a free place like any other.
+
+Every process sharing the storage must use the same `runLeaseDurationMs`. Each judges whether another's runs are still alive by its own lease length, so one with a shorter lease would count live runs as dead — exceeding the limit, and reclaiming runs that are still running. The built-in adapters enforce the limit; an engine whose workflows set one refuses a [custom adapter](/guide/storage#custom-adapters) that does not.
 
 ## Picking a value
 

@@ -255,8 +255,13 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
     if (authorized instanceof Response) {
       return authorized
     }
-    if (!authorized) {
-      return text(401, 'Not authorized to view this dashboard')
+    // Only an explicit `true` lets a request in. Anything else — a Response
+    // built by another fetch implementation, which is not this runtime's
+    // Response but is truthy, say — is refused rather than read as consent.
+    if (authorized !== true) {
+      return authorized === false
+        ? text(401, 'Not authorized to view this dashboard')
+        : text(500, 'authorize() must return true, false, or a Response')
     }
 
     // Relative URLs in the page resolve against a trailing slash, so the page

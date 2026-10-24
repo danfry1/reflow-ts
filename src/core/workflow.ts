@@ -22,9 +22,11 @@ export interface StepContext<
   /** The id of the run this step belongs to. */
   runId: string
   /**
-   * Which attempt at this step this is, from 1. Counts attempts that ended —
-   * failed or succeeded — so an attempt cut off by a crash is made again under
-   * the same number.
+   * Which attempt at this step this is, from 1. For a sequential step on a
+   * started engine the count is saved with each retry, so an attempt cut off
+   * by a crash is made again under the same number. A parallel branch, or a
+   * step on an engine driven only by `tick()`, retries in memory, and its
+   * count starts again from 1 after a crash.
    */
   attempt: number
   /**

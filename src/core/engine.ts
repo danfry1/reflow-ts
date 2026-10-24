@@ -1455,14 +1455,15 @@ function startTimeOf(options: EnqueueOptions | undefined, now: number): number {
     throw new ConfigError('enqueue: pass delay or startAt, not both')
   }
   if (delay !== undefined) {
-    return now + parseDuration(delay)
+    // Whole milliseconds, as every other time the engine stores.
+    return Math.ceil(now + parseDuration(delay))
   }
   if (startAt !== undefined) {
     const time = startAt instanceof Date ? startAt.getTime() : startAt
     if (!Number.isFinite(time)) {
       throw new ConfigError('enqueue: startAt must be a valid Date or epoch milliseconds')
     }
-    return time
+    return Math.ceil(time)
   }
   return now
 }

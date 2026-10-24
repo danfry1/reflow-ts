@@ -70,6 +70,14 @@ async function main(argv: readonly string[]): Promise<void> {
   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
     throw new UsageError(`--port must be a port number, not "${values.port}"`)
   }
+  if (isWildcard(values.host)) {
+    // The dashboard answers only to the name it is reached by, and a wildcard
+    // bind cannot say which that is: every real request would be turned away.
+    throw new UsageError(
+      `--host ${values.host} listens on every address, so the dashboard cannot tell which name it is reached by. ` +
+        'Pass the one address to listen on, such as --host 192.168.1.20, or reach it over SSH.',
+    )
+  }
 
   // Read-only unless asked to migrate: an inspector must leave the file as it
   // found it, journal mode included.
@@ -136,7 +144,7 @@ async function main(argv: readonly string[]): Promise<void> {
 /** The names a browser may use for `host` in a `Host` header. */
 function hostNames(host: string): string[] {
   if (isLoopback(host)) {
-    return ['localhost', '127.0.0.1', '[::1]']
+    return [...new Set(['localhost', '127.0.0.1', '[::1]', displayHost(host)])]
   }
   return [displayHost(host)]
 }
@@ -170,6 +178,11 @@ async function openStorage(path: string, options: SQLiteStorageOptions): Promise
       cause: error,
     })
   }
+}
+
+/** An address that means every interface rather than one. */
+function isWildcard(host: string): boolean {
+  return host === '0.0.0.0' || host === '::' || host === '[::]'
 }
 
 function isLoopback(host: string): boolean {
