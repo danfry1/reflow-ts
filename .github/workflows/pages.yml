@@ -8,7 +8,10 @@ on:
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
-permissions: read-all
+permissions:
+  contents: read
+  # actions/configure-pages reads the Pages site settings.
+  pages: read
 
 concurrency:
   group: pages
