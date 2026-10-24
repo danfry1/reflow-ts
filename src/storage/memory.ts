@@ -33,6 +33,7 @@ interface StoredEvent {
 }
 
 export class MemoryStorage implements StorageAdapter {
+  readonly supportsConcurrencyLimits = true
   private runs: Map<string, StoredRun> = new Map()
   private steps: Map<string, StepResult[]> = new Map()
   private events: Map<string, StoredEvent[]> = new Map()
@@ -70,7 +71,26 @@ export class MemoryStorage implements StorageAdapter {
     }
   }
 
-  async claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null> {
+  /** These workflows, less any already running as many runs as `limits` allows. */
+  private belowLimit(workflowNames: readonly string[], staleBefore: number | undefined, limits: ReadonlyMap<string, number>): string[] {
+    const live = new Map<string, number>()
+    for (const run of this.runs.values()) {
+      if (run.status === 'running' && (staleBefore === undefined || run.updatedAt > staleBefore)) {
+        live.set(run.workflow, (live.get(run.workflow) ?? 0) + 1)
+      }
+    }
+    return workflowNames.filter((name) => {
+      const limit = limits.get(name)
+      return limit === undefined || (live.get(name) ?? 0) < limit
+    })
+  }
+
+  async claimNextRun(
+    allWorkflowNames: readonly string[],
+    staleBefore?: number,
+    limits?: ReadonlyMap<string, number>,
+  ): Promise<ClaimedRun | null> {
+    const workflowNames = limits ? this.belowLimit(allWorkflowNames, staleBefore, limits) : allWorkflowNames
     if (workflowNames.length === 0) {
       return null
     }

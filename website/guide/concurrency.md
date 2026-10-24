@@ -19,6 +19,22 @@ With `concurrency: 5`, the engine keeps up to 5 pending (or reclaimable) runs ex
 
 Each claimed run is leased and heartbeated independently, so one slow run doesn't endanger the others' leases.
 
+## Limiting one workflow
+
+Some work must not run too many at once whatever else is going on — calls to an API with a rate limit, a job that locks a shared resource. Give that workflow its own `concurrency`:
+
+```typescript
+const syncCrm = createWorkflow({
+  name: 'sync-crm',
+  input: z.object({ accountId: z.string() }),
+  concurrency: 2, // at most 2 runs of sync-crm at once
+})
+```
+
+The limit holds across every engine sharing the storage, not just one process: storage counts the workflow's running runs in the same transaction that claims the next one, so two workers cannot both take the last place. Runs past the limit wait as `pending` and start as places free up, in the order they were enqueued. Other workflows are not held back.
+
+Only runs actually running count. A run that is sleeping, waiting for an event, or waiting out a retry backoff holds no place, and neither does a run whose process died — once its lease expires it is reclaimed into a free place like any other. The built-in adapters enforce the limit; an engine whose workflows set one refuses a [custom adapter](/guide/storage#custom-adapters) that does not.
+
 ## Picking a value
 
 `concurrency` bounds how many runs a single engine instance works on at once. Size it to your workload — I/O-bound steps (API calls, DB writes) tolerate higher concurrency than CPU-bound ones. Because claims are leased, you can also run **multiple engine instances** against the same storage; each claims its own runs and they share the work safely.

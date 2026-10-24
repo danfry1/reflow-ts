@@ -86,6 +86,7 @@ export interface SQLiteStorageOptions {
  * every transaction so several processes can safely share one database file.
  */
 export class SqliteStorageBase implements StorageAdapter {
+  readonly supportsConcurrencyLimits = true
   private readonly driver: SqliteDriver
 
   constructor(driver: SqliteDriver, options: SQLiteStorageOptions = {}) {
@@ -228,12 +229,22 @@ export class SqliteStorageBase implements StorageAdapter {
     })
   }
 
-  async claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null> {
-    if (workflowNames.length === 0) {
+  async claimNextRun(
+    allWorkflowNames: readonly string[],
+    staleBefore?: number,
+    limits?: ReadonlyMap<string, number>,
+  ): Promise<ClaimedRun | null> {
+    if (allWorkflowNames.length === 0) {
       return null
     }
 
     return this.transaction(() => {
+      // Counted inside the claim's write transaction, so two processes cannot
+      // both see a free place and both take it.
+      const workflowNames = limits ? this.belowLimit(allWorkflowNames, staleBefore, limits) : allWorkflowNames
+      if (workflowNames.length === 0) {
+        return null
+      }
       const now = Date.now()
       const row = this.oldestClaimable(workflowNames, now, staleBefore)
 
@@ -277,6 +288,29 @@ export class SqliteStorageBase implements StorageAdapter {
         leaseId,
       }
       return claimed
+    })
+  }
+
+  /**
+   * These workflows, less any already running as many runs as `limits`
+   * allows. Each count stops at the limit, reading at most that many entries
+   * of the status index.
+   */
+  private belowLimit(workflowNames: readonly string[], staleBefore: number | undefined, limits: ReadonlyMap<string, number>): string[] {
+    return workflowNames.filter((name) => {
+      const limit = limits.get(name)
+      if (limit === undefined) return true
+      const row = this.get<{ live: number }>(
+        `SELECT count(*) AS live FROM (
+           SELECT 1 FROM workflow_runs
+           WHERE status = 'running' AND workflow = ? AND updated_at > ?
+           LIMIT ?
+         )`,
+        name,
+        staleBefore ?? Number.MIN_SAFE_INTEGER,
+        limit,
+      )
+      return (row?.live ?? 0) < limit
     })
   }
 

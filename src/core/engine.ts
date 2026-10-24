@@ -385,6 +385,18 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   }
 
   const workflowNames = Array.from(registry.keys())
+  // Per-workflow caps, enforced by storage at claim time so they hold across
+  // every process, not just this one.
+  const limits = new Map<string, number>()
+  for (const wf of registry.values()) {
+    if (wf.concurrency !== undefined) limits.set(wf.name, wf.concurrency)
+  }
+  if (limits.size > 0 && rawStorage.supportsConcurrencyLimits !== true) {
+    throw new ConfigError(
+      `Workflow "${limits.keys().next().value}" sets concurrency, but this storage adapter does not enforce concurrency limits`,
+    )
+  }
+  const claimLimits = limits.size > 0 ? limits : undefined
 
   async function enqueue(
     workflowName: string,
@@ -1042,7 +1054,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         reservedSlots++
         let run: ClaimedRun | null
         try {
-          run = await track(storage.claimNextRun(workflowNames, Date.now() - runLeaseDurationMs))
+          run = await track(storage.claimNextRun(workflowNames, Date.now() - runLeaseDurationMs, claimLimits))
         } catch (error) {
           reservedSlots--
           throw error
