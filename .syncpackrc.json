@@ -1,8 +1,8 @@
 {
   "versionGroups": [
     {
-      "label": "better-sqlite3 is intentionally a wide peer range + a pinned dev version",
-      "dependencies": ["better-sqlite3"],
+      "label": "better-sqlite3 and pg are intentionally a wide peer range + a pinned dev version",
+      "dependencies": ["better-sqlite3", "pg"],
       "isIgnored": true
     }
   ],

@@ -22,7 +22,7 @@ npm install reflow-ts
 
 </div>
 
-<p class="home-facts"><span>Node 18 or later, and Bun</span><span>SQLite, in a file next to your app</span><span>Zod, Valibot, ArkType, or any Standard Schema</span><span>MIT licensed</span></p>
+<p class="home-facts"><span>Node 18 or later, and Bun</span><span>SQLite in a file next to your app, or PostgreSQL</span><span>Zod, Valibot, ArkType, or any Standard Schema</span><span>MIT licensed</span></p>
 
 </section>
 
@@ -107,7 +107,8 @@ npx reflow-ts dashboard ./app.db
   <div><dt><a href="/reflow-ts/guide/scheduling">Schedule runs</a></dt><dd>On an interval or a cron expression, fired once across all your processes.</dd></div>
   <div><dt><a href="/reflow-ts/guide/failure-handling">Compensate on failure</a></dt><dd>Undo what a failed run already did, with <code>onFailure</code>.</dd></div>
   <div><dt><a href="/reflow-ts/guide/workflows">Typed end to end</a></dt><dd>Inputs come from your schema; each step's <code>prev</code> is the previous step's output.</dd></div>
-  <div><dt><a href="/reflow-ts/guide/concurrency">Several processes, one file</a></dt><dd>Workers share a SQLite database; each run is claimed by exactly one.</dd></div>
+  <div><dt><a href="/reflow-ts/guide/storage#postgresstorage">From one file to many machines</a></dt><dd>Workers share a SQLite file, or a Postgres database across machines; each run is claimed by exactly one.</dd></div>
+  <div><dt><a href="/reflow-ts/guide/concurrency#limiting-one-workflow">Limit one workflow</a></dt><dd>At most so many runs of a workflow at once, across every process — for rate-limited APIs.</dd></div>
 </dl>
 
 </section>
@@ -118,11 +119,11 @@ npx reflow-ts dashboard ./app.db
 
 |  | Reflow | Temporal | Inngest |
 |---|---|---|---|
-| What you run | Your app and a SQLite file | A cluster, a database, and workers | A hosted service and an SDK |
+| What you run | Your app, and a SQLite file or your Postgres | A cluster, a database, and workers | A hosted service and an SDK |
 | Type safety | End to end, inferred | Partial | Partial |
-| Good for | Apps, CLIs, and agents on one machine or a few | Large distributed systems | Serverless functions |
+| Good for | Apps, CLIs, and agents, from one process to many machines | Very large, multi-language systems | Serverless functions |
 
-<p>Reflow is for apps that need multi-step work to be reliable without running workflow infrastructure. It is not built for spreading one workload across many machines, for sub-second dispatch at very high volume, or for teams already on Temporal.</p>
+<p>Reflow is for apps that need multi-step work to be reliable without running workflow infrastructure. Start on SQLite and move to Postgres when workers span machines, without changing a workflow. It is not built for workflows written in several languages, for sub-second dispatch at very high volume, or for teams already on Temporal.</p>
 
 <p class="home-links"><a href="/reflow-ts/guide/">Read the guide</a></p>
 

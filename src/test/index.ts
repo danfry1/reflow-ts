@@ -2,6 +2,8 @@ import { createEngine } from '../core/engine'
 import { InternalError, TestRunIncompleteError } from '../core/errors'
 import type { PersistedValue } from '../core/types'
 import { MemoryStorage } from '../storage/memory'
+
+export { MemoryStorage }
 import type {
   AnyWorkflow,
   WorkflowInputMap,
