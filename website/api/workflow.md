@@ -23,6 +23,9 @@ Adds a sequential step. Accepts either a bare handler or a config object.
 | `steps` | `TStepsSoFar` | Frozen, typed record of all previously completed step results by name |
 | `signal` | `AbortSignal` | Aborted on cancellation, lease loss, or step timeout |
 | `complete` | `(value?) => never` | Finish the workflow early, skipping remaining steps |
+| `idempotencyKey` | `string` | The same every time this step runs for this run — across retries, crashes, and processes — and unique to it. Pass it to APIs that accept one; see [what runs once](/guide/crash-recovery#what-runs-once-and-what-may-run-again) |
+| `runId` | `string` | The run's id |
+| `attempt` | `number` | Which attempt at this step this is, from 1 |
 
 **Config form:**
 

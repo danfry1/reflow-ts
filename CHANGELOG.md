@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Steps know who they are.** Every step handler receives `idempotencyKey`, `runId`, and `attempt`. `idempotencyKey` is the same each time that step runs for that run — across retries, crashes, and other processes picking the run up — and different for every other step and run, so a step that calls a payment provider or any API accepting an idempotency key can pass it along and a repeat after a crash returns the first result instead of acting twice. The crash recovery guide now states plainly that a step cut off mid-run runs again: finished steps never repeat, and steps run at least once.
+
 ## 0.8.1 — 2026-10-24
 
 The dashboard can be protected with a password in one line, and sent to an app's own login page. The guide now covers each way to run it, including opening a production database over SSH.

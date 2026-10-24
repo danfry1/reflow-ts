@@ -54,8 +54,8 @@ const order = createWorkflow({
   input: z.object({ orderId: z.string(), amount: z.number() }),
   label: (input) => input.orderId,
 })
-  .step('charge', async ({ input }) => {
-    const charge = await stripe.charges.create({ amount: input.amount })
+  .step('charge', async ({ input, idempotencyKey }) => {
+    const charge = await stripe.paymentIntents.create({ amount: input.amount, currency: 'usd' }, { idempotencyKey })
     return { chargeId: charge.id }
   })
   .step('ship', {
@@ -73,7 +73,7 @@ await engine.enqueue('order', { orderId: 'ORD-1001', amount: 5000 })
 ```
 
 <ol class="home-notes">
-  <li><strong>charge</strong> runs once. Its result is saved before <code>ship</code> starts, so a crash after it never charges the card again.</li>
+  <li><strong>charge</strong> is saved before <code>ship</code> starts, so a crash after it never charges the card again. A crash <em>during</em> it runs it again, with the same <code>idempotencyKey</code>, so Stripe returns the first charge instead of making a second.</li>
   <li><strong>ship</strong> retries with growing waits. The attempt count is saved too, so a restart mid-wait does not start the count over.</li>
   <li><strong>wait-a-day</strong> holds no worker for the day. The run sleeps in the database and wakes on time, whichever process is running then.</li>
   <li><strong>label</strong> names each run in the dashboard.</li>
