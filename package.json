@@ -69,6 +69,7 @@
     "test:bun": "bun scripts/smoke-bun-adapter.ts",
     "test:cli": "node scripts/smoke-cli.mjs",
     "bench": "bun benchmarks/index.ts",
+    "contributors": "bun scripts/contributors.ts",
     "typecheck": "tsc --noEmit",
     "lint:deps": "syncpack lint",
     "fix:deps": "syncpack fix",

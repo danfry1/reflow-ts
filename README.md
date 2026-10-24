@@ -996,6 +996,25 @@ SQLite storage adapter for Node.js. Uses `better-sqlite3`. WAL mode and transact
 
 SQLite storage adapter for Node.js using the built-in `node:sqlite` module — no native dependencies. Requires Node ≥ 22.5 (`--experimental-sqlite` before Node 23.4). WAL mode and transactional claiming. Import from `reflow-ts/sqlite-node-builtin`.
 
+## Contributors
+
+Thanks to everyone who has opened an issue or a pull request. Each one has shaped reflow.
+
+<!-- contributors:start -->
+<table>
+  <tr>
+    <td align="center" valign="top" width="120">
+      <a href="https://github.com/brianjenkins94"><img src="https://github.com/brianjenkins94.png?size=128" width="64" height="64" alt="brianjenkins94" /><br /><sub><b>brianjenkins94</b></sub></a><br />
+      <sub><a href="https://github.com/search?q=repo%3Adanfry1%2Freflow-ts+author%3Abrianjenkins94&type=issues">5 issues, 1 pull request</a></sub>
+    </td>
+    <td align="center" valign="top" width="120">
+      <a href="https://github.com/shishantbiswas"><img src="https://github.com/shishantbiswas.png?size=128" width="64" height="64" alt="shishantbiswas" /><br /><sub><b>shishantbiswas</b></sub></a><br />
+      <sub><a href="https://github.com/search?q=repo%3Adanfry1%2Freflow-ts+author%3Ashishantbiswas&type=issues">1 issue</a></sub>
+    </td>
+  </tr>
+</table>
+<!-- contributors:end -->
+
 ## License
 
 MIT
