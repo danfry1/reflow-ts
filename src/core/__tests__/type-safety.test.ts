@@ -180,13 +180,16 @@ describe('type safety', () => {
     >()
   })
 
-  it('StepContext exposes signal, complete, and steps alongside input and prev', () => {
+  it('StepContext exposes signal, complete, steps, and the run and attempt alongside input and prev', () => {
     expectTypeOf<StepContext<{ value: string }, { ok: boolean }>>().toEqualTypeOf<{
       input: { value: string }
       prev: { ok: boolean }
       signal: AbortSignal
       complete: (value?: import('../../core/types').PersistedValue) => never
       steps: Record<string, import('../../core/types').PersistedValue>
+      runId: string
+      attempt: number
+      idempotencyKey: string
     }>()
   })
 

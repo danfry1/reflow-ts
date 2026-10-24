@@ -90,7 +90,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
 
           const outcome = await runStepHandlerInProcess(
             guardedDef,
-            { input: ctx.run.input, runSignal: groupAbort.signal },
+            { runId: ctx.run.id, input: ctx.run.input, runSignal: groupAbort.signal },
             prev,
             frozenSteps,
           )

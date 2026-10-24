@@ -19,6 +19,22 @@ export interface StepContext<
   complete: (value?: PersistedValue) => never
   /** Results of all previously completed steps, keyed by step name. */
   steps: TStepsSoFar
+  /** The id of the run this step belongs to. */
+  runId: string
+  /**
+   * Which attempt at this step this is, from 1. Counts attempts that ended —
+   * failed or succeeded — so an attempt cut off by a crash is made again under
+   * the same number.
+   */
+  attempt: number
+  /**
+   * A key that is the same every time this step runs for this run — across
+   * retries, crashes, and other processes picking the run up — and different
+   * for every other step and run. Pass it to an API that accepts an
+   * idempotency key, such as a payment provider, so a step repeated after a
+   * crash does not repeat its effect.
+   */
+  idempotencyKey: string
 }
 
 /**

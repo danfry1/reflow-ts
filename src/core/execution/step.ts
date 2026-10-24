@@ -26,6 +26,7 @@ export type StepOutcome =
 
 /** Everything {@link runStepHandler} needs, independent of how the step is scheduled. */
 export interface StepAttemptContext {
+  readonly runId: string
   readonly input: PersistedValue
   readonly runSignal: AbortSignal
   /** Attempts earlier executions already spent on this step. Numbering continues from here. */
@@ -86,6 +87,9 @@ export async function runStepHandler(
           signal: attemptSignal.signal,
           complete,
           steps,
+          runId: attempt.runId,
+          attempt: attemptNumber,
+          idempotencyKey: `${attempt.runId}:${stepDef.name}`,
         }),
         attemptSignal.signal,
       )
@@ -248,6 +252,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
       }
 
       const attempt: StepAttemptContext = {
+        runId: ctx.run.id,
         input: ctx.run.input,
         runSignal: ctx.signals.run.signal,
         priorAttempts: retrying?.attempts ?? 0,
