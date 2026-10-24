@@ -1,7 +1,9 @@
 [install]
 # Supply-chain hardening: refuse npm package versions published more recently
-# than this threshold (in seconds). 604800 = 7 days. This is install-time
-# defense-in-depth; the primary one-week gate is the Dependabot cooldown
+# than this threshold (in seconds). 1209600 = 14 days. This is install-time
+# defense-in-depth; the primary two-week gate is the Dependabot cooldown
 # (.github/dependabot.yml), which holds update PRs until a version is at least
-# seven days old — long enough for most malicious releases to be yanked.
-minimumReleaseAge = 604800
+# fourteen days old — long enough for malicious releases to be found and yanked.
+# An urgent security fix younger than this can be installed deliberately with
+# `bun add --minimum-release-age <seconds>`, and noted in its pull request.
+minimumReleaseAge = 1209600
