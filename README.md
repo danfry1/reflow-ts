@@ -419,16 +419,20 @@ See what your runs are doing — what is waiting and on what, what failed and wh
 npx reflow-ts dashboard ./reflow.db   # read-only, on 127.0.0.1
 ```
 
-Or serve it from your app, with cancel, resume, and live updates:
+Or serve it from your own app, behind a password or your own sign-in, with cancel, resume, and live updates. Nothing is hosted elsewhere; your run data stays on your server.
 
 ```typescript
-import { createDashboard } from 'reflow-ts/dashboard'
+import { basicAuth, createDashboard } from 'reflow-ts/dashboard'
 
-const dashboard = createDashboard({ storage, engine, authorize: (req) => isAdmin(req) })
+const dashboard = createDashboard({
+  storage,
+  engine,
+  authorize: basicAuth({ username: 'admin', password: process.env.REFLOW_DASHBOARD_PASSWORD }),
+})
 Bun.serve({ port: 4400, fetch: dashboard }) // or Hono, Next.js, toNodeHandler() for Express
 ```
 
-See the [dashboard guide](https://danfry1.github.io/reflow-ts/guide/dashboard).
+The [dashboard guide](https://danfry1.github.io/reflow-ts/guide/dashboard) covers mounting it in each server, using your app's own sign-in, and opening a production database over SSH.
 
 ### Hooks
 

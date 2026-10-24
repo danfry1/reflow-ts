@@ -9,12 +9,12 @@
  *
  * @example
  * ```ts
- * import { createDashboard } from 'reflow-ts/dashboard'
+ * import { basicAuth, createDashboard } from 'reflow-ts/dashboard'
  *
  * const dashboard = createDashboard({
  *   storage,
  *   engine, // optional: enables cancel / resume and live updates
- *   authorize: (request) => request.headers.get('authorization') === `Bearer ${process.env.ADMIN_TOKEN}`,
+ *   authorize: basicAuth({ username: 'admin', password: process.env.REFLOW_DASHBOARD_PASSWORD }),
  * })
  *
  * Bun.serve({ port: 4400, fetch: dashboard })
@@ -39,6 +39,7 @@ import { renderPage } from './page'
 import { RecentReads } from './recent'
 
 export { toNodeHandler } from './node'
+export { basicAuth, type BasicAuthOptions } from './auth'
 
 /** Configuration for {@link createDashboard}. */
 export interface DashboardOptions {
@@ -46,7 +47,9 @@ export interface DashboardOptions {
   storage: StorageAdapter
   /**
    * Decide whether a request may see the dashboard. Called for every request,
-   * page and API alike; return `false` to answer 401.
+   * page and API alike; return `false` to answer 401, or a `Response` to send
+   * it instead — a redirect to your login page, say. {@link basicAuth} is a
+   * ready-made one that asks for a password.
    *
    * Required, because run inputs and outputs are your application's data.
    * Check something the request *carries* — a session cookie, a bearer token —
@@ -54,7 +57,7 @@ export interface DashboardOptions {
    * through DNS rebinding. To serve it with no check at all, pass `() => true`
    * together with {@link DashboardOptions.allowedHosts}.
    */
-  authorize(request: Request): boolean | Promise<boolean>
+  authorize(request: Request): boolean | Response | Promise<boolean | Response>
   /**
    * The `Host` values the dashboard answers to, such as `['localhost:4400']`
    * or `['admin.example.com']`. Requests for any other host get 421.
@@ -241,13 +244,16 @@ export function createDashboard(options: DashboardOptions): DashboardHandler {
       return text(421, 'This dashboard does not answer for that host')
     }
 
-    let authorized: boolean
+    let authorized: boolean | Response
     try {
       authorized = await authorize(request)
     } catch {
       // Deliberately generic: the caller is unauthenticated, and an
       // authorize() error message can echo what they sent.
       return text(500, 'Could not check authorization')
+    }
+    if (authorized instanceof Response) {
+      return authorized
     }
     if (!authorized) {
       return text(401, 'Not authorized to view this dashboard')

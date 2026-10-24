@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`basicAuth({ username, password })`** from `reflow-ts/dashboard`, an `authorize` that protects the dashboard with a password through the browser's own sign-in prompt — for apps with no sign-in of their own to reuse. An empty or unset password throws a `ConfigError` at startup instead of serving the dashboard unprotected.
+- **`authorize` may return a `Response`**, which is sent in place of the dashboard: a redirect to the app's login page, say, or a 403. Returning `false` still answers 401.
+
+### Documentation
+
+- The dashboard guide starts from the two ways to run it, with a complete example for an app, and shows how to open a production database over SSH without exposing a port. Its sign-in examples no longer check a bearer token, which a browser cannot send when visiting the page.
+
 ## 0.8.0 — 2026-10-23
 
 Runs become something you can see and reason about, and SQLite holds up under
