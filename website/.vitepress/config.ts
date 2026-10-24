@@ -84,6 +84,7 @@ export default defineConfig({
             { text: 'Scheduled Workflows', link: '/guide/scheduling' },
             { text: 'Concurrency', link: '/guide/concurrency' },
             { text: 'Crash Recovery', link: '/guide/crash-recovery' },
+            { text: 'Changing Workflows', link: '/guide/changing-workflows' },
             { text: 'Storage', link: '/guide/storage' },
             { text: 'Inspecting Runs', link: '/guide/inspecting-runs' },
             { text: 'Dashboard', link: '/guide/dashboard' },

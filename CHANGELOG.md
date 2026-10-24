@@ -9,6 +9,10 @@
 - **Start a run later.** `enqueue(name, input, { delay: '1h' })` or `{ startAt: date }` saves the run straight away and starts it when due. It waits in storage as a sleeping run, holding no worker, so it survives restarts and starts on time on whichever process is running then. The dashboard shows it as *Starts at …*.
 - **Steps know who they are.** Every step handler receives `idempotencyKey`, `runId`, and `attempt`. `idempotencyKey` is the same each time that step runs for that run — across retries, crashes, and other processes picking the run up — and different for every other step and run, so a step that calls a payment provider or any API accepting an idempotency key can pass it along and a repeat after a crash returns the first result instead of acting twice. The crash recovery guide now states plainly that a step cut off mid-run runs again: finished steps never repeat, and steps run at least once.
 
+### Documentation
+
+- **Changing workflows** is a new guide: what a run part-way through does when it resumes under changed code — a renamed step runs again, a step inserted earlier runs late, a removed workflow's runs are never claimed — and how to ship such changes as a new version beside the old one. Tests pin each behaviour it describes.
+
 ### Fixed
 
 - `MemoryStorage` is exported from `reflow-ts/test`, as the storage guide always said it was.

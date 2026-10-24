@@ -39,6 +39,10 @@ Steps also get `runId`, and `attempt` — which attempt at this step this is, fr
 
 [Parallel branches](/guide/parallel) follow the same rule, and recovery is per-branch: already-completed branches are skipped on resume.
 
+## Deploying while runs are in flight
+
+A run picked up after a deploy carries on under the new code, matching saved results to steps by name. Renaming a step makes it run again; see [changing workflows](/guide/changing-workflows) for what is safe to change in place and how to version the rest.
+
 ## Graceful shutdown
 
 `engine.stop()` aborts in-flight steps (via their `signal`) and leaves their runs `running` so another instance — or the same one on restart — can reclaim them. It does not mark them failed.
