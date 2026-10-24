@@ -99,6 +99,7 @@
     }
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
     "@types/better-sqlite3": "7.6.13",
     "@types/pg": "8.23.1",
     "@vitest/coverage-v8": "4.1.11",
