@@ -1138,6 +1138,8 @@ const SCRIPT = String.raw`
     } else if (run.status === 'waiting') {
       head = 'Waiting for ' + (run.waitingFor || 'an event');
       reason = run.wakeAt ? 'Times out at ' + clock(run.wakeAt) : 'No timeout';
+    } else if (run.status === 'sleeping' && run.wakeAt && !run.startedAt) {
+      head = 'Starts at ' + clock(run.wakeAt) + ' (' + ago(run.wakeAt) + ')';
     } else if (run.status === 'sleeping' && run.wakeAt) {
       head = 'Sleeping until ' + clock(run.wakeAt) + ' (' + ago(run.wakeAt) + ')';
     } else if (run.status === 'pending') {

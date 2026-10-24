@@ -21,8 +21,10 @@ Submits a run. Type-safe — only accepts registered workflow names with matchin
 | Option | Type | Description |
 |---|---|---|
 | `idempotencyKey` | `string` | Same key + same input returns the existing run; same key + different input throws [`IdempotencyConflictError`](/api/errors) |
+| `delay` | `number \| string` | Start the run this long from now — milliseconds or a duration such as `'10m'`. See [starting later](/guide/engine#starting-a-run-later) |
+| `startAt` | `Date \| number` | Start the run at this time. A time already past starts it now. Not with `delay` |
 
-Throws [`WorkflowNotFoundError`](/api/errors) for an unknown name and [`ValidationError`](/api/errors) if input fails the schema.
+Throws [`WorkflowNotFoundError`](/api/errors) for an unknown name, [`ValidationError`](/api/errors) if input fails the schema, and [`ConfigError`](/api/errors) for an invalid `delay` or `startAt`, or both together.
 
 ## `engine.stream(options?)`
 
