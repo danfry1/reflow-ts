@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-10-24
+
+Room to grow, and durability stated exactly. Workflows written against a SQLite
+file now run unchanged on PostgreSQL, shared by workers on many machines. Every
+step gets an idempotency key that is the same however many times it runs, so a
+step repeated after a crash can tell the API it calls. Runs can start later,
+one workflow can be capped at so many runs at once across every process, and
+the dashboard can be protected with a password in one line.
+
+**Upgrading:** nothing to change. The built-in adapters need no migration. A
+custom storage adapter keeps working; it only needs the new `limits` argument
+of `claimNextRun` (and `supportsConcurrencyLimits = true`) once a workflow sets
+`concurrency`.
 
 ### Added
 
@@ -8,27 +20,17 @@
 - **Limit how many runs of one workflow run at once.** `createWorkflow({ name, input, concurrency: 2 })` caps that workflow's running runs across every process sharing the storage — for calls to a rate-limited API, say — while other workflows carry on. Storage counts them in the same transaction that claims the next run, so two workers cannot both take the last place; sleeping, waiting, and crashed runs hold no place. `StorageAdapter.claimNextRun` takes the limits as an optional third argument, and an adapter declares it honours them with `supportsConcurrencyLimits`; an engine whose workflows set a limit refuses an adapter that does not. The built-in adapters support it, and the conformance suite tests it.
 - **Start a run later.** `enqueue(name, input, { delay: '1h' })` or `{ startAt: date }` saves the run straight away and starts it when due. It waits in storage as a sleeping run, holding no worker, so it survives restarts and starts on time on whichever process is running then. The dashboard shows it as *Starts at …*.
 - **Steps know who they are.** Every step handler receives `idempotencyKey`, `runId`, and `attempt`. `idempotencyKey` is the same each time that step runs for that run — across retries, crashes, and other processes picking the run up — and different for every other step and run, so a step that calls a payment provider or any API accepting an idempotency key can pass it along and a repeat after a crash returns the first result instead of acting twice. The crash recovery guide now states plainly that a step cut off mid-run runs again: finished steps never repeat, and steps run at least once.
-
-### Documentation
-
-- **Changing workflows** is a new guide: what a run part-way through does when it resumes under changed code — a renamed step runs again, a step inserted earlier runs late, a removed workflow's runs are never claimed — and how to ship such changes as a new version beside the old one. Tests pin each behaviour it describes.
-
-### Fixed
-
-- `MemoryStorage` is exported from `reflow-ts/test`, as the storage guide always said it was.
-
-## 0.8.1 — 2026-10-24
-
-The dashboard can be protected with a password in one line, and sent to an app's own login page. The guide now covers each way to run it, including opening a production database over SSH.
-
-### Added
-
 - **`basicAuth({ username, password })`** from `reflow-ts/dashboard`, an `authorize` that protects the dashboard with a password through the browser's own sign-in prompt — for apps with no sign-in of their own to reuse. An empty or unset password throws a `ConfigError` at startup instead of serving the dashboard unprotected.
 - **`authorize` may return a `Response`**, which is sent in place of the dashboard: a redirect to the app's login page, say, or a 403. Returning `false` still answers 401.
 
 ### Documentation
 
+- **Changing workflows** is a new guide: what a run part-way through does when it resumes under changed code — a renamed step runs again, a step inserted earlier runs late, a removed workflow's runs are never claimed — and how to ship such changes as a new version beside the old one. Tests pin each behaviour it describes.
 - The dashboard guide starts from the two ways to run it, with a complete example for an app, and shows how to open a production database over SSH without exposing a port. Its sign-in examples no longer check a bearer token, which a browser cannot send when visiting the page.
+
+### Fixed
+
+- `MemoryStorage` is exported from `reflow-ts/test`, as the storage guide always said it was.
 
 ## 0.8.0 — 2026-10-23
 
