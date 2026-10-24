@@ -92,6 +92,20 @@ describe.skipIf(url === undefined)('PostgresStorage', () => {
     expect(await storage.deleteRuns({ finishedBefore: Date.now(), statuses: ['completed'], limit: 10 })).toBe(0)
   })
 
+  it('stores fractional milliseconds rounded up rather than refusing them', async () => {
+    const storage = await fresh()
+    const wf = createWorkflow({ name: 'later', input: z.object({}) }).step('go', async () => {})
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('later', {}, { delay: 2.5 })
+    await storage.upsertSchedule({
+      key: 's', workflow: 'later', input: {}, recurrence: { kind: 'interval', intervalMs: 1.5 },
+      nextRunAt: Date.now() + 0.25, createdAt: Date.now(), updatedAt: Date.now(),
+    })
+    const stored = await storage.getRun(run.id)
+    expect([stored?.status, Number.isInteger(stored?.wakeAt)]).toStrictEqual(['sleeping', true])
+    expect((await storage.listSchedules()).map((schedule) => schedule.recurrence)).toStrictEqual([{ kind: 'interval', intervalMs: 2 }])
+  })
+
   it('gives each of many concurrent claims a different run', async () => {
     const storage = await fresh()
     const now = Date.now()

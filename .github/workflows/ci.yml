@@ -22,6 +22,17 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Verify dependencies are pinned
         run: bun run lint:deps
+      # Every package in bun.lock, transitive ones included, which GitHub's
+      # dependency review cannot read. Each exception names its advisory and
+      # when its fix clears the 14-day release-age gate; drop it then.
+      - name: Audit the lockfile for known vulnerabilities
+        run: >-
+          bun audit --audit-level=moderate
+          --ignore=GHSA-qxg6-89mg-rqv8
+          --ignore=GHSA-xp26-3454-mjgp
+          --ignore=GHSA-834v-8h66-3h79
+        # GHSA-qxg6-89mg-rqv8, GHSA-xp26-3454-mjgp: @vitest/mocker, fixed in vitest 4.1.12 (released 2026-10-15; usable 2026-10-29).
+        # GHSA-834v-8h66-3h79: happy-dom, fixed in 21.0.4 (2026-10-20; usable 2026-11-03). Only renders the dashboard's own page in tests.
       - run: bun run typecheck
       - run: bun run test -- --coverage
       - name: Smoke-test the bun:sqlite adapter under Bun

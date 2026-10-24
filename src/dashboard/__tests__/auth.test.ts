@@ -46,9 +46,15 @@ describe('basicAuth', () => {
     expect(response === true ? 'let through' : response.status).toBe(401)
   })
 
-  it('names the realm in the challenge, without quotes that would break the header', () => {
-    const response = basicAuth({ username: 'a', password: 'b', realm: 'Ops "prod"' })(new Request(`${ORIGIN}/`))
-    expect(response === true ? null : response.headers.get('www-authenticate')).toBe('Basic realm="Ops prod", charset="UTF-8"')
+  it('names the realm in the challenge', () => {
+    const response = basicAuth({ username: 'a', password: 'b', realm: 'Ops (prod)' })(new Request(`${ORIGIN}/`))
+    expect(response === true ? null : response.headers.get('www-authenticate')).toBe('Basic realm="Ops (prod)", charset="UTF-8"')
+  })
+
+  it.each(['Ops "prod"', 'trailing\\', 'line\nbreak', 'carriage\rreturn', 'nul\u0000'])('refuses the realm %j at startup', (realm) => {
+    const create = () => basicAuth({ username: 'a', password: 'b', realm })
+    expect(create).toThrow(new ConfigError('basicAuth: realm must not contain quotes, backslashes, or control characters'))
+    expect(create).toThrow(ConfigError)
   })
 
   it.each([
@@ -79,6 +85,16 @@ describe('authorize returning a Response', () => {
     })
     const response = await dashboard(new Request(`${ORIGIN}/api/overview`))
     expect([response.status, response.headers.get('location')]).toStrictEqual([302, `${ORIGIN}/login`])
+  })
+
+  it('refuses a response from another fetch implementation rather than letting the request in', async () => {
+    // What a Response from undici or node-fetch looks like to this runtime:
+    // typed as one, truthy, but not an instance of its Response.
+    const foreign = Response.redirect(`${ORIGIN}/login`, 302)
+    Object.setPrototypeOf(foreign, Object.prototype)
+    const dashboard = createDashboard({ storage: new MemoryStorage(), authorize: () => foreign })
+    const response = await dashboard(new Request(`${ORIGIN}/api/overview`))
+    expect([response.status, await response.text()]).toStrictEqual([500, 'authorize() must return true, false, or a Response'])
   })
 
   it('waits for an async one', async () => {

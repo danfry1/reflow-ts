@@ -849,7 +849,7 @@ export class PostgresStorage implements StorageAdapter {
   }
 
   private async all<Row extends object>(db: Queryable, text: string, ...values: SqlParam[]): Promise<Row[]> {
-    return (await db.query<Row>({ text, values, types })).rows
+    return (await db.query<Row>({ text, values: wholeNumbers(values), types })).rows
   }
 
   private async one<Row extends object>(db: Queryable, text: string, ...values: SqlParam[]): Promise<Row | null> {
@@ -857,11 +857,11 @@ export class PostgresStorage implements StorageAdapter {
   }
 
   private async exec(db: Queryable, text: string, ...values: SqlParam[]): Promise<void> {
-    await db.query({ text, values, types })
+    await db.query({ text, values: wholeNumbers(values), types })
   }
 
   private async changes(db: Queryable, text: string, ...values: SqlParam[]): Promise<number> {
-    return (await db.query({ text, values, types })).rowCount ?? 0
+    return (await db.query({ text, values: wholeNumbers(values), types })).rowCount ?? 0
   }
 
   /**
@@ -893,6 +893,15 @@ export class PostgresStorage implements StorageAdapter {
       client.release(broken)
     }
   }
+}
+
+/**
+ * Every number bound here is epoch milliseconds, a duration, or a count, all
+ * stored as BIGINT, which refuses a fraction. A fractional time — a delay of
+ * `2.5` — is rounded up, so a wake is never early.
+ */
+function wholeNumbers(values: SqlParam[]): SqlParam[] {
+  return values.map((value) => typeof value === 'number' && !Number.isInteger(value) && Number.isFinite(value) ? Math.ceil(value) : value)
 }
 
 function mapRun(row: WorkflowRunRow): WorkflowRun {
