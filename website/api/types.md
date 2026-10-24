@@ -53,7 +53,7 @@ type StepStatus =
 | `FailureContext` | The object passed to `onFailure` |
 | `Engine` / `EngineConfig` / `EngineHooks` | Engine surface |
 | `EngineEvent` / `EngineEventOf` / `StreamOptions` / `ResultStream` | [Events & streams](/api/events) |
-| `EnqueueOptions` | `{ idempotencyKey? }` |
+| `EnqueueOptions` | `{ idempotencyKey?, delay?, startAt? }` |
 | `StorageAdapter` | [Custom storage contract](/api/storage) |
 
 ## Inference helpers

@@ -44,6 +44,19 @@ const run = await engine.enqueue(
 
 Reusing the same key for the same workflow **returns the existing run** instead of creating a duplicate. Reusing it with **different** input throws [`IdempotencyConflictError`](/guide/error-handling).
 
+## Starting a run later
+
+To run something a while from now — a reminder in an hour, a follow-up tomorrow morning — enqueue it with `delay` or `startAt`:
+
+```typescript
+await engine.enqueue('send-reminder', { userId }, { delay: '1h' })
+await engine.enqueue('follow-up', { userId }, { startAt: tomorrowAt9 })
+```
+
+The run is saved straight away and waits in the database, holding no worker, so it survives restarts and starts on time whichever process is running then. Until then it shows as *sleeping*, and in the dashboard as *Starts at …*. Combined with an `idempotencyKey`, enqueuing the same delayed run twice returns the first one.
+
+For something that repeats, use a [schedule](/guide/scheduling); to pause part-way through a run, use [`.sleep()`](/guide/sleep).
+
 ## Leases and heartbeats
 
 When the engine claims a run it takes a **lease** (default `30_000ms`). While a run executes, the engine **heartbeats** the lease so long-running steps aren't reclaimed mid-flight. If a worker crashes and stops heartbeating, a later `tick()` on any engine instance can reclaim the run once the lease expires — this is what makes [crash recovery](/guide/crash-recovery) work.

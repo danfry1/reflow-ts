@@ -4,6 +4,7 @@
 
 ### Added
 
+- **Start a run later.** `enqueue(name, input, { delay: '1h' })` or `{ startAt: date }` saves the run straight away and starts it when due. It waits in storage as a sleeping run, holding no worker, so it survives restarts and starts on time on whichever process is running then. The dashboard shows it as *Starts at …*.
 - **Steps know who they are.** Every step handler receives `idempotencyKey`, `runId`, and `attempt`. `idempotencyKey` is the same each time that step runs for that run — across retries, crashes, and other processes picking the run up — and different for every other step and run, so a step that calls a payment provider or any API accepting an idempotency key can pass it along and a repeat after a crash returns the first result instead of acting twice. The crash recovery guide now states plainly that a step cut off mid-run runs again: finished steps never repeat, and steps run at least once.
 
 ## 0.8.1 — 2026-10-24

@@ -114,6 +114,14 @@ export interface PruneOptions {
 export interface EnqueueOptions {
   /** Prevents duplicate runs. Same key + same input returns the existing run. Same key + different input throws. */
   idempotencyKey?: string
+  /**
+   * Start the run this long from now rather than straight away: milliseconds,
+   * or a duration string such as `'10m'`. The run waits in storage, holding
+   * no worker, and starts on time whichever process is running then.
+   */
+  delay?: number | string
+  /** Start the run at this time rather than straight away. A time already past starts it now. */
+  startAt?: Date | number
 }
 
 /**
@@ -389,20 +397,24 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     const idempotencyKey = normalizeIdempotencyKey(options?.idempotencyKey)
     const parsedInput = wf.parseInput(input)
     const now = Date.now()
+    const startAt = startTimeOf(options, now)
+    const delayed = startAt > now
 
     const run: WorkflowRun = {
       id: randomUUID(),
       workflow: workflowName,
       input: parsedInput,
       idempotencyKey,
-      status: 'pending',
+      // A delayed run waits as a sleeper does, so every adapter already claims
+      // it once it is due.
+      status: delayed ? 'sleeping' : 'pending',
       createdAt: now,
       updatedAt: now,
       startedAt: null,
       finishedAt: null,
       output: undefined,
       error: null,
-      wakeAt: null,
+      wakeAt: delayed ? startAt : null,
       waitingFor: null,
     }
 
@@ -413,7 +425,8 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }
 
     if (created) {
-      requestFill()
+      if (delayed) scheduleWake(startAt)
+      else requestFill()
     }
 
     return storedRun
@@ -1418,6 +1431,29 @@ function deriveScheduleKey(
     .slice(0, 22)
 }
 
+
+/**
+ * When a run enqueued with these options should start, in epoch ms.
+ *
+ * @throws {ConfigError} if both `delay` and `startAt` are given, or either is invalid.
+ */
+function startTimeOf(options: EnqueueOptions | undefined, now: number): number {
+  const { delay, startAt } = options ?? {}
+  if (delay !== undefined && startAt !== undefined) {
+    throw new ConfigError('enqueue: pass delay or startAt, not both')
+  }
+  if (delay !== undefined) {
+    return now + parseDuration(delay)
+  }
+  if (startAt !== undefined) {
+    const time = startAt instanceof Date ? startAt.getTime() : startAt
+    if (!Number.isFinite(time)) {
+      throw new ConfigError('enqueue: startAt must be a valid Date or epoch milliseconds')
+    }
+    return time
+  }
+  return now
+}
 /**
  * Normalise the caller's recurrence, validating it before anything is stored.
  *
