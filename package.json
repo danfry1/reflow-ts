@@ -37,6 +37,10 @@
       "types": "./dist/storage/sqlite-node-builtin.d.mts",
       "import": "./dist/storage/sqlite-node-builtin.mjs"
     },
+    "./postgres": {
+      "types": "./dist/storage/postgres.d.mts",
+      "import": "./dist/storage/postgres.mjs"
+    },
     "./test": {
       "types": "./dist/test/index.d.mts",
       "import": "./dist/test/index.mjs"
@@ -83,18 +87,24 @@
     "pipeline"
   ],
   "peerDependencies": {
-    "better-sqlite3": ">=9.0.0"
+    "better-sqlite3": ">=9.0.0",
+    "pg": "^8.0.0"
   },
   "peerDependenciesMeta": {
     "better-sqlite3": {
+      "optional": true
+    },
+    "pg": {
       "optional": true
     }
   },
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",
+    "@types/pg": "8.23.1",
     "@vitest/coverage-v8": "4.1.11",
     "better-sqlite3": "13.0.2",
     "happy-dom": "20.14.6",
+    "pg": "8.23.1",
     "syncpack": "15.3.2",
     "tsdown": "0.22.14",
     "typescript": "7.0.2",

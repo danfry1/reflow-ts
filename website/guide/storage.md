@@ -1,6 +1,9 @@
 # Storage
 
-Storage is pluggable through the [`StorageAdapter`](/api/storage) interface. Reflow ships three adapters.
+Storage is pluggable through the [`StorageAdapter`](/api/storage) interface. Reflow ships adapters for SQLite and PostgreSQL, and the same workflows run on either.
+
+- **SQLite** — a file next to your app. Nothing to run, and several processes on one machine can share it. Start here.
+- **PostgreSQL** — when workers run on more than one machine, or you want the database your platform already backs up and monitors.
 
 ## SQLiteStorage (Bun)
 
@@ -47,6 +50,48 @@ const storage = new SQLiteStorage('./workflows.db', { readOnly: true })
 ```
 
 Writes fail, `initialize()` included, and the file's journal mode is left as it was. This is how [`reflow-ts dashboard`](/guide/dashboard) opens a database.
+
+## PostgresStorage
+
+For running workflows from many processes on many machines against one database. Install [`pg`](https://node-postgres.com) alongside Reflow:
+
+```bash
+npm install reflow-ts pg
+```
+
+```typescript
+import { PostgresStorage } from 'reflow-ts/postgres'
+
+const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL })
+```
+
+Or hand it the pool your app already has; Reflow borrows connections from it and leaves it open on `close()`:
+
+```typescript
+const storage = new PostgresStorage({ pool })
+```
+
+`initialize()` — which `engine.start()` calls — creates a `reflow` schema and its tables, so they never meet your app's; pass `schema: 'jobs'` to name it yourself. It is safe for every process to start at once: they take turns under an advisory lock, and each migration runs exactly once. Needs PostgreSQL 14 or later.
+
+Every process runs the same engine against the same database, and they share the work: claiming takes each due run with `FOR UPDATE SKIP LOCKED`, so no two workers take one run and none waits on another. Crash recovery, leases, schedules, events, and [per-workflow concurrency limits](/guide/concurrency#limiting-one-workflow) all hold across machines. On a table of a million runs, a claim takes a few milliseconds.
+
+Leases compare times written by different machines, so keep their clocks in sync — NTP, which every cloud provides, is plenty: a few hundred milliseconds of drift against a 30-second lease changes nothing.
+
+The [dashboard](/guide/dashboard) works the same against Postgres when mounted in your app. The `npx reflow-ts dashboard` command reads SQLite files only.
+
+### Moving from SQLite
+
+Runs do not move between databases: point your app at Postgres and new runs go there. To carry on the runs already in SQLite, run one engine on the old file beside the new one until they finish:
+
+```typescript
+const old = createEngine({ storage: new SQLiteStorage('./app.db'), workflows })
+const engine = createEngine({ storage: new PostgresStorage({ connectionString }), workflows })
+await old.start()
+await engine.start()
+// enqueue only on `engine`; stop `old` once its runs are done
+```
+
+`await old.countRuns()` shows what is left. Re-register your [schedules](/guide/scheduling) on the new engine; they are not copied either.
 
 ## MemoryStorage
 

@@ -90,3 +90,34 @@ jobs:
           node-version: 24
       - name: Run the node:sqlite adapter tests on Node
         run: node node_modules/.bin/vitest run src/storage/__tests__/sqlite-node-builtin.test.ts
+
+  postgres:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The oldest Postgres still supported upstream, and the newest.
+        postgres:
+          - '14@sha256:8ab94f61668dc73bbab4dc13273ff2fc37e635536af62aef5306a49a9682a446'
+          - '17@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe'
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: reflow
+          POSTGRES_PASSWORD: reflow
+          POSTGRES_DB: reflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U reflow"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - run: bun install --frozen-lockfile
+      - name: Run the Postgres adapter tests
+        env:
+          REFLOW_TEST_POSTGRES_URL: postgres://reflow:reflow@localhost:5432/reflow
+        run: bun run test -- src/storage/__tests__/postgres.test.ts

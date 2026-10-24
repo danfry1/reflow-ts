@@ -6,6 +6,7 @@ export default defineConfig({
     'storage/sqlite-node': 'src/storage/sqlite-node.ts',
     'storage/sqlite-bun': 'src/storage/sqlite-bun.ts',
     'storage/sqlite-node-builtin': 'src/storage/sqlite-node-builtin.ts',
+    'storage/postgres': 'src/storage/postgres.ts',
     'test/index': 'src/test/index.ts',
     conformance: 'src/storage/conformance.ts',
     dashboard: 'src/dashboard/index.ts',
@@ -15,5 +16,5 @@ export default defineConfig({
   dts: true,
   sourcemap: true,
   clean: true,
-  deps: { neverBundle: ['better-sqlite3', 'bun:sqlite', 'node:sqlite'] },
+  deps: { neverBundle: ['better-sqlite3', 'bun:sqlite', 'node:sqlite', 'pg'] },
 })

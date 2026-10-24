@@ -1,6 +1,6 @@
 # Reflow
 
-Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery via stale-run reclamation. Pause for days with `.sleep()` or wait on a webhook with `.waitForEvent()` — the process doesn't need to stay alive. Powered by SQLite, no external services required.
+Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery via stale-run reclamation. Pause for days with `.sleep()` or wait on a webhook with `.waitForEvent()` — the process doesn't need to stay alive. Start on a SQLite file with no external services; move to PostgreSQL when workers span machines, with the same workflow code.
 
 ```typescript
 import { createWorkflow, createEngine } from 'reflow-ts'
@@ -63,13 +63,13 @@ Now the user is charged but never got their welcome email. Worse — you don't k
 
 | | Reflow | Temporal | Inngest |
 |---|---|---|---|
-| Infrastructure | None (SQLite file) | Temporal Server + DB | Cloud service |
+| Infrastructure | A SQLite file, or your Postgres | Temporal Server + DB | Cloud service |
 | Type safety | Full end-to-end | Partial | Partial |
 | Setup | `bun add reflow-ts`  | Cluster deployment | Account + SDK |
-| Best for | Single-process apps, CLIs, AI agents | Large distributed systems | Serverless |
+| Best for | Apps, CLIs, and AI agents, from one process to many machines | Very large, multi-language systems | Serverless |
 
 **Don't use Reflow when:**
-- You need distributed execution across multiple machines
+- You need workflows written in several languages, or event histories in the millions per run
 - You need sub-second pickup of work enqueued by a different process (it waits for the next poll)
 - You're already running Temporal or similar
 
@@ -114,6 +114,10 @@ const storage = new SQLiteStorage('./reflow.db')
 // Node.js — uses better-sqlite3
 import { SQLiteStorage } from 'reflow-ts/sqlite-node'
 const storage = new SQLiteStorage('./reflow.db')
+
+// PostgreSQL — for workers on many machines (npm install pg)
+import { PostgresStorage } from 'reflow-ts/postgres'
+const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL })
 ```
 
 Reflow uses [Standard Schema](https://github.com/standard-schema/standard-schema) for input validation, so you can bring any compatible library:
