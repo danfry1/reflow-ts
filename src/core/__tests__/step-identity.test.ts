@@ -46,7 +46,7 @@ describe('step identity: runId, attempt, idempotencyKey', () => {
     const seen: Array<Pick<Seen, 'attempt' | 'idempotencyKey'>> = []
     const wf = createWorkflow({ name: 'flaky', input: z.object({}) })
       .step('charge', {
-        retry: { maxAttempts: 3, initialDelayMs: 0 },
+        retry: { maxAttempts: 3, backoff: 'linear', initialDelayMs: 0 },
         handler: async ({ attempt, idempotencyKey }) => {
           seen.push({ attempt, idempotencyKey })
           if (attempt < 3) throw new Error('declined')
@@ -69,7 +69,7 @@ describe('step identity: runId, attempt, idempotencyKey', () => {
     const attempts: number[] = []
     const wf = createWorkflow({ name: 'backoff', input: z.object({}) })
       .step('charge', {
-        retry: { maxAttempts: 2, initialDelayMs: 20 },
+        retry: { maxAttempts: 2, backoff: 'linear', initialDelayMs: 20 },
         handler: async ({ attempt }) => {
           attempts.push(attempt)
           if (attempt === 1) throw new Error('declined')
