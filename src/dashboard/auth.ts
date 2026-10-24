@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto'
+import { timingSafeEqual } from 'node:crypto'
 import { ConfigError } from '../core/errors'
 
 /** Credentials for {@link basicAuth}. */
@@ -37,16 +37,14 @@ export function basicAuth(options: BasicAuthOptions): (request: Request) => true
   if (password === undefined || password === '') {
     throw new ConfigError('basicAuth: password is empty or missing; is its environment variable set?')
   }
-  const expected = digest(`${username}:${password}`)
+  const expected = Buffer.from(`${username}:${password}`, 'utf8')
   const realm = (options.realm ?? 'Reflow').replaceAll('"', '')
   const challenge = `Basic realm="${realm}", charset="UTF-8"`
 
   return (request) => {
     const header = request.headers.get('authorization') ?? ''
     const match = /^Basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(header)
-    // Hashing first gives both sides the same length, so the comparison
-    // takes the same time whatever was sent.
-    if (match?.[1] !== undefined && timingSafeEqual(digest(Buffer.from(match[1], 'base64').toString('utf8')), expected)) {
+    if (match?.[1] !== undefined && matches(Buffer.from(match[1], 'base64'), expected)) {
       return true
     }
     return new Response('Sign in to view this dashboard', {
@@ -61,6 +59,12 @@ export function basicAuth(options: BasicAuthOptions): (request: Request) => true
   }
 }
 
-function digest(value: string): Buffer {
-  return createHash('sha256').update(value, 'utf8').digest()
+/**
+ * Whether `sent` equals `expected`, in a time that depends only on the
+ * length of `expected`, so timing reveals nothing about the password.
+ */
+function matches(sent: Buffer, expected: Buffer): boolean {
+  const padded = Buffer.alloc(expected.length)
+  sent.copy(padded)
+  return timingSafeEqual(padded, expected) && sent.length === expected.length
 }

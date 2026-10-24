@@ -36,6 +36,8 @@ describe('basicAuth', () => {
   it.each([
     ['a wrong password', signedIn('admin:wrong')],
     ['a wrong username', signedIn('root:correct horse')],
+    ['the start of the password', signedIn('admin:correct')],
+    ['the password with more after it', signedIn('admin:correct horse battery')],
     ['no colon', signedIn('admincorrect horse')],
     ['a bearer token', new Request(`${ORIGIN}/`, { headers: { authorization: 'Bearer correct horse' } })],
     ['a malformed header', new Request(`${ORIGIN}/`, { headers: { authorization: 'Basic not base64!' } })],
