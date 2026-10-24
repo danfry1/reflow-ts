@@ -68,6 +68,7 @@ Implement the [`StorageAdapter`](/api/storage) interface to back Reflow with any
 - `saveStepResult`, `completeRun`, and `failRun` take a `leaseId` and must **no-op when the lease no longer matches**, so a worker that lost its lease can't clobber a run another worker has taken over.
 
 - `claimDueSchedule(workflowNames, now)` must claim a due [schedule](/guide/scheduling) **and advance its next occurrence in the same transaction**, so one occurrence cannot fire on two workers.
+- To support [per-workflow concurrency](/guide/concurrency#limiting-one-workflow), set `supportsConcurrencyLimits = true` and honour `claimNextRun`'s third argument, a map of workflow name to limit: skip a workflow whose live `running` runs already reach its limit, counted **in the same transaction as the claim**.
 
 See the [Storage API reference](/api/storage) for the full interface and each method's contract.
 

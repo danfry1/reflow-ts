@@ -268,8 +268,22 @@ export interface StorageAdapter {
    *
    * Claiming sets `startedAt` if it is still `null` (a reclaim keeps the
    * original) and clears `wakeAt` and `waitingFor`.
+   *
+   * `limits` caps how many runs of a workflow may be running at once, across
+   * every process sharing this storage. A workflow in it already at its limit
+   * is skipped: count its `running` runs whose lease is live (updated after
+   * `staleBefore`, or all of them when `staleBefore` is not given), in the
+   * same transaction as the claim, so two workers cannot both take the last
+   * place. Only adapters that set {@link StorageAdapter.supportsConcurrencyLimits}
+   * are passed it.
    */
-  claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
+  claimNextRun(workflowNames: readonly string[], staleBefore?: number, limits?: ReadonlyMap<string, number>): Promise<ClaimedRun | null>
+  /**
+   * Whether `claimNextRun` honours its `limits` argument. An engine whose
+   * workflows set `concurrency` refuses storage without it, rather than
+   * running more at once than the limit allows.
+   */
+  readonly supportsConcurrencyLimits?: boolean
   /** Renew the lease on a running run. Returns false if the lease was lost. */
   heartbeatRun(runId: string, leaseId: string): Promise<boolean>
   /**

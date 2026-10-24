@@ -214,6 +214,48 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
   {
+    name: 'claimNextRun skips a workflow already running as many runs as its limit',
+    appliesTo: (storage) => storage.supportsConcurrencyLimits === true,
+    async run(storage) {
+      if (storage.supportsConcurrencyLimits !== true) return
+      const now = Date.now()
+      const limits = new Map([['test', 2]])
+      await storage.createRun(makeRun({ id: 'a', createdAt: now - 3_000, updatedAt: now - 3_000 }))
+      await storage.createRun(makeRun({ id: 'b', createdAt: now - 2_000, updatedAt: now - 2_000 }))
+      await storage.createRun(makeRun({ id: 'c', createdAt: now - 1_000, updatedAt: now - 1_000 }))
+      await storage.createRun(makeRun({ id: 'other', workflow: 'other', createdAt: now, updatedAt: now }))
+
+      assertEqual((await storage.claimNextRun(['test'], now - 30_000, limits))?.id, 'a', 'first place')
+      const second = await storage.claimNextRun(['test'], now - 30_000, limits)
+      assertEqual(second?.id, 'b', 'second place')
+      assertEqual(await storage.claimNextRun(['test'], now - 30_000, limits), null, 'no third run while two are running')
+      assertEqual(
+        (await storage.claimNextRun(['test', 'other'], now - 30_000, limits))?.id,
+        'other',
+        'a workflow with no limit is still claimed',
+      )
+
+      assert(second, 'second claim')
+      await storage.completeRun(second.id, second.leaseId, null)
+      assertEqual((await storage.claimNextRun(['test'], now - 30_000, limits))?.id, 'c', 'a finished run frees its place')
+    },
+  },
+  {
+    name: 'claimNextRun does not count a run whose lease has gone stale toward its limit',
+    appliesTo: (storage) => storage.supportsConcurrencyLimits === true,
+    async run(storage) {
+      if (storage.supportsConcurrencyLimits !== true) return
+      const now = Date.now()
+      // Its process died: the lease was last renewed a minute ago.
+      await storage.createRun(makeRun({ id: 'stale', status: 'running', createdAt: now - 120_000, updatedAt: now - 60_000 }))
+      await storage.createRun(makeRun({ id: 'next', createdAt: now - 1_000, updatedAt: now - 1_000 }))
+
+      const claimed = await storage.claimNextRun(['test'], now - 30_000, new Map([['test', 1]]))
+      assertEqual(claimed?.id, 'stale', 'the stale run is reclaimed, in its own place')
+      assertEqual(await storage.claimNextRun(['test'], now - 30_000, new Map([['test', 1]])), null, 'and now holds the only place')
+    },
+  },
+  {
     name: 'claimNextRun claims pending runs in the order they became pending',
     async run(storage) {
       const now = Date.now()

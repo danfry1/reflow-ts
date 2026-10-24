@@ -173,6 +173,12 @@ export interface Workflow<
    * run is shown by its idempotency key, or else its id.
    */
   readonly label?: (input: TInput) => string
+  /**
+   * The most runs of this workflow that may be running at once, across every
+   * process sharing the storage. Runs past it wait their turn as `pending`.
+   * Unset means no limit beyond the engine's own `concurrency`.
+   */
+  readonly concurrency?: number
 
   step<TStepName extends string, TOutput extends PersistedValue | void>(
     name: TStepName,
@@ -298,8 +304,20 @@ export function createWorkflow<TName extends string, TInput extends PersistedVal
   input: StandardSchemaV1<TInput>
   /** A name for each run, from its input, shown wherever runs are listed. See {@link Workflow.label}. */
   label?: (input: TInput) => string
+  /** The most runs of this workflow running at once, across all processes. See {@link Workflow.concurrency}. */
+  concurrency?: number
 }): Workflow<TName, TInput, undefined, {}> {
-  return buildWorkflow(config.name, config.input, [], undefined, config.label)
+  const { concurrency } = config
+  if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
+    throw new ConfigError(`Workflow "${config.name}" concurrency must be a positive integer`)
+  }
+  return buildWorkflow(config.name, config.input, [], undefined, { label: config.label, concurrency })
+}
+
+/** What a workflow carries beside its steps, unchanged as steps are added. */
+interface WorkflowSettings<TInput extends PersistedValue> {
+  readonly label?: (input: TInput) => string
+  readonly concurrency?: number
 }
 
 function getAllStepNames(units: readonly ExecutionUnit[]): Set<string> {
@@ -327,15 +345,16 @@ function buildWorkflow<
   name: TName,
   inputSchema: StandardSchemaV1<TInput>,
   executionUnits: ExecutionUnit[],
-  failureHandler?: (ctx: FailureContext<TInput>) => Promise<void>,
-  label?: (input: TInput) => string,
+  failureHandler: ((ctx: FailureContext<TInput>) => Promise<void>) | undefined,
+  settings: WorkflowSettings<TInput>,
 ): Workflow<TName, TInput, TPrev, TSteps> {
   return {
     name,
     inputSchema,
     executionUnits,
     failureHandler,
-    label,
+    label: settings.label,
+    concurrency: settings.concurrency,
 
     step<TStepName extends string, TOutput extends PersistedValue | void>(
       stepName: TStepName,
@@ -375,7 +394,7 @@ function buildWorkflow<
         inputSchema,
         [...executionUnits, { kind: 'step', definition: newStep }],
         failureHandler,
-        label,
+        settings,
       )
     },
 
@@ -434,7 +453,7 @@ function buildWorkflow<
         inputSchema,
         [...executionUnits, { kind: 'parallel', branches: branchDefs }],
         failureHandler,
-        label,
+        settings,
       )
     },
 
@@ -450,7 +469,7 @@ function buildWorkflow<
         inputSchema,
         [...executionUnits, { kind: 'sleep', name: sleepName, durationMs }],
         failureHandler,
-        label,
+        settings,
       )
     },
 
@@ -478,14 +497,14 @@ function buildWorkflow<
           },
         ],
         failureHandler,
-        label,
+        settings,
       )
     },
 
     onFailure(
       handler: (ctx: FailureContext<TInput>) => Promise<void>,
     ): Workflow<TName, TInput, TPrev, TSteps> {
-      return buildWorkflow(name, inputSchema, executionUnits, handler, label)
+      return buildWorkflow(name, inputSchema, executionUnits, handler, settings)
     },
 
     parseInput(input: unknown): TInput {

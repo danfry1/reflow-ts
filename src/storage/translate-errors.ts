@@ -24,8 +24,9 @@ export function translateStorageErrors(storage: StorageAdapter): StorageAdapter 
   return {
     initialize: () => guard('initialize', () => storage.initialize()),
     createRun: (run) => guard('createRun', () => storage.createRun(run)),
-    claimNextRun: (names, staleBefore) =>
-      guard('claimNextRun', () => storage.claimNextRun(names, staleBefore)),
+    claimNextRun: (names, staleBefore, limits) =>
+      guard('claimNextRun', () => storage.claimNextRun(names, staleBefore, limits)),
+    supportsConcurrencyLimits: storage.supportsConcurrencyLimits,
     heartbeatRun: (runId, leaseId) =>
       guard('heartbeatRun', () => storage.heartbeatRun(runId, leaseId)),
     sleepRun: (runId, leaseId, wakeAt) =>

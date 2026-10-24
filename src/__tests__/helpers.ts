@@ -41,7 +41,8 @@ export function delegatingAdapter(
   const base: StorageAdapter = {
     initialize: () => delegate.initialize(),
     createRun: (run) => delegate.createRun(run),
-    claimNextRun: (names, staleBefore) => delegate.claimNextRun(names, staleBefore),
+    claimNextRun: (names, staleBefore, limits) => delegate.claimNextRun(names, staleBefore, limits),
+    supportsConcurrencyLimits: delegate.supportsConcurrencyLimits,
     heartbeatRun: (runId, leaseId) => delegate.heartbeatRun(runId, leaseId),
     sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
     waitRun: (runId, leaseId, name, wakeAt) => delegate.waitRun(runId, leaseId, name, wakeAt),
