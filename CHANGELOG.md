@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.1 — 2026-10-24
+
+The dashboard can be protected with a password in one line, and sent to an app's own login page. The guide now covers each way to run it, including opening a production database over SSH.
 
 ### Added
 
