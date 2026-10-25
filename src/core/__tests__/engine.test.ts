@@ -878,7 +878,8 @@ describe('Engine', () => {
         expect(attempt.finishedAt).toBeGreaterThanOrEqual(attempt.startedAt)
         const next = history[index + 1]
         if (next) {
-          expect(next.startedAt - attempt.finishedAt).toBeGreaterThanOrEqual(5 * (index + 1))
+          // Timers can fire up to a millisecond early by Date.now(), which truncates.
+          expect(next.startedAt - attempt.finishedAt).toBeGreaterThanOrEqual(5 * (index + 1) - 1)
         }
       }
     })
