@@ -1,5 +1,5 @@
 import type { EngineEvent } from '../events'
-import type { ClaimedRun, PersistedValue, StepAttempt, StepResult, StepStatus, StorageAdapter } from '../types'
+import type { ClaimedRun, ConsumeEventResult, PersistedValue, StepAttempt, StepResult, StepStatus, StorageAdapter } from '../types'
 import type { AnyWorkflow, ExecutionUnit } from '../workflow'
 
 /**
@@ -86,6 +86,13 @@ export interface ExecutionContext {
 
   /** As {@link ExecutionContext.saveStep}, but returns `false` on lease loss instead of throwing. */
   trySaveStep(record: StepRecord): Promise<boolean>
+
+  /**
+   * Consume the buffered event named `name` and save it as that step's
+   * completed result, together and under the run's lease, so an event is
+   * never consumed by a worker that can no longer record it.
+   */
+  consumeEvent(name: string): Promise<ConsumeEventResult>
 
   /** A frozen deep clone of {@link ExecutionContext.steps}, safe to hand to a handler. */
   snapshotSteps(): Readonly<Record<string, PersistedValue>>

@@ -24,6 +24,7 @@ import { nextOccurrence } from '../core/schedule-timing'
 import {
   RUN_STATUSES,
   type ClaimedRun,
+  type ConsumeEventResult,
   type CountRunsFilter,
   type CreateRunResult,
   type DeleteRunsFilter,
@@ -695,28 +696,69 @@ export class PostgresStorage implements StorageAdapter {
           return false
         }
       }
-      await this.exec(
-        db,
-        `INSERT INTO ${this.t('workflow_steps')} (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at, history)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-         ON CONFLICT (id) DO UPDATE SET
-           run_id = excluded.run_id, name = excluded.name, status = excluded.status, output = excluded.output,
-           error = excluded.error, attempts = excluded.attempts, created_at = excluded.created_at,
-           updated_at = excluded.updated_at, started_at = excluded.started_at, history = excluded.history`,
-        result.id,
-        result.runId,
-        result.name,
-        result.status,
-        serializePersistedValue(result.output, 'Step output'),
-        result.error,
-        result.attempts,
-        result.createdAt,
-        result.updatedAt,
-        result.startedAt,
-        JSON.stringify(result.history),
-      )
+      await this.writeStep(db, result)
       return true
     })
+  }
+
+  async consumeEvent(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult> {
+    return this.transaction(async (db): Promise<ConsumeEventResult> => {
+      // The same shared lock as saveStepResult: a claim taking the run over
+      // waits until the event is consumed, or finds it still buffered.
+      const held = await this.one<{ id: string }>(
+        db,
+        `SELECT id FROM ${this.t('workflow_runs')} WHERE id = $1 AND status = 'running' AND lease_id = $2 FOR SHARE`,
+        step.runId,
+        leaseId,
+      )
+      if (!held) {
+        return { status: 'lease-lost' }
+      }
+      const event = await this.one<{ payload: string | null }>(
+        db,
+        `DELETE FROM ${this.t('workflow_events')}
+         WHERE seq = (
+           SELECT seq FROM ${this.t('workflow_events')}
+           WHERE run_id = $1 AND event_name = $2
+           ORDER BY created_at, seq
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED
+         )
+         RETURNING payload`,
+        step.runId,
+        step.name,
+      )
+      if (!event) {
+        return { status: 'none' }
+      }
+      const payload = event.payload === null ? null : deserializePersistedValue(event.payload)
+      await this.writeStep(db, { ...step, output: payload })
+      return { status: 'consumed', payload }
+    })
+  }
+
+  /** Insert or replace a step's row, on `db`. */
+  private async writeStep(db: Queryable, result: StepResult): Promise<void> {
+    await this.exec(
+      db,
+      `INSERT INTO ${this.t('workflow_steps')} (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at, history)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       ON CONFLICT (id) DO UPDATE SET
+         run_id = excluded.run_id, name = excluded.name, status = excluded.status, output = excluded.output,
+         error = excluded.error, attempts = excluded.attempts, created_at = excluded.created_at,
+         updated_at = excluded.updated_at, started_at = excluded.started_at, history = excluded.history`,
+      result.id,
+      result.runId,
+      result.name,
+      result.status,
+      serializePersistedValue(result.output, 'Step output'),
+      result.error,
+      result.attempts,
+      result.createdAt,
+      result.updatedAt,
+      result.startedAt,
+      JSON.stringify(result.history),
+    )
   }
 
   async completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean> {

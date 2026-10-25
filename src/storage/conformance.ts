@@ -784,6 +784,45 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
   {
+    name: 'consumeEvent takes the oldest event and saves it as the step, under the held lease',
+    appliesTo: (storage) => storage.consumeEvent !== undefined,
+    async run(storage) {
+      if (!storage.consumeEvent) return
+      await storage.createRun(makeRun())
+      const claimed = await claim(storage)
+      await storage.deliverEvent('run_1', 'e', { n: 1 })
+      await storage.deliverEvent('run_1', 'e', { n: 2 })
+      const { output: _unused, ...step } = makeStep({ name: 'e', attempts: 0 })
+
+      assertEqual(
+        await storage.consumeEvent(step, claimed.leaseId),
+        { status: 'consumed', payload: { n: 1 } },
+        'the oldest event is consumed',
+      )
+      const [saved] = await storage.getStepResults('run_1')
+      assertEqual([saved?.name, saved?.status, saved?.output], ['e', 'completed', { n: 1 }], 'saved with the payload as its output')
+      assertEqual((await storage.takeEvent('run_1', 'e'))?.payload, { n: 2 }, 'only that event is removed')
+      assertEqual(await storage.consumeEvent(step, claimed.leaseId), { status: 'none' }, 'nothing left to consume')
+    },
+  },
+  {
+    name: 'consumeEvent changes nothing once the lease is lost',
+    appliesTo: (storage) => storage.consumeEvent !== undefined,
+    async run(storage) {
+      if (!storage.consumeEvent) return
+      // The worker that lost the run must neither take its event nor record
+      // the step, or the event is gone with no step to show for it.
+      await storage.createRun(makeRun())
+      await claim(storage)
+      await storage.deliverEvent('run_1', 'e', { n: 1 })
+      const { output: _unused, ...step } = makeStep({ name: 'e', attempts: 0 })
+
+      assertEqual(await storage.consumeEvent(step, 'not-the-lease'), { status: 'lease-lost' }, 'a foreign lease is refused')
+      assertEqual(await storage.getStepResults('run_1'), [], 'no step saved')
+      assertEqual((await storage.takeEvent('run_1', 'e'))?.payload, { n: 1 }, 'the event is still buffered')
+    },
+  },
+  {
     name: 'waitRun suspends the run until an event wakes it',
     async run(storage) {
       await storage.createRun(makeRun())

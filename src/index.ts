@@ -62,6 +62,7 @@ export type {
 export { RUN_STATUSES, STEP_STATUSES } from './core/types'
 export type {
   ClaimedRun,
+  ConsumeEventResult,
   CountRunsFilter,
   CreateRunResult,
   DeleteRunsFilter,

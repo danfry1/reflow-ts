@@ -32,6 +32,7 @@ import type { ExecutionContext, RunSignals, StepRecord, UnitOutcome } from './ex
 import { waitForEventExecutor } from './execution/wait-for-event'
 import type {
   ClaimedRun,
+  ConsumeEventResult,
   CountRunsFilter,
   ListRunsFilter,
   RunCounts,
@@ -708,16 +709,15 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     const steps: Record<string, PersistedValue> = {}
     const observerSignal = activeRun.signals.observer.signal
 
-    const trySaveStep = (record: StepRecord): Promise<boolean> => {
+    const stepRowOf = (record: Omit<StepRecord, 'output'>): Omit<StepResult, 'output'> => {
       const existing = replay.get(record.name)
       const now = Date.now()
 
-      return storage.saveStepResult({
+      return {
         id: existing?.id ?? randomUUID(),
         runId: run.id,
         name: record.name,
         status: record.status,
-        output: record.output,
         error: record.error ?? null,
         attempts: record.attempts ?? 0,
         createdAt: existing?.createdAt ?? now,
@@ -726,7 +726,28 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         // it began; an executor re-running a step passes a fresh one.
         startedAt: record.startedAt ?? existing?.startedAt ?? now,
         history: record.history ? [...record.history] : existing?.history ?? [],
-      }, run.leaseId)
+      }
+    }
+
+    const trySaveStep = (record: StepRecord): Promise<boolean> =>
+      storage.saveStepResult({ ...stepRowOf(record), output: record.output }, run.leaseId)
+
+    const consumeEvent = async (name: string): Promise<ConsumeEventResult> => {
+      const record: Omit<StepRecord, 'output'> = { name, status: 'completed', attempts: 0 }
+      if (storage.consumeEvent) {
+        return await storage.consumeEvent(stepRowOf(record), run.leaseId)
+      }
+      // An adapter without consumeEvent: take, then save, putting the event
+      // back if the lease was lost in between.
+      const delivered = await storage.takeEvent(run.id, name)
+      if (!delivered) {
+        return { status: 'none' }
+      }
+      if (await trySaveStep({ ...record, output: delivered.payload })) {
+        return { status: 'consumed', payload: delivered.payload }
+      }
+      await storage.deliverEvent(run.id, name, delivered.payload)
+      return { status: 'lease-lost' }
     }
 
     return {
@@ -739,6 +760,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       steps,
       emit: (event) => emit(event, observerSignal),
       trySaveStep,
+      consumeEvent,
       async saveStep(record) {
         const saved = await trySaveStep(record)
         if (!saved) {

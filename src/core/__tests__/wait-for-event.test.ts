@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { createWorkflow, createEngine, ConfigError, ValidationError } from '../../index'
 import { DuplicateStepError } from '../errors'
 import { MemoryStorage } from '../../storage/memory'
+import { delegatingAdapter } from '../../__tests__/helpers'
 
 describe('waitForEvent', () => {
   beforeEach(() => {
@@ -268,18 +269,13 @@ describe('waitForEvent', () => {
     expect(await engine.sendEvent(run.id, 'x', {})).toBe(false)
   })
 
-  it('restores the consumed event if the lease is lost before the step is saved', async () => {
-    // Simulate a lost lease: the first attempt to persist the completed wait
-    // step fails (as if another engine reclaimed the run). The event must be put
-    // back so it is not lost.
-    class FlakyStorage extends MemoryStorage {
-      failNextWaitSave = true
-      override async saveStepResult(result: Parameters<MemoryStorage['saveStepResult']>[0], leaseId?: string) {
-        if (this.failNextWaitSave && result.name === 'e' && result.status === 'completed') {
-          this.failNextWaitSave = false
-          return false
-        }
-        return super.saveStepResult(result, leaseId)
+  it('leaves the event buffered when the lease is lost as it is consumed', async () => {
+    // Another engine took the run over: consuming under the old lease must
+    // change nothing, so the event is still there for the new holder.
+    class TakenOverStorage extends MemoryStorage {
+      takenOver = false
+      override async consumeEvent(step: Parameters<MemoryStorage['consumeEvent']>[0], leaseId: string) {
+        return super.consumeEvent(step, this.takenOver ? 'a-lease-since-taken-over' : leaseId)
       }
     }
 
@@ -287,19 +283,48 @@ describe('waitForEvent', () => {
       .waitForEvent('e')
       .step('done', async () => ({ ok: true }))
 
-    const storage = new FlakyStorage()
+    const storage = new TakenOverStorage()
     const engine = createEngine({ storage, workflows: [wf] })
     const run = await engine.enqueue('lease-loss', {})
 
     await engine.tick() // → waiting
     await engine.sendEvent(run.id, 'e', { value: 7 })
-    await engine.tick() // consumes the event, fails to save, restores the event
+    storage.takenOver = true
+    await engine.tick() // finds the lease gone, consumes nothing
 
-    // The wait did not complete...
     const info = await engine.getRunStatus(run.id)
-    expect(info?.steps.find((s) => s.name === 'e')?.status).not.toBe('completed')
-    // ...and the event is back in storage for the reclaiming engine to consume.
+    expect(info?.steps.find((s) => s.name === 'e')?.status).toBe('waiting')
     expect(await storage.takeEvent(run.id, 'e')).toStrictEqual({ payload: { value: 7 } })
+  })
+
+  it('puts the event back on storage without consumeEvent if the lease is lost before the step is saved', async () => {
+    const memory = new MemoryStorage()
+    let failNextWaitSave = true
+    const storage = delegatingAdapter(memory, {
+      consumeEvent: undefined,
+      async saveStepResult(result, leaseId) {
+        if (failNextWaitSave && result.name === 'e' && result.status === 'completed') {
+          failNextWaitSave = false
+          return false
+        }
+        return memory.saveStepResult(result, leaseId)
+      },
+    })
+
+    const wf = createWorkflow({ name: 'lease-loss', input: z.object({}) })
+      .waitForEvent('e')
+      .step('done', async () => ({ ok: true }))
+
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('lease-loss', {})
+
+    await engine.tick() // → waiting
+    await engine.sendEvent(run.id, 'e', { value: 7 })
+    await engine.tick() // takes the event, fails to save, puts it back
+
+    const info = await engine.getRunStatus(run.id)
+    expect(info?.steps.find((s) => s.name === 'e')?.status).toBe('waiting')
+    expect(await memory.takeEvent(run.id, 'e')).toStrictEqual({ payload: { value: 7 } })
   })
 
   it('rejects a waitForEvent whose name collides with another step', () => {

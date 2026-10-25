@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type {
+  ConsumeEventResult,
   ClaimedRun,
   CountRunsFilter,
   CreateRunResult,
@@ -638,24 +639,53 @@ export class SqliteStorageBase implements StorageAdapter {
         }
       }
 
-      this.run(
-        `INSERT OR REPLACE INTO workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at, history)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        result.id,
-        result.runId,
-        result.name,
-        result.status,
-        serializePersistedValue(result.output, 'Step output'),
-        result.error,
-        result.attempts,
-        result.createdAt,
-        result.updatedAt,
-        result.startedAt,
-        JSON.stringify(result.history),
-      )
-
+      this.writeStep(result)
       return true
     })
+  }
+
+  async consumeEvent(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult> {
+    return this.transaction((): ConsumeEventResult => {
+      const held = this.get<{ _: number }>(
+        `SELECT 1 AS _ FROM workflow_runs WHERE id = ? AND status = 'running' AND lease_id = ?`,
+        step.runId,
+        leaseId,
+      )
+      if (!held) {
+        return { status: 'lease-lost' }
+      }
+      const event = this.get<{ id: string; payload: string | null }>(
+        `SELECT id, payload FROM workflow_events WHERE run_id = ? AND event_name = ? ORDER BY created_at ASC, rowid ASC LIMIT 1`,
+        step.runId,
+        step.name,
+      )
+      if (!event) {
+        return { status: 'none' }
+      }
+      this.run(`DELETE FROM workflow_events WHERE id = ?`, event.id)
+      const payload = event.payload === null ? null : deserializePersistedValue(event.payload)
+      this.writeStep({ ...step, output: payload })
+      return { status: 'consumed', payload }
+    })
+  }
+
+  /** Insert or replace a step's row. Call inside a transaction. */
+  private writeStep(result: StepResult): void {
+    this.run(
+      `INSERT OR REPLACE INTO workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at, history)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      result.id,
+      result.runId,
+      result.name,
+      result.status,
+      serializePersistedValue(result.output, 'Step output'),
+      result.error,
+      result.attempts,
+      result.createdAt,
+      result.updatedAt,
+      result.startedAt,
+      JSON.stringify(result.history),
+    )
   }
 
   async completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean> {
