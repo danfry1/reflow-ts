@@ -68,11 +68,12 @@ export type StepCondition<
  * Reuse a step's result from an earlier run instead of running it again.
  *
  * A duration (`'24h'`, or milliseconds) caches the result for that long,
- * keyed on the step's input and the previous step's output. The object form
+ * keyed on the step's input and the output of every step before it. The object form
  * sets the key and a version:
  *
  * - `key` — what makes two runs the same for this step, from `{ input, prev,
- *   steps }`. Defaults to `{ input, prev }`.
+ *   steps }`. Defaults to all three. Give it when the step depends on less,
+ *   or on something else, such as the time or an environment variable.
  * - `version` — change it when the step's code changes, so results from the
  *   old code are not reused.
  *
@@ -89,7 +90,7 @@ export type StepCache<
   | {
       /** How long a result is reused: milliseconds, or a duration such as `'24h'`. */
       ttl: number | string
-      /** What makes two runs the same for this step. Defaults to `{ input, prev }`. */
+      /** What makes two runs the same for this step. Defaults to `{ input, prev, steps }`. */
       key?: (ctx: StepConditionContext<TInput, TPrev, TStepsSoFar>) => PersistedValue
       /** Change it when the step's code changes, so results from the old code are not reused. */
       version?: string | number
@@ -189,7 +190,9 @@ export type ParallelBranch<
   TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
 > =
   | ((ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>)
-  | StepConfig<TInput, TPrev, TOutput, TStepsSoFar>
+  // Caching replays one step's result on its own; a branch finishes with its
+  // siblings, so it is refused here and, for JavaScript callers, at runtime.
+  | (Omit<StepConfig<TInput, TPrev, TOutput, TStepsSoFar>, 'cache'> & { cache?: never })
 
 /** Extract the output type from a ParallelBranch. */
 export type InferBranchOutput<B> =

@@ -363,8 +363,12 @@ export interface StorageAdapter {
   getCachedStep?(key: string): Promise<CachedStep | null>
   /** Optional. Store `entry`, replacing any entry under the same key. */
   putCachedStep?(entry: CachedStep): Promise<void>
-  /** Optional. Delete entries that expired at or before `now`, returning how many. Backs `engine.prune()`. */
-  deleteExpiredCachedSteps?(now: number): Promise<number>
+  /**
+   * Optional. Delete up to `limit` entries that expired at or before `now`,
+   * returning how many. Backs `engine.prune()`, which calls it until a batch
+   * comes back short, so no one call holds a write lock for long.
+   */
+  deleteExpiredCachedSteps?(now: number, limit: number): Promise<number>
   /** Fetch a run by ID, or null if not found. */
   getRun(runId: string): Promise<WorkflowRun | null>
   /** List runs in reverse-chronological order (most recent first), optionally filtered. */

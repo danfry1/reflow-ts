@@ -372,8 +372,9 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
 
 /**
  * The key a step's result is cached under: a hash of the workflow, the step,
- * its cache version, and its key value — `{ input, prev }` unless the step
- * names its own. Hashed so any key value fits a fixed-size column.
+ * its cache version, and its key value — `{ input, prev, steps }` unless the
+ * step names its own, everything the handler is given that can differ between
+ * runs. Hashed so any key value fits a fixed-size column.
  */
 function cacheKeyOf(
   workflow: string,
@@ -383,9 +384,28 @@ function cacheKeyOf(
   prev: PersistedValue,
   steps: Readonly<Record<string, PersistedValue>>,
 ): string {
-  const value = cache.key ? cache.key({ input, prev, steps }) : { input, prev }
-  const identity = canonicalizePersistedValue([workflow, stepName, cache.version ?? null, value], 'Step cache key')
+  const value = withoutUndefinedFields(cache.key ? cache.key({ input, prev, steps }) : { input, prev, steps })
+  // Encoded on its own first, so an error points into the key, not this tuple.
+  const encodedValue = canonicalizePersistedValue(value, `Step "${stepName}" cache key`)
+  const identity = JSON.stringify([workflow, stepName, cache.version ?? null, encodedValue])
   return createHash('sha256').update(identity).digest('hex')
+}
+
+/**
+ * `value` with object fields set to `undefined` left out, so `{ page: undefined }`
+ * keys the same as `{}` — an optional field passed as undefined is not a
+ * different run.
+ */
+function withoutUndefinedFields(value: PersistedValue): PersistedValue {
+  if (Array.isArray(value)) return value.map(withoutUndefinedFields)
+  // Only plain objects are rebuilt: anything else is left for the encoder to
+  // refuse, rather than flattened into a plain object that would key wrongly.
+  if (value === null || typeof value !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return value
+  const fields: Record<string, PersistedValue> = {}
+  for (const [field, fieldValue] of Object.entries(value)) {
+    if (fieldValue !== undefined) fields[field] = withoutUndefinedFields(fieldValue)
+  }
+  return fields
 }
 
 /**

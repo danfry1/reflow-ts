@@ -89,6 +89,41 @@ describe('step caching', () => {
     expect(calls).toStrictEqual([1, 2])
   })
 
+  it('keys on earlier steps’ outputs too, not only the previous one', async () => {
+    const storage = new MemoryStorage()
+    let n = 0
+    const wf = createWorkflow({ name: 'deep', input: z.object({}) })
+      .step('a', async () => ({ n: ++n }))
+      .step('b', async () => ({ same: true }))
+      .step('c', { cache: '1h', handler: async ({ steps }) => ({ fromA: steps.a.n }) })
+
+    await runOnce(storage, wf, {})
+    const second = await runOnce(storage, wf, {})
+
+    expect(second.run?.output).toStrictEqual({ fromA: 2 })
+  })
+
+  it('keys a field passed as undefined the same as one left out', async () => {
+    const storage = new MemoryStorage()
+    const calls: string[] = []
+    const wf = counted('1h', calls)
+
+    await runOnce(storage, wf, { userId: 'u1' })
+    await runOnce(storage, wf, { userId: 'u1', page: undefined })
+
+    expect(calls).toStrictEqual(['u1'])
+  })
+
+  it('fails the run with an error naming the step when its key is not plain data', async () => {
+    const storage = new MemoryStorage()
+    const wf = createWorkflow({ name: 'bad-key', input: z.object({}) })
+      .step('s', { cache: { ttl: '1h', key: () => ({ score: Number.NaN }) }, handler: async () => ({ ok: true }) })
+
+    const { run } = await runOnce(storage, wf, {})
+
+    expect([run?.status, run?.error?.message]).toStrictEqual(['failed', expect.stringContaining('Step "s" cache key')])
+  })
+
   it('keys on what `key` returns when given', async () => {
     const storage = new MemoryStorage()
     const calls: string[] = []
@@ -211,7 +246,7 @@ describe('step caching', () => {
     await createEngine({ storage, workflows: [] }).prune({ olderThan: '30d' })
     await runOnce(storage, counted('1h', calls), { userId: 'long' })
 
-    expect(await storage.deleteExpiredCachedSteps(start + 120_000)).toBe(0)
+    expect(await storage.deleteExpiredCachedSteps(start + 120_000, 10)).toBe(0)
     expect(calls).toStrictEqual(['short', 'long'])
   })
 
@@ -229,6 +264,7 @@ describe('step caching', () => {
   it('refuses caching on a parallel branch', () => {
     expect(() =>
       createWorkflow({ name: 'fan', input: z.object({}) })
+        // @ts-expect-error -- caching is for sequential steps
         .parallel({ a: { cache: '1h', handler: async () => ({ ok: true }) } }),
     ).toThrow(new ConfigError('Step caching is not supported on parallel branch "a" in workflow "fan"'))
   })

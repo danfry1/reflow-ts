@@ -254,7 +254,7 @@ A step can reuse the result an earlier run computed, rather than running again â
 
 ```typescript
 .step('summary', {
-  cache: '24h', // reused when the input and the previous step's output match
+  cache: '24h', // reused when the input and earlier steps' outputs match
   handler: async ({ prev }) => ({ text: await llm.summarize(prev.html) }),
 })
 ```
@@ -914,7 +914,7 @@ Adds a step to the workflow. Accepts either a handler function or a config objec
 |---|---|---|
 | `handler` | `(ctx) => Promise<T>` | Step handler. Receives the step context above |
 | `when` | `({ input, prev, steps }) => boolean` | Optional. Runs the step only when it returns `true`; when skipped, `prev` passes through unchanged. Sequential steps only |
-| `cache` | `number \| string \| { ttl, key?, version? }` | Optional. Reuse the step's result from an earlier run for `ttl`, keyed on `{ input, prev }` or `key({ input, prev, steps })`; bump `version` when the step's code changes. Sequential steps only |
+| `cache` | `number \| string \| { ttl, key?, version? }` | Optional. Reuse the step's result from an earlier run for `ttl`, keyed on `{ input, prev, steps }` or what `key({ input, prev, steps })` returns; bump `version` when the step's code changes. Sequential steps only |
 | `retry` | `RetryConfig` | Optional retry configuration (see below) |
 | `timeoutMs` | `number` | Optional timeout per attempt in milliseconds |
 

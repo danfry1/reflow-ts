@@ -849,7 +849,8 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
       await storage.putCachedStep(entry('edge', now))
       await storage.putCachedStep(entry('live', now + 1))
 
-      assertEqual(await storage.deleteExpiredCachedSteps(now), 2, 'expired at or before now')
+      assertEqual(await storage.deleteExpiredCachedSteps(now, 1), 1, 'no more than the limit')
+      assertEqual(await storage.deleteExpiredCachedSteps(now, 10), 1, 'the rest expired at or before now')
       assertEqual(await storage.getCachedStep('edge'), null, 'expiring exactly now counts as expired')
       assertEqual((await storage.getCachedStep('live'))?.key, 'live', 'a live entry is kept')
     },

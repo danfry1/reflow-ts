@@ -233,9 +233,10 @@ export class MemoryStorage implements StorageAdapter {
     this.cache.set(entry.key, { ...entry, output: clonePersistedValue(entry.output, 'Cached step output') })
   }
 
-  async deleteExpiredCachedSteps(now: number): Promise<number> {
+  async deleteExpiredCachedSteps(now: number, limit: number): Promise<number> {
     let deleted = 0
     for (const [key, entry] of this.cache) {
+      if (deleted >= limit) break
       if (entry.expiresAt <= now) {
         this.cache.delete(key)
         deleted++

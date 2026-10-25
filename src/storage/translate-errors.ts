@@ -45,7 +45,7 @@ export function translateStorageErrors(storage: StorageAdapter): StorageAdapter 
     getCachedStep: getCachedStep && ((key) => guard('getCachedStep', () => getCachedStep(key))),
     putCachedStep: putCachedStep && ((entry) => guard('putCachedStep', () => putCachedStep(entry))),
     deleteExpiredCachedSteps: deleteExpiredCachedSteps &&
-      ((now) => guard('deleteExpiredCachedSteps', () => deleteExpiredCachedSteps(now))),
+      ((now, limit) => guard('deleteExpiredCachedSteps', () => deleteExpiredCachedSteps(now, limit))),
     getRun: (runId) => guard('getRun', () => storage.getRun(runId)),
     listRuns: (filter) => guard('listRuns', () => storage.listRuns(filter)),
     requeueRun: (runId) => guard('requeueRun', () => storage.requeueRun(runId)),

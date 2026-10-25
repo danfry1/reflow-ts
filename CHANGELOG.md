@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-**Upgrading:** nothing to change. SQLite databases move to schema version 5 and Postgres schemas to version 2 on `initialize()`, each adding one table for cached steps. Open a database from before with `npx reflow-ts dashboard` and it asks for `--migrate`.
+**Upgrading:** nothing to change. SQLite databases move to schema version 5 and Postgres schemas to version 2 on `initialize()`, each adding one table for cached steps. Open a database from before with `npx reflow-ts dashboard` and it asks for `--migrate`. On Postgres, a role allowed only to read and write rows cannot run the migration: run `initialize()` once as the schema's owner first. During a rolling deploy, workers still on 0.9 refuse the migrated database once they restart, so finish the rollout rather than rolling back.
 
 ### Added
 
-- **Cache a step's result across runs.** `.step(name, { cache: '24h', handler })` reuses the result an earlier run computed for the same input and previous step's output, instead of running the handler again — for a paid API or an LLM call that separate runs would repeat. `cache: { ttl, key, version }` chooses what counts as the same (`key: ({ input }) => input.userId`) and discards results from older code when `version` changes. Only steps that complete are cached; a reused step fires `stepComplete` with `cached: true`. `engine.prune()` deletes expired results. Storage keeps them in a table of their own through three new optional `StorageAdapter` methods, which the built-in adapters implement and the conformance suite tests. (#21)
+- **Cache a step's result across runs.** `.step(name, { cache: '24h', handler })` reuses the result an earlier run computed for the same input and earlier steps' outputs, instead of running the handler again — for a paid API or an LLM call that separate runs would repeat. `cache: { ttl, key, version }` chooses what counts as the same (`key: ({ input }) => input.userId`) and discards results from older code when `version` changes. Only steps that complete are cached; a reused step fires `stepComplete` with `cached: true`. `engine.prune()` deletes expired results. Storage keeps them in a table of their own through three new optional `StorageAdapter` methods, which the built-in adapters implement and the conformance suite tests. (#21)
 
 ### Fixed
 

@@ -699,8 +699,12 @@ export class SqliteStorageBase implements StorageAdapter {
     )
   }
 
-  async deleteExpiredCachedSteps(now: number): Promise<number> {
-    return this.run(`DELETE FROM workflow_step_cache WHERE expires_at <= ?`, now)
+  async deleteExpiredCachedSteps(now: number, limit: number): Promise<number> {
+    return this.run(
+      `DELETE FROM workflow_step_cache WHERE key IN (SELECT key FROM workflow_step_cache WHERE expires_at <= ? LIMIT ?)`,
+      now,
+      limit,
+    )
   }
 
   /** Insert or replace a step's row. Call inside a transaction. */

@@ -808,8 +808,14 @@ export class PostgresStorage implements StorageAdapter {
     )
   }
 
-  async deleteExpiredCachedSteps(now: number): Promise<number> {
-    return await this.changes(this.pool, `DELETE FROM ${this.t('workflow_step_cache')} WHERE expires_at <= $1`, now)
+  async deleteExpiredCachedSteps(now: number, limit: number): Promise<number> {
+    return await this.changes(
+      this.pool,
+      `DELETE FROM ${this.t('workflow_step_cache')}
+       WHERE key IN (SELECT key FROM ${this.t('workflow_step_cache')} WHERE expires_at <= $1 LIMIT $2)`,
+      now,
+      limit,
+    )
   }
 
   /** Insert or replace a step's row, on `db`. */

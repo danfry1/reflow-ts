@@ -574,7 +574,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     const now = Date.now()
     const finishedBefore = now - olderThanMs
     // Expired cached step results are no use to anyone, whatever their age.
-    await storage.deleteExpiredCachedSteps?.(now)
+    for (;;) {
+      const batch = await storage.deleteExpiredCachedSteps?.(now, PRUNE_BATCH_SIZE) ?? 0
+      if (batch < PRUNE_BATCH_SIZE) break
+    }
     let deleted = 0
     for (;;) {
       const batch = await storage.deleteRuns({ finishedBefore, statuses, limit: PRUNE_BATCH_SIZE })

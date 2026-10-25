@@ -17,7 +17,7 @@ This is different from what a run does after a crash. Within one run, finished s
 
 ## What counts as the same
 
-By default a cached result is reused when the step's **workflow input and previous step's output** both match, so a step is never handed a result computed from different data. To decide for yourself, give `key`:
+By default a cached result is reused when the step's **workflow input and the outputs of every step before it** all match — everything the step is handed. A handler that also reads something else, such as the time, an environment variable, or a database, can still get a result computed when that was different; give it a `key` that covers what matters, or a `ttl` short enough not to care. To decide for yourself, give `key`:
 
 ```typescript
 .step('profile', {
@@ -26,7 +26,7 @@ By default a cached result is reused when the step's **workflow input and previo
 })
 ```
 
-`key` receives `{ input, prev, steps }` and returns any plain value. Results are kept per workflow and step, so two steps with the same key never share one.
+`key` receives `{ input, prev, steps }` and returns any plain value; a field set to `undefined` counts the same as one left out. Results are kept per workflow and step, so two steps with the same key never share one.
 
 ## When the code changes
 
@@ -46,7 +46,9 @@ A step reused from the cache fires `stepStart` and `stepComplete` as usual, with
 
 ## Expiry and clean-up
 
-`ttl` is milliseconds or a duration such as `'30m'`, `'24h'`, or `'7d'`. Shortening it applies straight away, to results cached under the longer one too. [`engine.prune()`](/guide/inspecting-runs) deletes expired results along with old runs.
+`ttl` is milliseconds or a duration such as `'30m'`, `'24h'`, or `'7d'`. Shortening it applies straight away, to results cached under the longer one too, though those stay in storage until their original expiry. [`engine.prune()`](/guide/inspecting-runs) deletes expired results along with old runs, in batches.
+
+Runs that miss at the same moment each run the step; the first to finish is reused from then on.
 
 If storage fails to read or write the cache, the step runs as if nothing was cached and the error goes to the [`onError`](/guide/hooks) hook, so a cache problem never fails a run.
 
