@@ -18,7 +18,7 @@ titleTemplate: false
 npm install reflow-ts
 ```
 
-<p class="home-links"><a href="/reflow-ts/guide/quick-start">Quick start</a><a href="/reflow-ts/guide/">How it works</a><a href="https://github.com/danfry1/reflow-ts">GitHub</a></p>
+<p class="home-links"><a href="/guide/quick-start">Quick start</a><a href="/guide/">How it works</a><a href="https://github.com/danfry1/reflow-ts">GitHub</a></p>
 
 </div>
 
@@ -87,7 +87,7 @@ await engine.enqueue('order', { orderId: 'ORD-1001', amount: 5000 })
 
 <h2>On your own runs</h2>
 
-<p>The dashboard above is the one that ships in the package. Point it at a database file, or mount it in your app behind your own auth — see <a href="/reflow-ts/guide/dashboard">the dashboard guide</a>.</p>
+<p>The dashboard above is the one that ships in the package. Point it at a database file, or mount it in your app behind your own auth — see <a href="/guide/dashboard">the dashboard guide</a>.</p>
 
 ```sh
 npx reflow-ts dashboard ./app.db
@@ -100,15 +100,15 @@ npx reflow-ts dashboard ./app.db
 <h2>What else it does</h2>
 
 <dl class="home-list">
-  <div><dt><a href="/reflow-ts/guide/sleep">Sleep for days</a></dt><dd>A sleeping run holds no worker and survives restarts; it wakes on time.</dd></div>
-  <div><dt><a href="/reflow-ts/guide/wait-for-event">Wait for an event</a></dt><dd>Pause until an approval, a webhook, or a reply arrives, with a timeout.</dd></div>
-  <div><dt><a href="/reflow-ts/guide/retry">Retry with backoff</a></dt><dd>Per step, linear or exponential, with per-attempt timeouts.</dd></div>
-  <div><dt><a href="/reflow-ts/guide/parallel">Run steps in parallel</a></dt><dd>Branches run together; the first real failure cancels the rest.</dd></div>
-  <div><dt><a href="/reflow-ts/guide/scheduling">Schedule runs</a></dt><dd>On an interval or a cron expression, fired once across all your processes.</dd></div>
-  <div><dt><a href="/reflow-ts/guide/failure-handling">Compensate on failure</a></dt><dd>Undo what a failed run already did, with <code>onFailure</code>.</dd></div>
-  <div><dt><a href="/reflow-ts/guide/workflows">Typed end to end</a></dt><dd>Inputs come from your schema; each step's <code>prev</code> is the previous step's output.</dd></div>
-  <div><dt><a href="/reflow-ts/guide/storage#postgresstorage">From one file to many machines</a></dt><dd>Workers share a SQLite file, or a Postgres database across machines; each run is claimed by exactly one.</dd></div>
-  <div><dt><a href="/reflow-ts/guide/concurrency#limiting-one-workflow">Limit one workflow</a></dt><dd>At most so many runs of a workflow at once, across every process — for rate-limited APIs.</dd></div>
+  <div><dt><a href="/guide/sleep">Sleep for days</a></dt><dd>A sleeping run holds no worker and survives restarts; it wakes on time.</dd></div>
+  <div><dt><a href="/guide/wait-for-event">Wait for an event</a></dt><dd>Pause until an approval, a webhook, or a reply arrives, with a timeout.</dd></div>
+  <div><dt><a href="/guide/retry">Retry with backoff</a></dt><dd>Per step, linear or exponential, with per-attempt timeouts.</dd></div>
+  <div><dt><a href="/guide/parallel">Run steps in parallel</a></dt><dd>Branches run together; the first real failure cancels the rest.</dd></div>
+  <div><dt><a href="/guide/scheduling">Schedule runs</a></dt><dd>On an interval or a cron expression, fired once across all your processes.</dd></div>
+  <div><dt><a href="/guide/failure-handling">Compensate on failure</a></dt><dd>Undo what a failed run already did, with <code>onFailure</code>.</dd></div>
+  <div><dt><a href="/guide/workflows">Typed end to end</a></dt><dd>Inputs come from your schema; each step's <code>prev</code> is the previous step's output.</dd></div>
+  <div><dt><a href="/guide/storage#postgresstorage">From one file to many machines</a></dt><dd>Workers share a SQLite file, or a Postgres database across machines; each run is claimed by exactly one.</dd></div>
+  <div><dt><a href="/guide/concurrency#limiting-one-workflow">Limit one workflow</a></dt><dd>At most so many runs of a workflow at once, across every process — for rate-limited APIs.</dd></div>
 </dl>
 
 </section>
@@ -125,7 +125,7 @@ npx reflow-ts dashboard ./app.db
 
 <p>Reflow is for apps that need multi-step work to be reliable without running workflow infrastructure. Start on SQLite and move to Postgres when workers span machines, without changing a workflow. It is not built for workflows written in several languages, for sub-second dispatch at very high volume, or for teams already on Temporal.</p>
 
-<p class="home-links"><a href="/reflow-ts/guide/">Read the guide</a></p>
+<p class="home-links"><a href="/guide/">Read the guide</a></p>
 
 </section>
 
