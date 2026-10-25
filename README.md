@@ -1,4 +1,8 @@
-# Reflow
+<p align="center">
+  <img src="https://reflow.danfry.dev/favicon.svg" width="96" height="96" alt="" />
+</p>
+
+<h1 align="center">Reflow</h1>
 
 Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery via stale-run reclamation. Pause for days with `.sleep()` or wait on a webhook with `.waitForEvent()` — the process doesn't need to stay alive. Start on a SQLite file with no external services; move to PostgreSQL when workers span machines, with the same workflow code.
 
