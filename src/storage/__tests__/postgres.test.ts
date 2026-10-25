@@ -279,11 +279,11 @@ describe.skipIf(url === undefined)('PostgresStorage', () => {
   })
 
   /** Claim as a process whose clock is `skewMs` off the database's, with the default 30s lease. */
-  async function claimWithClockOff(storage: PostgresStorage, skewMs: number) {
+  async function claimWithClockOff(storage: PostgresStorage, skewMs: number, limits?: ReadonlyMap<string, number>) {
     const realNow = Date.now.bind(Date)
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skewMs)
     try {
-      return await storage.claimNextRun(['w'], Date.now() - 30_000)
+      return await storage.claimNextRun(['w'], Date.now() - 30_000, limits)
     } finally {
       clock.mockRestore()
     }
@@ -325,5 +325,33 @@ describe.skipIf(url === undefined)('PostgresStorage', () => {
     }
     // Renewed now by the database, not a minute ago by the worker's clock.
     expect(await claimWithClockOff(storage, 0)).toBe(null)
+  })
+
+  it('holds a concurrency limit for a process whose clock runs ahead', async () => {
+    const storage = await fresh()
+    await storage.createRun(pendingRun('r1', 'w', Date.now() - 1))
+    await storage.createRun(pendingRun('r2', 'w', Date.now()))
+    expect((await storage.claimNextRun(['w'], Date.now() - 30_000, new Map([['w', 1]])))?.id).toBe('r1')
+
+    // A minute ahead, it must still count r1 as running, and so leave r2.
+    expect(await claimWithClockOff(storage, 60_000, new Map([['w', 1]]))).toBe(null)
+  })
+
+  it.each([
+    { skewMs: 10_000, pendingFor: 7_000, first: 'pending' },
+    { skewMs: 10_000, pendingFor: 3_000, first: 'stale' },
+    { skewMs: -10_000, pendingFor: 7_000, first: 'pending' },
+    { skewMs: -10_000, pendingFor: 3_000, first: 'stale' },
+  ])('ranks a run whose lease expired 5s ago against one pending for $pendingFor ms, with the fleet $skewMs ms off the database', async ({ skewMs, pendingFor, first }) => {
+    const storage = await fresh()
+    const schema = schemas.at(-1) ?? ''
+    await storage.createRun(pendingRun('stale', 'w', Date.now() - 60_000))
+    expect((await storage.claimNextRun(['w']))?.id).toBe('stale')
+    // Its last renewal, by the database's clock, was 35s ago: 5s past its 30s lease.
+    await pool.query(`UPDATE ${schema}.workflow_runs SET updated_at = (extract(epoch FROM clock_timestamp()) * 1000)::bigint - 35000 WHERE id = 'stale'`)
+    // Made by a worker on the fleet's clock.
+    await storage.createRun(pendingRun('pending', 'w', Date.now() + skewMs - pendingFor))
+
+    expect((await claimWithClockOff(storage, skewMs))?.id).toBe(first)
   })
 })
