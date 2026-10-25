@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-10-25
+
+Durability, tightened where it was weakest. A waiting run's event and the step
+it completes are now saved together, so a worker dying mid-wait cannot lose
+the event. Postgres times every lease by the database's clock, so workers
+whose clocks drift apart can no longer run the same step twice. And a step can
+reuse the result an earlier run computed, so separate runs stop paying twice
+for the same API or LLM call.
 
 **Upgrading:** nothing to change. SQLite databases move to schema version 5 and Postgres schemas to version 2 on `initialize()`, each adding one table for cached steps. Open a database from before with `npx reflow-ts dashboard` and it asks for `--migrate`. On Postgres, a role allowed only to read and write rows cannot run the migration: run `initialize()` once as the schema's owner first. During a rolling deploy, workers still on 0.9 refuse the migrated database once they restart, so finish the rollout rather than rolling back.
 
