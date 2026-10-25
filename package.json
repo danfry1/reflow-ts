@@ -1,6 +1,6 @@
 {
   "name": "reflow-ts",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Durable workflow execution for TypeScript",
   "author": "Daniel Fry",
   "license": "MIT",
