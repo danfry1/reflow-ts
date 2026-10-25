@@ -51,7 +51,7 @@ describe.skipIf(url === undefined)('PostgresStorage', () => {
     await Promise.all([1, 2, 3, 4, 5].map(() => new PostgresStorage({ pool, schema }).initialize()))
     await new PostgresStorage({ pool, schema }).initialize()
     const { rows } = await pool.query<{ version: number }>(`SELECT version FROM ${schema}.reflow_schema`)
-    expect(rows).toStrictEqual([{ version: 1 }])
+    expect(rows).toStrictEqual([{ version: 2 }])
   })
 
   it('refuses a database written by a newer version', async () => {
@@ -59,7 +59,7 @@ describe.skipIf(url === undefined)('PostgresStorage', () => {
     const schema = schemas.at(-1) ?? ''
     await pool.query(`UPDATE ${schema}.reflow_schema SET version = 99`)
     await expect(storage.initialize()).rejects.toThrow(
-      new ConfigError('Database schema version 99 is newer than this version of reflow-ts supports (1). Upgrade reflow-ts to open it.'),
+      new ConfigError('Database schema version 99 is newer than this version of reflow-ts supports (2). Upgrade reflow-ts to open it.'),
     )
   })
 

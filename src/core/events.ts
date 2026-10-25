@@ -19,6 +19,8 @@ export type EngineEvent =
       readonly stepName: string
       readonly output: PersistedValue
       readonly attempts: number
+      /** True when the output was reused from an earlier run's cached result rather than computed. */
+      readonly cached?: boolean
     }
   | { readonly type: 'runComplete'; readonly runId: string; readonly workflow: string; readonly output: PersistedValue }
   | {

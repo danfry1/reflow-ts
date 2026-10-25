@@ -64,6 +64,45 @@ export type StepCondition<
   TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
 > = (ctx: StepConditionContext<TInput, TPrev, TStepsSoFar>) => boolean | Promise<boolean>
 
+/**
+ * Reuse a step's result from an earlier run instead of running it again.
+ *
+ * A duration (`'24h'`, or milliseconds) caches the result for that long,
+ * keyed on the step's input and the output of every step before it. The object form
+ * sets the key and a version:
+ *
+ * - `key` — what makes two runs the same for this step, from `{ input, prev,
+ *   steps }`. Defaults to all three. Give it when the step depends on less,
+ *   or on something else, such as the time or an environment variable.
+ * - `version` — change it when the step's code changes, so results from the
+ *   old code are not reused.
+ *
+ * A result is cached only when the step completes; a failure is not, and the
+ * step runs again next time.
+ */
+export type StepCache<
+  TInput extends PersistedValue,
+  TPrev extends PersistedValue,
+  TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
+> =
+  | number
+  | string
+  | {
+      /** How long a result is reused: milliseconds, or a duration such as `'24h'`. */
+      ttl: number | string
+      /** What makes two runs the same for this step. Defaults to `{ input, prev, steps }`. */
+      key?: (ctx: StepConditionContext<TInput, TPrev, TStepsSoFar>) => PersistedValue
+      /** Change it when the step's code changes, so results from the old code are not reused. */
+      version?: string | number
+    }
+
+/** A step's cache settings, resolved. */
+export interface StepCacheDefinition {
+  readonly ttlMs: number
+  readonly key?: (ctx: StepConditionContext<PersistedValue, PersistedValue, Record<string, PersistedValue>>) => PersistedValue
+  readonly version?: string | number
+}
+
 /** Internal representation of a step used by the engine. */
 export interface StepDefinition {
   name: string
@@ -71,6 +110,22 @@ export interface StepDefinition {
   retry?: RetryConfig
   timeoutMs?: number
   when?: (ctx: StepConditionContext<PersistedValue, PersistedValue, Record<string, PersistedValue>>) => boolean | Promise<boolean>
+  cache?: StepCacheDefinition
+}
+
+/** Resolve a step's `cache` setting, refusing a TTL that is not a positive duration. */
+function resolveCache(
+  workflowName: string,
+  stepName: string,
+  cache: StepCache<PersistedValue, PersistedValue> | undefined,
+): StepCacheDefinition | undefined {
+  if (cache === undefined) return undefined
+  const settings = typeof cache === 'object' ? cache : { ttl: cache }
+  const ttlMs = parseDuration(settings.ttl)
+  if (ttlMs <= 0) {
+    throw new ConfigError(`Step "${stepName}" in workflow "${workflowName}" needs a cache ttl above zero`)
+  }
+  return { ttlMs, key: settings.key, version: settings.version }
 }
 
 /** A single execution unit: a sequential step, a parallel group, a durable sleep, or a wait for an external event. */
@@ -95,6 +150,8 @@ export interface StepConfig<
   retry?: RetryConfig
   /** Timeout per attempt in milliseconds. Takes precedence over `retry.timeoutMs`. */
   timeoutMs?: number
+  /** Reuse this step's result from an earlier run. See {@link StepCache}. Sequential steps only. */
+  cache?: StepCache<TInput, TPrev, TStepsSoFar>
   handler: (ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>
 }
 
@@ -133,7 +190,9 @@ export type ParallelBranch<
   TStepsSoFar extends Record<string, PersistedValue> = Record<string, PersistedValue>,
 > =
   | ((ctx: StepContext<TInput, TPrev, TStepsSoFar>) => Promise<TOutput>)
-  | StepConfig<TInput, TPrev, TOutput, TStepsSoFar>
+  // Caching replays one step's result on its own; a branch finishes with its
+  // siblings, so it is refused here and, for JavaScript callers, at runtime.
+  | (Omit<StepConfig<TInput, TPrev, TOutput, TStepsSoFar>, 'cache'> & { cache?: never })
 
 /** Extract the output type from a ParallelBranch. */
 export type InferBranchOutput<B> =
@@ -378,6 +437,7 @@ function buildWorkflow<
       const retry = isConfig ? handlerOrConfig.retry : undefined
       const timeoutMs = isConfig ? handlerOrConfig.timeoutMs : undefined
       const when = isConfig && 'when' in handlerOrConfig ? handlerOrConfig.when : undefined
+      const cache = isConfig ? handlerOrConfig.cache : undefined
 
       const newStep: StepDefinition = {
         name: stepName,
@@ -385,6 +445,7 @@ function buildWorkflow<
         retry,
         timeoutMs,
         when: when as unknown as StepDefinition['when'],
+        cache: resolveCache(name, stepName, cache as unknown as StepCache<PersistedValue, PersistedValue> | undefined),
       }
       return buildWorkflow<
         TName,
@@ -429,6 +490,9 @@ function buildWorkflow<
             throw new ConfigError(
               `Conditional "when" is not supported on parallel branch "${branchName}" in workflow "${name}"`,
             )
+          }
+          if ('cache' in handlerOrConfig && handlerOrConfig.cache !== undefined) {
+            throw new ConfigError(`Step caching is not supported on parallel branch "${branchName}" in workflow "${name}"`)
           }
           return {
             name: branchName,

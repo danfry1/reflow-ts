@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+**Upgrading:** nothing to change. SQLite databases move to schema version 5 and Postgres schemas to version 2 on `initialize()`, each adding one table for cached steps. Open a database from before with `npx reflow-ts dashboard` and it asks for `--migrate`. On Postgres, a role allowed only to read and write rows cannot run the migration: run `initialize()` once as the schema's owner first. During a rolling deploy, workers still on 0.9 refuse the migrated database once they restart, so finish the rollout rather than rolling back.
+
+### Added
+
+- **Cache a step's result across runs.** `.step(name, { cache: '24h', handler })` reuses the result an earlier run computed for the same input and earlier steps' outputs, instead of running the handler again — for a paid API or an LLM call that separate runs would repeat. `cache: { ttl, key, version }` chooses what counts as the same (`key: ({ input }) => input.userId`) and discards results from older code when `version` changes. Only steps that complete are cached; a reused step fires `stepComplete` with `cached: true`. `engine.prune()` deletes expired results. Storage keeps them in a table of their own through three new optional `StorageAdapter` methods, which the built-in adapters implement and the conformance suite tests. (#21)
+
 ### Fixed
 
 - **An event can no longer be lost when a worker loses its run.** A waiting run took its event and then saved the step as two separate writes. If the worker had lost the run — it stalled past its lease and another worker took over — or its process died between the two, the event was gone with no step to show for it, and the run waited for an event that had already arrived. Storage now does both in one transaction, under the run's lease: a worker that no longer holds the run takes nothing, and the event stays for the worker that does. `StorageAdapter.consumeEvent` is the new, optional method that does this; the built-in adapters implement it, and the conformance suite tests it. A custom adapter without it keeps the previous behaviour.

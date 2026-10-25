@@ -35,6 +35,7 @@ Adds a sequential step. Accepts either a bare handler or a config object.
 | `retry` | `RetryConfig` | Optional retry configuration. |
 | `timeoutMs` | `number` | Optional timeout per attempt (ms). Takes precedence over `retry.timeoutMs`. |
 | `when` | `(ctx) => boolean \| Promise<boolean>` | Optional predicate. Receives `{ input, prev, steps }`. When it returns `false` the step is skipped (see below). |
+| `cache` | `number \| string \| { ttl, key?, version? }` | Optional. Reuse the step's result from an earlier run for `ttl` (ms or a duration such as `'24h'`), keyed on `{ input, prev, steps }` or what `key({ input, prev, steps })` returns; change `version` to discard results from older code. Sequential steps only. See [Caching Steps](/guide/caching). |
 
 **Conditional steps (`when`):**
 

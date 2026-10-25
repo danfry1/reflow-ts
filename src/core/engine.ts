@@ -190,9 +190,9 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
   /** How many runs are in each status, optionally for one workflow. */
   countRuns(filter?: CountRunsFilter): Promise<RunCounts>
   /**
-   * Delete finished runs older than `olderThan`, with their steps and events.
-   * Runs that can still progress are never touched. Resolves to how many runs
-   * were deleted.
+   * Delete finished runs older than `olderThan`, with their steps and events,
+   * and every cached step result that has expired. Runs that can still
+   * progress are never touched. Resolves to how many runs were deleted.
    *
    * Deletes in small batches, so on SQLite it never holds the write lock long
    * enough to stall workers sharing the database. Safe to call on a schedule.
@@ -399,6 +399,17 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   }
   const claimLimits = limits.size > 0 ? limits : undefined
 
+  const cachingWorkflow = [...registry.values()].find((wf) =>
+    wf.executionUnits.some((unit) => unit.kind === 'step' && unit.definition.cache !== undefined))
+  if (
+    cachingWorkflow &&
+    (!rawStorage.getCachedStep || !rawStorage.putCachedStep || !rawStorage.deleteExpiredCachedSteps)
+  ) {
+    throw new ConfigError(
+      `Workflow "${cachingWorkflow.name}" caches a step, but this storage adapter does not store cached steps`,
+    )
+  }
+
   async function enqueue(
     workflowName: string,
     input: PersistedValue,
@@ -560,7 +571,13 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       }
     }
 
-    const finishedBefore = Date.now() - olderThanMs
+    const now = Date.now()
+    const finishedBefore = now - olderThanMs
+    // Expired cached step results are no use to anyone, whatever their age.
+    for (;;) {
+      const batch = await storage.deleteExpiredCachedSteps?.(now, PRUNE_BATCH_SIZE) ?? 0
+      if (batch < PRUNE_BATCH_SIZE) break
+    }
     let deleted = 0
     for (;;) {
       const batch = await storage.deleteRuns({ finishedBefore, statuses, limit: PRUNE_BATCH_SIZE })
@@ -761,6 +778,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       emit: (event) => emit(event, observerSignal),
       trySaveStep,
       consumeEvent,
+      reportError,
       async saveStep(record) {
         const saved = await trySaveStep(record)
         if (!saved) {

@@ -250,6 +250,19 @@ Without retry config, a failing step immediately fails the entire workflow run.
 
 On a started engine, the wait between attempts is durable: the step is saved as `retrying` and the run sleeps with its lease and concurrency slot released, so a long backoff holds no worker and survives a restart. An engine driven only by `tick()` (and `testEngine`) waits in process instead.
 
+### Caching Steps
+
+A step can reuse the result an earlier run computed, rather than running again — for a paid API or an LLM call that separate runs would repeat for the same data:
+
+```typescript
+.step('summary', {
+  cache: '24h', // reused when the input and earlier steps' outputs match
+  handler: async ({ prev }) => ({ text: await llm.summarize(prev.html) }),
+})
+```
+
+Pass `{ ttl, key, version }` to choose what counts as the same (`key: ({ input }) => input.userId`) and to discard results from older code (`version: 2`). Only completed steps are cached. The [caching guide](https://reflow.danfry.dev/guide/caching) has the details.
+
 ### Failure Handling
 
 Attach an `onFailure` handler for compensation logic (saga pattern):
@@ -691,6 +704,9 @@ interface StorageAdapter {
   deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
   takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
   consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult>
+  getCachedStep?(key: string): Promise<CachedStep | null>
+  putCachedStep?(entry: CachedStep): Promise<void>
+  deleteExpiredCachedSteps?(now: number): Promise<number>
   getRun(runId: string): Promise<WorkflowRun | null>
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
   requeueRun(runId: string): Promise<boolean>
@@ -900,6 +916,7 @@ Adds a step to the workflow. Accepts either a handler function or a config objec
 |---|---|---|
 | `handler` | `(ctx) => Promise<T>` | Step handler. Receives the step context above |
 | `when` | `({ input, prev, steps }) => boolean` | Optional. Runs the step only when it returns `true`; when skipped, `prev` passes through unchanged. Sequential steps only |
+| `cache` | `number \| string \| { ttl, key?, version? }` | Optional. Reuse the step's result from an earlier run for `ttl`, keyed on `{ input, prev, steps }` or what `key({ input, prev, steps })` returns; bump `version` when the step's code changes. Sequential steps only |
 | `retry` | `RetryConfig` | Optional retry configuration (see below) |
 | `timeoutMs` | `number` | Optional timeout per attempt in milliseconds |
 

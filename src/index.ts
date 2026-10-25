@@ -34,6 +34,7 @@ export type {
   StepContext,
   StepDefinition,
   StepConfig,
+  StepCache,
   ConditionalStepConfig,
   StepCondition,
   StepConditionContext,
@@ -62,6 +63,7 @@ export type {
 export { RUN_STATUSES, STEP_STATUSES } from './core/types'
 export type {
   ClaimedRun,
+  CachedStep,
   ConsumeEventResult,
   CountRunsFilter,
   CreateRunResult,

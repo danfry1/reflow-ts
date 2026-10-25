@@ -74,7 +74,7 @@ await engine.prune({ olderThan: '7d', statuses: ['completed', 'cancelled'] })
 await engine.prune({ olderThan: '90d', statuses: ['failed'] })
 ```
 
-Runs that can still progress — pending, running, sleeping, waiting — are never deleted, whatever their age. `prune()` works in batches of 500, each its own short transaction, so on SQLite it does not stall workers sharing the database.
+Runs that can still progress — pending, running, sleeping, waiting — are never deleted, whatever their age. `prune()` also deletes [cached step results](/guide/caching) that have expired. `prune()` works in batches of 500, each its own short transaction, so on SQLite it does not stall workers sharing the database.
 
 To prune on a cadence, give it a workflow and a [schedule](/guide/scheduling), so exactly one instance in a fleet runs it:
 

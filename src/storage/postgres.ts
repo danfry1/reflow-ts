@@ -24,6 +24,7 @@ import { nextOccurrence } from '../core/schedule-timing'
 import {
   RUN_STATUSES,
   type ClaimedRun,
+  type CachedStep,
   type ConsumeEventResult,
   type CountRunsFilter,
   type CreateRunResult,
@@ -154,6 +155,17 @@ const MIGRATIONS: ReadonlyArray<(schema: string) => string> = [
     CREATE INDEX steps_run ON ${s}.workflow_steps (run_id, created_at);
     CREATE INDEX events_run_name ON ${s}.workflow_events (run_id, event_name, seq);
     CREATE INDEX schedules_due ON ${s}.workflow_schedules (next_run_at);
+  `,
+  (s) => `
+    CREATE TABLE ${s}.workflow_step_cache (
+      key         TEXT PRIMARY KEY,
+      workflow    TEXT NOT NULL,
+      step_name   TEXT NOT NULL,
+      output      TEXT,
+      created_at  BIGINT NOT NULL,
+      expires_at  BIGINT NOT NULL
+    );
+    CREATE INDEX step_cache_expires ON ${s}.workflow_step_cache (expires_at);
   `,
 ]
 
@@ -759,6 +771,51 @@ export class PostgresStorage implements StorageAdapter {
       await this.writeStep(db, { ...step, output: payload })
       return { status: 'consumed', payload }
     })
+  }
+
+  async getCachedStep(key: string): Promise<CachedStep | null> {
+    const row = await this.one<{ key: string; workflow: string; step_name: string; output: string | null; created_at: number; expires_at: number }>(
+      this.pool,
+      `SELECT * FROM ${this.t('workflow_step_cache')} WHERE key = $1`,
+      key,
+    )
+    return row
+      ? {
+          key: row.key,
+          workflow: row.workflow,
+          stepName: row.step_name,
+          output: row.output === null ? null : deserializePersistedValue(row.output),
+          createdAt: row.created_at,
+          expiresAt: row.expires_at,
+        }
+      : null
+  }
+
+  async putCachedStep(entry: CachedStep): Promise<void> {
+    await this.exec(
+      this.pool,
+      `INSERT INTO ${this.t('workflow_step_cache')} (key, workflow, step_name, output, created_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (key) DO UPDATE SET
+         workflow = excluded.workflow, step_name = excluded.step_name, output = excluded.output,
+         created_at = excluded.created_at, expires_at = excluded.expires_at`,
+      entry.key,
+      entry.workflow,
+      entry.stepName,
+      serializePersistedValue(entry.output, 'Cached step output'),
+      entry.createdAt,
+      entry.expiresAt,
+    )
+  }
+
+  async deleteExpiredCachedSteps(now: number, limit: number): Promise<number> {
+    return await this.changes(
+      this.pool,
+      `DELETE FROM ${this.t('workflow_step_cache')}
+       WHERE key IN (SELECT key FROM ${this.t('workflow_step_cache')} WHERE expires_at <= $1 LIMIT $2)`,
+      now,
+      limit,
+    )
   }
 
   /** Insert or replace a step's row, on `db`. */

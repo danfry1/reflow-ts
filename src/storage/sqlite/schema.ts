@@ -182,6 +182,23 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 5,
+    description: 'cached step results',
+    up(db) {
+      db.exec(`
+        CREATE TABLE workflow_step_cache (
+          key         TEXT PRIMARY KEY,
+          workflow    TEXT NOT NULL,
+          step_name   TEXT NOT NULL,
+          output      TEXT,
+          created_at  INTEGER NOT NULL,
+          expires_at  INTEGER NOT NULL
+        );
+        CREATE INDEX idx_step_cache_expires ON workflow_step_cache(expires_at);
+      `)
+    },
+  },
 ]
 
 /** The schema version this build of Reflow writes. */
