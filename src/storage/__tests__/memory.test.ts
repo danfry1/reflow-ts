@@ -23,6 +23,12 @@ function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     status: 'pending',
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    startedAt: null,
+    finishedAt: null,
+    output: undefined,
+    error: null,
+    wakeAt: null,
+    waitingFor: null,
     ...overrides,
   }
 }
@@ -38,6 +44,8 @@ function makeStep(overrides: Partial<StepResult> = {}): StepResult {
     attempts: 1,
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    startedAt: null,
+    history: [],
     ...overrides,
   }
 }
@@ -229,10 +237,10 @@ describe('MemoryStorage', () => {
 
     it('reflects status updates', async () => {
       await storage.createRun(makeRun({ id: 'run_1' }))
-      await storage.updateRunStatus('run_1', 'completed')
+      await storage.cancelRun('run_1')
 
       const run = expectPresent(await storage.getRun('run_1'))
-      expect(run.status).toBe('completed')
+      expect(run.status).toBe('cancelled')
     })
 
     it('returns a copy — mutating does not affect storage', async () => {
@@ -242,30 +250,6 @@ describe('MemoryStorage', () => {
 
       const fresh = expectPresent(await storage.getRun('run_1'))
       expect(fresh.input).toStrictEqual({ x: 1 })
-    })
-  })
-
-  describe('updateRunStatus', () => {
-    it('updates the status of an existing run', async () => {
-      await storage.createRun(makeRun({ id: 'run_1' }))
-      await storage.updateRunStatus('run_1', 'completed')
-
-      // Completed runs are not claimable
-      const claimed = await storage.claimNextRun(['test'])
-      expect(claimed).toBeNull()
-    })
-
-    it('is a no-op for nonexistent run ids', async () => {
-      // Should not throw
-      await storage.updateRunStatus('nonexistent', 'failed')
-    })
-
-    it('updates a claimed run only when the lease matches', async () => {
-      await storage.createRun(makeRun({ id: 'run_1' }))
-      const claimed = expectPresent(await storage.claimNextRun(['test']))
-
-      expect(await storage.updateClaimedRunStatus('run_1', 'wrong-lease', 'completed')).toBe(false)
-      expect(await storage.updateClaimedRunStatus('run_1', claimed.leaseId, 'completed')).toBe(true)
     })
   })
 
@@ -465,7 +449,7 @@ describe('MemoryStorage', () => {
     it('clears the lease so a stale lease can no longer write', async () => {
       await storage.createRun(makeRun({ id: 'run_1' }))
       const claimed = expectPresent(await storage.claimNextRun(['test']))
-      await storage.updateClaimedRunStatus('run_1', claimed.leaseId, 'failed')
+      await storage.failRun('run_1', claimed.leaseId, { stepName: 'a', message: 'boom', code: null })
 
       expect(await storage.requeueRun('run_1')).toBe(true)
 

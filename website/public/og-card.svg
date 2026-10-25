@@ -1,51 +1,45 @@
 <svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#f8efde"/>
-      <stop offset="1" stop-color="#ead4b3"/>
-    </linearGradient>
-    <linearGradient id="glow" x1="600" y1="0" x2="600" y2="630" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#e46d2f" stop-opacity="0.06"/>
-      <stop offset="1" stop-color="#e46d2f" stop-opacity="0"/>
-    </linearGradient>
-  </defs>
+  <rect width="1200" height="630" fill="#0E1626"/>
 
-  <!-- Full-bleed warm background -->
-  <rect width="1200" height="630" fill="url(#bg)"/>
+  <!-- Mark and name -->
+  <g transform="translate(80 72) scale(1.125)">
+    <rect width="64" height="64" rx="16" fill="#14213D" stroke="#26334D" stroke-width="2"/>
+    <path d="M12 42h16M36 22h16" stroke="#F4F6F9" stroke-width="7" stroke-linecap="round"/>
+    <path d="M30.5 38.5l3-13" stroke="#E8A317" stroke-width="7" stroke-linecap="round" stroke-dasharray="0.01 10.5"/>
+  </g>
+  <text x="168" y="122" fill="#E6EAF2" font-family="'DIN Alternate', Bahnschrift, 'Barlow Semi Condensed', 'Helvetica Neue', Arial, sans-serif" font-size="36" font-weight="700">Reflow</text>
 
-  <!-- Subtle top glow -->
-  <rect width="1200" height="320" fill="url(#glow)"/>
-
-  <!-- Thin accent line at top -->
-  <rect y="0" width="1200" height="4" fill="#e46d2f" opacity="0.6"/>
-
-  <!-- Brand icon — the rounded R mark, matching the favicon -->
-  <g transform="translate(840, 100) scale(4.375)">
-    <rect width="64" height="64" rx="18" fill="#183128"/>
-    <path d="M21 48 V16 H34 A10 9 0 0 1 34 34 H26 L45 48" fill="none" stroke="#F6EEDC" stroke-width="8.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Headline and line -->
+  <g font-family="'DIN Alternate', Bahnschrift, 'Barlow Semi Condensed', 'Helvetica Neue', Arial, sans-serif" font-weight="700" fill="#E6EAF2">
+    <text x="80" y="296" font-size="76">Steps that survive</text>
+    <text x="80" y="380" font-size="76">a crash.</text>
+  </g>
+  <g font-family="Inter, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif" font-size="27" fill="#A9B3C7">
+    <text x="80" y="458">Durable workflows for TypeScript, on a SQLite file.</text>
+    <text x="80" y="498">A run killed half-way carries on from the next step.</text>
   </g>
 
-  <!-- Brand -->
-  <text x="80" y="100" fill="#183128" font-family="'Inter', 'SF Pro Display', 'Avenir Next', sans-serif" font-size="22" font-weight="700" letter-spacing="3">REFLOW</text>
-  <text x="80" y="128" fill="#7a8c83" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="16">reflow-ts</text>
+  <!-- One run after a crash, as the dashboard and the demo show it -->
+  <g transform="translate(800 196)" font-family="Inter, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif">
+    <rect width="320" height="292" rx="12" fill="#131D31" stroke="#24314A" stroke-width="2"/>
+    <text x="24" y="44" fill="#E6EAF2" font-family="'DIN Alternate', Bahnschrift, 'Barlow Semi Condensed', Arial, sans-serif" font-size="24" font-weight="700">order ORD-1001</text>
+    <line x1="0" y1="66" x2="320" y2="66" stroke="#24314A" stroke-width="2"/>
 
-  <!-- Headline -->
-  <text x="80" y="240" fill="#183128" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="72" font-weight="800" letter-spacing="-2">Durable workflow</text>
-  <text x="80" y="320" fill="#183128" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="72" font-weight="800" letter-spacing="-2">execution for</text>
-  <text x="80" y="400" fill="#183128" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="72" font-weight="800" letter-spacing="-2">TypeScript.</text>
+    <circle cx="32" cy="100" r="7" fill="#4CC08A"/>
+    <text x="54" y="107" fill="#E6EAF2" font-size="21" font-weight="600">charge</text>
+    <text x="296" y="107" fill="#4CC08A" font-size="19" text-anchor="end">done</text>
 
-  <!-- Subtitle -->
-  <text x="80" y="468" fill="#51655b" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="24">SQLite-backed workflows with typed steps, retries, and crash recovery.</text>
+    <circle cx="32" cy="150" r="7" fill="#F06A5F"/>
+    <text x="54" y="157" fill="#E6EAF2" font-size="21" font-weight="600">ship</text>
+    <text x="296" y="157" fill="#F06A5F" font-size="19" text-anchor="end">killed</text>
 
-  <!-- Bottom badges — minimal, dot-separated -->
-  <text x="80" y="564" fill="#e46d2f" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="16" font-weight="600" letter-spacing="1.5">CRASH SAFE</text>
-  <circle cx="216" cy="559" r="2" fill="#c4b6a0"/>
-  <text x="234" y="564" fill="#7a8c83" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="16" font-weight="600" letter-spacing="1.5">ZERO INFRA</text>
-  <circle cx="380" cy="559" r="2" fill="#c4b6a0"/>
-  <text x="398" y="564" fill="#7a8c83" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="16" font-weight="600" letter-spacing="1.5">TYPESCRIPT</text>
-  <circle cx="546" cy="559" r="2" fill="#c4b6a0"/>
-  <text x="564" y="564" fill="#7a8c83" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="16" font-weight="600" letter-spacing="1.5">SQLITE</text>
+    <circle cx="32" cy="200" r="7" fill="#4CC08A"/>
+    <text x="54" y="207" fill="#E6EAF2" font-size="21" font-weight="600">ship, again</text>
+    <text x="296" y="207" fill="#4CC08A" font-size="19" text-anchor="end">done</text>
 
-  <!-- Bottom border accent -->
-  <rect y="626" width="1200" height="4" fill="#e46d2f" opacity="0.3"/>
+    <circle cx="32" cy="250" r="7" fill="#4CC08A"/>
+    <text x="54" y="257" fill="#E6EAF2" font-size="21" font-weight="600">notify</text>
+    <text x="296" y="257" fill="#4CC08A" font-size="19" text-anchor="end">done</text>
+  </g>
+  <text x="800" y="530" fill="#A9B3C7" font-family="Inter, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif" font-size="19">Charged once. Nothing ran twice.</text>
 </svg>

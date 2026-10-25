@@ -1,22 +1,29 @@
 import { randomUUID } from 'node:crypto'
 import type {
   ClaimedRun,
+  CountRunsFilter,
   CreateRunResult,
+  DeleteRunsFilter,
   PersistedValue,
   ListRunsFilter,
+  RunActivity,
+  RunActivityFilter,
+  RunCounts,
+  RunError,
   RunStatus,
   StepResult,
   StorageAdapter,
+  TerminalRunStatus,
   WorkflowRun,
   WorkflowSchedule,
 } from '../core/types'
-import { InternalError } from '../core/errors'
+import { emptyRunCounts } from './records'
+import { assertNever, InternalError } from '../core/errors'
 import { nextOccurrence, sameRecurrence } from '../core/schedule-timing'
 import { clonePersistedValue } from './codec'
 
 interface StoredRun extends WorkflowRun {
   leaseId: string | null
-  wakeAt: number | null
 }
 
 interface StoredEvent {
@@ -26,6 +33,7 @@ interface StoredEvent {
 }
 
 export class MemoryStorage implements StorageAdapter {
+  readonly supportsConcurrencyLimits = true
   private runs: Map<string, StoredRun> = new Map()
   private steps: Map<string, StepResult[]> = new Map()
   private events: Map<string, StoredEvent[]> = new Map()
@@ -51,8 +59,9 @@ export class MemoryStorage implements StorageAdapter {
     const storedRun: StoredRun = {
       ...run,
       input: clonePersistedValue(run.input, 'Workflow input'),
+      output: run.status === 'completed' ? clonePersistedValue(run.output, 'Run output') : undefined,
+      error: run.error === null ? null : { ...run.error },
       leaseId: null,
-      wakeAt: null,
     }
 
     this.runs.set(run.id, storedRun)
@@ -62,53 +71,62 @@ export class MemoryStorage implements StorageAdapter {
     }
   }
 
-  async claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null> {
+  /** These workflows, less any already running as many runs as `limits` allows. */
+  private belowLimit(workflowNames: readonly string[], staleBefore: number | undefined, limits: ReadonlyMap<string, number>): string[] {
+    const live = new Map<string, number>()
+    for (const run of this.runs.values()) {
+      if (run.status === 'running' && (staleBefore === undefined || run.updatedAt > staleBefore)) {
+        live.set(run.workflow, (live.get(run.workflow) ?? 0) + 1)
+      }
+    }
+    return workflowNames.filter((name) => {
+      const limit = limits.get(name)
+      return limit === undefined || (live.get(name) ?? 0) < limit
+    })
+  }
+
+  async claimNextRun(
+    allWorkflowNames: readonly string[],
+    staleBefore?: number,
+    limits?: ReadonlyMap<string, number>,
+  ): Promise<ClaimedRun | null> {
+    const workflowNames = limits ? this.belowLimit(allWorkflowNames, staleBefore, limits) : allWorkflowNames
     if (workflowNames.length === 0) {
       return null
     }
 
     const now = Date.now()
-    const candidates = Array.from(this.runs.values())
-      .filter((run) => {
-        if (!workflowNames.includes(run.workflow)) {
-          return false
-        }
+    // Claim the run that has been due longest, so new pending runs cannot
+    // starve a woken sleeper or a stale run. A single pass rather than a sort:
+    // this runs on every claim, over every stored run. Ties go to the earlier
+    // `createdAt`, then to insertion order.
+    let run: StoredRun | undefined
+    let runDueAt = Number.POSITIVE_INFINITY
+    for (const candidate of this.runs.values()) {
+      if (!workflowNames.includes(candidate.workflow)) {
+        continue
+      }
 
-        if (run.status === 'pending') {
-          return true
-        }
+      const dueAt = claimableSince(candidate, now, staleBefore)
+      if (
+        dueAt !== null
+        && (dueAt < runDueAt || (dueAt === runDueAt && run !== undefined && candidate.createdAt < run.createdAt))
+      ) {
+        run = candidate
+        runDueAt = dueAt
+      }
+    }
 
-        if (
-          (run.status === 'sleeping' || run.status === 'waiting')
-          && run.wakeAt !== null
-          && run.wakeAt <= now
-        ) {
-          return true
-        }
-
-        return staleBefore !== undefined && run.status === 'running' && run.updatedAt <= staleBefore
-      })
-      .sort((left, right) => {
-        // Pending runs are claimed before woken sleeping / stale running runs;
-        // within a rank, oldest first. Rank-based so the comparator stays a
-        // valid total order when both non-pending kinds are present.
-        const rank = (status: RunStatus): number => (status === 'pending' ? 0 : 1)
-        const rankDiff = rank(left.status) - rank(right.status)
-        if (rankDiff !== 0) {
-          return rankDiff
-        }
-        return left.createdAt - right.createdAt
-      })
-
-    const run = candidates[0]
     if (!run) {
       return null
     }
 
     run.status = 'running'
-    run.updatedAt = Date.now()
+    run.updatedAt = now
+    run.startedAt ??= now
     run.leaseId = randomUUID()
     run.wakeAt = null
+    run.waitingFor = null
 
     return cloneClaimedRun(run)
   }
@@ -148,6 +166,7 @@ export class MemoryStorage implements StorageAdapter {
     run.status = buffered ? 'pending' : 'waiting'
     run.leaseId = null
     run.wakeAt = buffered ? null : wakeAt
+    run.waitingFor = buffered ? null : eventName
     run.updatedAt = Date.now()
     return true
   }
@@ -166,6 +185,7 @@ export class MemoryStorage implements StorageAdapter {
       run.status = 'pending'
       run.leaseId = null
       run.wakeAt = null
+      run.waitingFor = null
       run.updatedAt = Date.now()
     }
     return true
@@ -229,19 +249,25 @@ export class MemoryStorage implements StorageAdapter {
     run.status = 'pending'
     run.leaseId = null
     run.updatedAt = Date.now()
+    run.finishedAt = null
+    run.output = undefined
+    run.error = null
 
     const steps = this.steps.get(runId)
     if (steps) {
-      this.steps.set(runId, steps.filter((step) => step.status !== 'failed'))
+      this.steps.set(runId, steps.filter((step) => step.status !== 'failed' && step.status !== 'retrying'))
     }
 
     return true
   }
 
   async getStepResults(runId: string): Promise<StepResult[]> {
-    return (this.steps.get(runId) ?? []).map((step) => ({
+    // Ordered by creation time, as the contract says; insertion order only
+    // matches it when steps are first saved in the order they began.
+    return [...(this.steps.get(runId) ?? [])].sort((a, b) => a.createdAt - b.createdAt).map((step) => ({
       ...step,
       output: clonePersistedValue(step.output, 'Step output'),
+      history: step.history.map((attempt) => ({ ...attempt })),
     }))
   }
 
@@ -255,7 +281,11 @@ export class MemoryStorage implements StorageAdapter {
 
     const existing = this.steps.get(result.runId) ?? []
     const idx = existing.findIndex((step) => step.id === result.id)
-    const cloned = { ...result, output: clonePersistedValue(result.output, 'Step output') }
+    const cloned = {
+      ...result,
+      output: clonePersistedValue(result.output, 'Step output'),
+      history: result.history.map((attempt) => ({ ...attempt })),
+    }
 
     if (idx >= 0) {
       existing[idx] = cloned
@@ -267,35 +297,104 @@ export class MemoryStorage implements StorageAdapter {
     return true
   }
 
-  async updateRunStatus(runId: string, status: RunStatus): Promise<boolean> {
-    const run = this.runs.get(runId)
+  async completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean> {
+    const run = this.heldRun(runId, leaseId)
     if (!run) {
       return false
     }
 
-    run.status = status
-    run.updatedAt = Date.now()
-    run.leaseId = null
-    run.wakeAt = null
-
+    // Serialize before transitioning, so an unpersistable output leaves the run
+    // held and running rather than completed with nothing recorded.
+    const stored = clonePersistedValue(output, 'Run output')
+    finish(run, 'completed')
+    run.output = stored
     return true
   }
 
-  async updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean> {
-    const run = this.runs.get(runId)
-    if (!run || run.status !== 'running' || run.leaseId !== leaseId) {
+  async failRun(runId: string, leaseId: string, error: RunError): Promise<boolean> {
+    const run = this.heldRun(runId, leaseId)
+    if (!run) {
       return false
     }
 
-    run.status = status
-    run.updatedAt = Date.now()
+    finish(run, 'failed')
+    run.error = { ...error }
+    return true
+  }
 
-    if (status !== 'running') {
-      run.leaseId = null
-      run.wakeAt = null
+  async cancelRun(runId: string): Promise<boolean> {
+    const run = this.runs.get(runId)
+    if (!run || isTerminal(run.status)) {
+      return false
     }
 
+    finish(run, 'cancelled')
     return true
+  }
+
+  async getStepResultsForRuns(runIds: readonly string[]): Promise<Map<string, StepResult[]>> {
+    const byRun = new Map<string, StepResult[]>()
+    for (const runId of runIds) {
+      byRun.set(runId, await this.getStepResults(runId))
+    }
+    return byRun
+  }
+
+  async runActivity(filter: RunActivityFilter): Promise<RunActivity> {
+    const { since, bucketMs, buckets } = filter
+    const activity: RunActivity = {
+      started: new Array<number>(buckets).fill(0),
+      completed: new Array<number>(buckets).fill(0),
+      failed: new Array<number>(buckets).fill(0),
+    }
+    const bucketOf = (at: number | null): number | null => {
+      if (at === null || at < since) return null
+      const bucket = Math.floor((at - since) / bucketMs)
+      return bucket < buckets ? bucket : null
+    }
+    for (const run of this.runs.values()) {
+      if (filter.workflow !== undefined && run.workflow !== filter.workflow) continue
+      const started = bucketOf(run.createdAt)
+      if (started !== null) activity.started[started] = (activity.started[started] ?? 0) + 1
+      const finished = bucketOf(run.finishedAt)
+      if (finished === null) continue
+      if (run.status === 'completed') activity.completed[finished] = (activity.completed[finished] ?? 0) + 1
+      if (run.status === 'failed') activity.failed[finished] = (activity.failed[finished] ?? 0) + 1
+    }
+    return activity
+  }
+
+  async countRuns(filter: CountRunsFilter = {}): Promise<RunCounts> {
+    const counts = emptyRunCounts()
+    for (const run of this.runs.values()) {
+      if (filter.workflow === undefined || run.workflow === filter.workflow) {
+        counts[run.status]++
+      }
+    }
+    return counts
+  }
+
+  async deleteRuns(filter: DeleteRunsFilter): Promise<number> {
+    const doomed = Array.from(this.runs.values())
+      .filter((run) =>
+        run.finishedAt !== null
+        && run.finishedAt < filter.finishedBefore
+        && filter.statuses.some((status) => status === run.status),
+      )
+      .sort((left, right) => (left.finishedAt ?? 0) - (right.finishedAt ?? 0))
+      .slice(0, Math.max(0, filter.limit))
+
+    for (const run of doomed) {
+      this.runs.delete(run.id)
+      this.steps.delete(run.id)
+      this.events.delete(run.id)
+    }
+    return doomed.length
+  }
+
+  private heldRun(runId: string, leaseId: string): StoredRun | null {
+    const run = this.runs.get(runId)
+    return run && run.status === 'running' && run.leaseId === leaseId ? run : null
   }
 
   async upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule> {
@@ -362,6 +461,55 @@ function cloneWorkflowRun(run: StoredRun): WorkflowRun {
     status: run.status,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    output: clonePersistedValue(run.output, 'Run output'),
+    error: run.error === null ? null : { ...run.error },
+    wakeAt: run.wakeAt,
+    waitingFor: run.waitingFor,
+  }
+}
+
+function isTerminal(status: RunStatus): status is TerminalRunStatus {
+  return status === 'completed' || status === 'failed' || status === 'cancelled'
+}
+
+/** Move a run to a terminal status, releasing everything that only a live run holds. */
+function finish(run: StoredRun, status: TerminalRunStatus): void {
+  const now = Date.now()
+  run.status = status
+  run.leaseId = null
+  run.wakeAt = null
+  run.waitingFor = null
+  run.updatedAt = now
+  run.finishedAt = now
+}
+
+/**
+ * When `run` became claimable, or null if it is not claimable now.
+ *
+ * A pending run is due from the moment it became pending, a sleeping or
+ * waiting run from its wake time, and a stale running run from the moment its
+ * lease expired: `now - staleBefore` (the lease duration) after its last
+ * heartbeat.
+ */
+function claimableSince(run: StoredRun, now: number, staleBefore: number | undefined): number | null {
+  switch (run.status) {
+    case 'pending':
+      return run.updatedAt
+    case 'sleeping':
+    case 'waiting':
+      return run.wakeAt !== null && run.wakeAt <= now ? run.wakeAt : null
+    case 'running':
+      return staleBefore !== undefined && run.updatedAt <= staleBefore
+        ? run.updatedAt + (now - staleBefore)
+        : null
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+      return null
+    default:
+      return assertNever(run.status, 'run status')
   }
 }
 

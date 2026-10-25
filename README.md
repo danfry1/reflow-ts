@@ -1,6 +1,6 @@
 # Reflow
 
-Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery via stale-run reclamation. Pause for days with `.sleep()` or wait on a webhook with `.waitForEvent()` — the process doesn't need to stay alive. Powered by SQLite, no external services required.
+Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery via stale-run reclamation. Pause for days with `.sleep()` or wait on a webhook with `.waitForEvent()` — the process doesn't need to stay alive. Start on a SQLite file with no external services; move to PostgreSQL when workers span machines, with the same workflow code.
 
 ```typescript
 import { createWorkflow, createEngine } from 'reflow-ts'
@@ -63,14 +63,14 @@ Now the user is charged but never got their welcome email. Worse — you don't k
 
 | | Reflow | Temporal | Inngest |
 |---|---|---|---|
-| Infrastructure | None (SQLite file) | Temporal Server + DB | Cloud service |
+| Infrastructure | A SQLite file, or your Postgres | Temporal Server + DB | Cloud service |
 | Type safety | Full end-to-end | Partial | Partial |
 | Setup | `bun add reflow-ts`  | Cluster deployment | Account + SDK |
-| Best for | Single-process apps, CLIs, AI agents | Large distributed systems | Serverless |
+| Best for | Apps, CLIs, and AI agents, from one process to many machines | Very large, multi-language systems | Serverless |
 
 **Don't use Reflow when:**
-- You need distributed execution across multiple machines
-- You need sub-second latency on workflow dispatch
+- You need workflows written in several languages, or event histories in the millions per run
+- You need sub-second pickup of work enqueued by a different process (it waits for the next poll)
 - You're already running Temporal or similar
 
 ## Performance
@@ -114,6 +114,10 @@ const storage = new SQLiteStorage('./reflow.db')
 // Node.js — uses better-sqlite3
 import { SQLiteStorage } from 'reflow-ts/sqlite-node'
 const storage = new SQLiteStorage('./reflow.db')
+
+// PostgreSQL — for workers on many machines (npm install pg)
+import { PostgresStorage } from 'reflow-ts/postgres'
+const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL })
 ```
 
 Reflow uses [Standard Schema](https://github.com/standard-schema/standard-schema) for input validation, so you can bring any compatible library:
@@ -399,10 +403,40 @@ const run = await engine.enqueue('order-fulfillment', { orderId: 'ORD_1', amount
 // Later...
 const info = await engine.getRunStatus(run.id)
 if (info) {
-  info.run.status    // 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
-  info.steps         // StepResult[] — each step's output, error, and attempt count
+  info.run.status     // 'pending' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+  info.run.output     // a completed run's final output
+  info.run.error      // a failed run's { stepName, message, code }
+  info.run.waitingFor // the event a waiting run is waiting for
+  info.run.startedAt  // first claimed; finishedAt once it is done
+  info.steps          // StepResult[] — each step's output, error, attempts, and start time
 }
+
+await engine.countRuns()               // { pending: 3, running: 1, ..., failed: 2 }
+await engine.prune({ olderThan: '30d' }) // delete runs that finished over 30 days ago
 ```
+
+### Dashboard
+
+See what your runs are doing — what is waiting and on what, what failed and why, where each run spent its time:
+
+```bash
+npx reflow-ts dashboard ./reflow.db   # read-only, on 127.0.0.1
+```
+
+Or serve it from your own app, behind a password or your own sign-in, with cancel, resume, and live updates. Nothing is hosted elsewhere; your run data stays on your server.
+
+```typescript
+import { basicAuth, createDashboard } from 'reflow-ts/dashboard'
+
+const dashboard = createDashboard({
+  storage,
+  engine,
+  authorize: basicAuth({ username: 'admin', password: process.env.REFLOW_DASHBOARD_PASSWORD }),
+})
+Bun.serve({ port: 4400, fetch: dashboard }) // or Hono, Next.js, toNodeHandler() for Express
+```
+
+The [dashboard guide](https://reflow.danfry.dev/guide/dashboard) covers mounting it in each server, using your app's own sign-in, and opening a production database over SSH.
 
 ### Hooks
 
@@ -506,17 +540,17 @@ Step-level `timeoutMs` takes precedence over `retry.timeoutMs`.
 
 ### Concurrency
 
-By default, the engine processes one run at a time. Set `concurrency` to process multiple runs in parallel per tick:
+By default, the engine processes one run at a time. Set `concurrency` to execute several runs at once:
 
 ```typescript
 const engine = createEngine({
   storage,
   workflows: [orderWorkflow],
-  concurrency: 5, // Process up to 5 runs in parallel per tick (default: 1)
+  concurrency: 5, // Execute up to 5 runs at once (default: 1)
 })
 ```
 
-With `concurrency: 5`, each tick claims up to 5 pending runs and executes them concurrently. Steps within a single run still execute sequentially.
+With `concurrency: 5`, the engine keeps up to 5 runs executing at once. Slots are independent: when a run finishes, its slot is refilled straight away, so one slow run never holds the others idle. Steps within a single run still execute sequentially.
 
 ### Run Cancellation
 
@@ -620,14 +654,29 @@ interface StorageAdapter {
   createRun(run: WorkflowRun): Promise<CreateRunResult>
   claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
   heartbeatRun(runId: string, leaseId: string): Promise<boolean>
+  sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean>
+  waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
+  deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
+  takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
   getRun(runId: string): Promise<WorkflowRun | null>
+  listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
+  requeueRun(runId: string): Promise<boolean>
   getStepResults(runId: string): Promise<StepResult[]>
   saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
-  updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
-  updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean>
+  completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean>
+  failRun(runId: string, leaseId: string, error: RunError): Promise<boolean>
+  cancelRun(runId: string): Promise<boolean>
+  countRuns(filter?: CountRunsFilter): Promise<RunCounts>
+  deleteRuns(filter: DeleteRunsFilter): Promise<number>
+  upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule>
+  claimDueSchedule(workflowNames: readonly string[], now: number): Promise<WorkflowSchedule | null>
+  deleteSchedule(key: string): Promise<boolean>
+  listSchedules(): Promise<WorkflowSchedule[]>
   close(): void
 }
 ```
+
+Each method's contract is in the [Storage API reference](https://reflow.danfry.dev/api/storage), and `reflow-ts/conformance` checks an adapter against it.
 
 Persisted workflow input and step output must be plain data: objects, arrays, strings, numbers, booleans, `null`, `undefined`, and `Date`.
 
@@ -853,7 +902,7 @@ Creates an engine that executes workflows.
 | `config.storage` | `StorageAdapter` | required | Storage backend |
 | `config.workflows` | `Workflow[]` | required | Workflows to register |
 | `config.hooks` | `EngineHooks` | `undefined` | Lifecycle hooks (`onRunStart`, `onStepStart`, `onStepComplete`, `onRunComplete`, `onRunFailed`, `onError`). May be sync or `async` (awaited) |
-| `config.concurrency` | `number` | `1` | Number of runs to process in parallel per tick |
+| `config.concurrency` | `number` | `1` | Maximum runs executing at once |
 | `config.runLeaseDurationMs` | `number` | `30000` | How long a claimed run stays `running` before another engine may reclaim it |
 | `config.heartbeatIntervalMs` | `number` | `leaseDuration / 3` | How often the active worker renews its lease |
 
@@ -861,7 +910,7 @@ Returns an `Engine` with the methods below.
 
 ### `engine.start(pollIntervalMs?)`
 
-Initializes storage and starts the polling loop. Runs `tick()` every `pollIntervalMs` (default: `1000`). Call this once at startup, then `enqueue()` work as it arrives.
+Initializes storage and starts the engine. Work this instance enqueues, resumes, or sends an event to starts at once, and a finished run's slot is refilled immediately; every `pollIntervalMs` (default: `1000`) the engine also checks storage for work from elsewhere — other processes, elapsed sleeps, due schedules, stale runs. Call this once at startup, then `enqueue()` work as it arrives.
 
 ### `engine.stop()`
 
@@ -913,7 +962,19 @@ Returns `Promise<readonly WorkflowSchedule[]>` — every registered schedule, or
 
 ### `engine.getRunStatus(runId)`
 
-Returns `{ run, steps }` with the run's current status and all step results, or `null` if not found.
+Returns `{ run, steps }` with the run's current status and all step results, or `null` if not found. The run records `startedAt`, `finishedAt`, `output`, `error`, `wakeAt`, and `waitingFor`.
+
+### `engine.waitForRun(runId, { signal?, pollIntervalMs? })`
+
+Resolves with the run once it is `completed`, `failed`, or `cancelled`. Immediate for runs finishing on this engine; runs finished elsewhere are noticed by polling storage. Pass `AbortSignal.timeout(ms)` as `signal` for a deadline.
+
+### `engine.countRuns(filter?)`
+
+Returns how many runs are in each status, optionally for one `workflow`.
+
+### `engine.prune({ olderThan, statuses? })`
+
+Deletes finished runs that finished longer ago than `olderThan` (ms or a duration string like `'30d'`), with their steps and events. Never touches a run that can still progress. Returns how many were deleted.
 
 ### `testEngine(config)`
 
@@ -934,6 +995,25 @@ SQLite storage adapter for Node.js. Uses `better-sqlite3`. WAL mode and transact
 ### `SQLiteStorage(path)` — Node.js built-in
 
 SQLite storage adapter for Node.js using the built-in `node:sqlite` module — no native dependencies. Requires Node ≥ 22.5 (`--experimental-sqlite` before Node 23.4). WAL mode and transactional claiming. Import from `reflow-ts/sqlite-node-builtin`.
+
+## Contributors
+
+Thanks to everyone who has opened an issue or a pull request. Each one has shaped reflow.
+
+<!-- contributors:start -->
+<table>
+  <tr>
+    <td align="center" valign="top" width="120">
+      <a href="https://github.com/brianjenkins94"><img src="https://github.com/brianjenkins94.png?size=128" width="64" height="64" alt="brianjenkins94" /><br /><sub><b>brianjenkins94</b></sub></a><br />
+      <sub><a href="https://github.com/search?q=repo%3Adanfry1%2Freflow-ts+author%3Abrianjenkins94&type=issues">5 issues, 1 pull request</a></sub>
+    </td>
+    <td align="center" valign="top" width="120">
+      <a href="https://github.com/shishantbiswas"><img src="https://github.com/shishantbiswas.png?size=128" width="64" height="64" alt="shishantbiswas" /><br /><sub><b>shishantbiswas</b></sub></a><br />
+      <sub><a href="https://github.com/search?q=repo%3Adanfry1%2Freflow-ts+author%3Ashishantbiswas&type=issues">1 issue</a></sub>
+    </td>
+  </tr>
+</table>
+<!-- contributors:end -->
 
 ## License
 

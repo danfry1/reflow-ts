@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow } from '../workflow'
 import { createEngine } from '../engine'
+import { delegatingAdapter } from '../../__tests__/helpers'
 import type { EngineEvent } from '../engine'
 import type { StorageAdapter } from '../types'
 import { MemoryStorage } from '../../storage/memory'
@@ -45,9 +46,7 @@ function delaySecondClaim(
   releaseSecondClaim: Promise<void>,
 ): StorageAdapter {
   let claimCalls = 0
-  return {
-    initialize: () => delegate.initialize(),
-    createRun: (run) => delegate.createRun(run),
+  return delegatingAdapter(delegate, {
     claimNextRun: async (workflowNames, staleBefore) => {
       claimCalls++
       if (claimCalls === 2) {
@@ -56,25 +55,7 @@ function delaySecondClaim(
       }
       return delegate.claimNextRun(workflowNames, staleBefore)
     },
-    heartbeatRun: (runId, leaseId) => delegate.heartbeatRun(runId, leaseId),
-    sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
-    waitRun: (runId, leaseId, eventName, wakeAt) => delegate.waitRun(runId, leaseId, eventName, wakeAt),
-    deliverEvent: (runId, eventName, payload) => delegate.deliverEvent(runId, eventName, payload),
-    takeEvent: (runId, eventName) => delegate.takeEvent(runId, eventName),
-    getRun: (runId) => delegate.getRun(runId),
-    getStepResults: (runId) => delegate.getStepResults(runId),
-    listRuns: (filter) => delegate.listRuns(filter),
-    requeueRun: (runId) => delegate.requeueRun(runId),
-    saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
-    updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
-    updateClaimedRunStatus: (runId, leaseId, status) =>
-      delegate.updateClaimedRunStatus(runId, leaseId, status),
-    upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
-    claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
-    deleteSchedule: (key) => delegate.deleteSchedule(key),
-    listSchedules: () => delegate.listSchedules(),
-    close: () => delegate.close(),
-  }
+  })
 }
 
 describe('async hooks', () => {
@@ -256,34 +237,13 @@ describe('async hooks', () => {
     const delegate = new MemoryStorage()
     await delegate.initialize()
     let heartbeatCalls = 0
-    const flakyStorage: StorageAdapter = {
-      initialize: () => delegate.initialize(),
-      createRun: (run) => delegate.createRun(run),
-      claimNextRun: (workflowNames, staleBefore) =>
-        delegate.claimNextRun(workflowNames, staleBefore),
+    const flakyStorage = delegatingAdapter(delegate, {
       heartbeatRun: async (runId, leaseId) => {
         heartbeatCalls++
         if (heartbeatCalls === 1) throw new Error('heartbeat failed')
         return delegate.heartbeatRun(runId, leaseId)
       },
-      sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
-      waitRun: (runId, leaseId, eventName, wakeAt) => delegate.waitRun(runId, leaseId, eventName, wakeAt),
-      deliverEvent: (runId, eventName, payload) => delegate.deliverEvent(runId, eventName, payload),
-      takeEvent: (runId, eventName) => delegate.takeEvent(runId, eventName),
-      getRun: (runId) => delegate.getRun(runId),
-      getStepResults: (runId) => delegate.getStepResults(runId),
-      listRuns: (filter) => delegate.listRuns(filter),
-      requeueRun: (runId) => delegate.requeueRun(runId),
-      saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
-      updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
-      updateClaimedRunStatus: (runId, leaseId, status) =>
-        delegate.updateClaimedRunStatus(runId, leaseId, status),
-      upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
-      claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
-      deleteSchedule: (key) => delegate.deleteSchedule(key),
-      listSchedules: () => delegate.listSchedules(),
-      close: () => delegate.close(),
-    }
+    })
     const failureHookStarted = deferred()
     const wf = createWorkflow({ name: 'heartbeat-hook', input: z.object({}) })
       .step('slow', async ({ signal }) => {
@@ -642,30 +602,9 @@ describe('engine.stream()', () => {
   it('lease loss releases a producer paused on backpressure', async () => {
     const delegate = new MemoryStorage()
     await delegate.initialize()
-    const leaseLosingStorage: StorageAdapter = {
-      initialize: () => delegate.initialize(),
-      createRun: (run) => delegate.createRun(run),
-      claimNextRun: (workflowNames, staleBefore) =>
-        delegate.claimNextRun(workflowNames, staleBefore),
+    const leaseLosingStorage = delegatingAdapter(delegate, {
       heartbeatRun: async () => false,
-      sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
-      waitRun: (runId, leaseId, eventName, wakeAt) => delegate.waitRun(runId, leaseId, eventName, wakeAt),
-      deliverEvent: (runId, eventName, payload) => delegate.deliverEvent(runId, eventName, payload),
-      takeEvent: (runId, eventName) => delegate.takeEvent(runId, eventName),
-      getRun: (runId) => delegate.getRun(runId),
-      getStepResults: (runId) => delegate.getStepResults(runId),
-      listRuns: (filter) => delegate.listRuns(filter),
-      requeueRun: (runId) => delegate.requeueRun(runId),
-      saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
-      updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
-      updateClaimedRunStatus: (runId, leaseId, status) =>
-        delegate.updateClaimedRunStatus(runId, leaseId, status),
-      upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
-      claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
-      deleteSchedule: (key) => delegate.deleteSchedule(key),
-      listSchedules: () => delegate.listSchedules(),
-      close: () => delegate.close(),
-    }
+    })
     const wf = createWorkflow({ name: 'lease-backpressure', input: z.object({}) })
       .step('a', async () => ({ ok: true }))
     const engine = createEngine({

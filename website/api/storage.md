@@ -66,8 +66,11 @@ interface StorageAdapter {
   requeueRun(runId: string): Promise<boolean>
   getStepResults(runId: string): Promise<StepResult[]>
   saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
-  updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
-  updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean>
+  completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean>
+  failRun(runId: string, leaseId: string, error: RunError): Promise<boolean>
+  cancelRun(runId: string): Promise<boolean>
+  countRuns(filter?: CountRunsFilter): Promise<RunCounts>
+  deleteRuns(filter: DeleteRunsFilter): Promise<number>
   upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule>
   claimDueSchedule(workflowNames: readonly string[], now: number): Promise<WorkflowSchedule | null>
   deleteSchedule(key: string): Promise<boolean>
@@ -80,18 +83,21 @@ interface StorageAdapter {
 |---|---|
 | `initialize` | Create tables/indexes. Called once by `engine.start()`. |
 | `createRun` | Persist a new run. Must handle idempotency-key conflicts, returning `{ run, created }`. |
-| `claimNextRun` | **Atomically** claim the next pending run (a stale one older than `staleBefore`, or a `sleeping`/`waiting` run past its wake time), returning a unique `leaseId`. |
+| `claimNextRun` | **Atomically** claim the next pending run (a stale one older than `staleBefore`, or a `sleeping`/`waiting` run past its wake time), returning a unique `leaseId`. Must claim the run that has been claimable **longest** — pending since its `updatedAt`, sleeping/waiting since its wake time, stale since its lease expired — so new work cannot starve woken or crashed runs. Sets `startedAt` on a run's first claim only, and clears `wakeAt` / `waitingFor`. |
 | `heartbeatRun` | Renew the lease. Return `false` if the lease was lost. |
 | `sleepRun` | Suspend a held run to `sleeping` until `wakeAt`, releasing the lease. Backs [`.sleep()`](/api/workflow). |
-| `waitRun` | Suspend a held run to `waiting` (until an event or `wakeAt`), releasing the lease. Must stay reclaimable if a matching event is already buffered. Backs [`.waitForEvent()`](/api/workflow). |
+| `waitRun` | Suspend a held run to `waiting` (until an event or `wakeAt`), releasing the lease and recording `eventName` as `waitingFor`. Must stay reclaimable if a matching event is already buffered. Backs [`.waitForEvent()`](/api/workflow). |
 | `deliverEvent` | Durably buffer an event and wake the run if it is `waiting`. Return `false` if the run does not exist. Backs `engine.sendEvent()`. |
 | `takeEvent` | Atomically consume the oldest buffered event for `(runId, eventName)`, or return `null`. |
 | `getRun` / `getStepResults` | Read a run / its step results. |
 | `listRuns` | List runs most-recent-first, filtered by `status` / `workflow` and paged with `limit` / `before`. Backs `engine.listRuns()`. |
-| `requeueRun` | Reset a `failed` / `cancelled` run to `pending` and discard its `failed` step results. Return `false` if the run is not in a resumable state. Backs `engine.resume()`. |
+| `requeueRun` | Reset a `failed` / `cancelled` run to `pending`, clear `finishedAt` / `output` / `error`, and discard its `failed` step results. Return `false` if the run is not in a resumable state. Backs `engine.resume()`. |
 | `saveStepResult` | Persist a step result. With a `leaseId`, must fail (return `false`) if the lease is no longer held. |
-| `updateRunStatus` | Update status without a lease check (used for cancellation). |
-| `updateClaimedRunStatus` | Update status only if the caller still holds the lease. |
+| `completeRun` | Mark a held run `completed`, recording `output` and `finishedAt` and releasing the lease. Return `false`, changing nothing, if the lease is no longer held. |
+| `failRun` | Mark a held run `failed`, recording `error` (`{ stepName, message, code }`) and `finishedAt`. Same lease rule as `completeRun`. |
+| `cancelRun` | Mark a run `cancelled` and record `finishedAt`, whoever holds it — unless it has already finished. The check and the write must be **atomic**, so a run completing at the same moment is never reported cancelled. Backs `engine.cancel()`. |
+| `countRuns` | Runs per status, optionally for one `workflow`. Every status is present, zero or not. Backs `engine.countRuns()`. |
+| `deleteRuns` | Delete up to `limit` runs in the given terminal `statuses` that finished before `finishedBefore`, oldest-finished first, with their steps and buffered events. Never deletes a run that can still progress. Backs `engine.prune()`. |
 | `upsertSchedule` | Register or update a schedule by `key`. Must **preserve `nextRunAt`** when the interval is unchanged, so a redeploy rejoins the existing cadence instead of pushing the next firing out each time. |
 | `claimDueSchedule` | **Atomically** claim the next schedule due at or before `now` whose workflow is in `workflowNames`, advancing its `nextRunAt` past `now` in the same transaction. Return the schedule carrying the occurrence it was claimed *for*. This atomicity is what stops N instances firing one occurrence N times. |
 | `deleteSchedule` | Remove a schedule by key. Return `false` if it did not exist. |

@@ -85,7 +85,7 @@ Solo devs and small teams who need reliable multi-step workflows without Tempora
 
 Don't use Reflow when:
 - You need distributed execution across multiple machines
-- You need sub-second latency on workflow dispatch
+- You need sub-second pickup of work enqueued by a different process (it waits for the next poll)
 - You're already running Temporal or similar
 
 ## Core Concepts
@@ -273,7 +273,7 @@ Reflow automatically resumes workflows from the last completed step. If the proc
 
 ### Concurrency
 
-By default, the engine processes one run at a time. Set concurrency to process multiple runs in parallel per tick:
+By default, the engine processes one run at a time. Set concurrency to execute several runs at once:
 
 ```typescript
 const engine = createEngine({
@@ -283,7 +283,7 @@ const engine = createEngine({
 })
 ```
 
-Each tick claims up to concurrency pending runs and executes them concurrently. Steps within a single run still execute sequentially.
+The engine keeps up to concurrency runs executing at once and refills a slot as soon as its run finishes, so one slow run never holds the others idle. Steps within a single run still execute sequentially.
 
 ### Cancellation
 
@@ -378,15 +378,49 @@ interface StorageAdapter {
   createRun(run: WorkflowRun): Promise<CreateRunResult>
   claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
   heartbeatRun(runId: string, leaseId: string): Promise<boolean>
+  sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean>
+  waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
+  deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
+  takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
   getRun(runId: string): Promise<WorkflowRun | null>
+  listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
+  requeueRun(runId: string): Promise<boolean>
   getStepResults(runId: string): Promise<StepResult[]>
   saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
-  updateRunStatus(runId: string, status: RunStatus): Promise<boolean>
-  updateClaimedRunStatus(runId: string, leaseId: string, status: RunStatus): Promise<boolean>
+  completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean>
+  failRun(runId: string, leaseId: string, error: RunError): Promise<boolean>
+  cancelRun(runId: string): Promise<boolean>
+  countRuns(filter?: CountRunsFilter): Promise<RunCounts>
+  deleteRuns(filter: DeleteRunsFilter): Promise<number>
+  upsertSchedule(schedule: WorkflowSchedule): Promise<WorkflowSchedule>
+  claimDueSchedule(workflowNames: readonly string[], now: number): Promise<WorkflowSchedule | null>
+  deleteSchedule(key: string): Promise<boolean>
+  listSchedules(): Promise<WorkflowSchedule[]>
+  close(): void
 }
 ```
 
 Persisted data must be JSON-compatible: plain objects, arrays, strings, numbers, booleans, null, and undefined.
+
+## Dashboard
+
+```bash
+npx reflow-ts dashboard ./reflow.db   # read-only web view of a SQLite database, on 127.0.0.1
+```
+
+```typescript
+import { createDashboard, toNodeHandler } from 'reflow-ts/dashboard'
+
+// A Fetch API handler: (request: Request) => Promise<Response>
+const dashboard = createDashboard({
+  storage,
+  authorize: (request) => isAdmin(request), // required; () => true for open access
+  engine,                                   // optional: enables cancel/resume and live updates
+  basePath: '/admin/reflow',                // when the server passes full paths
+})
+Bun.serve({ fetch: dashboard })
+app.use('/admin/reflow', toNodeHandler(dashboard)) // Express / node:http (leave basePath '/')
+```
 
 ## Testing
 
@@ -469,13 +503,13 @@ Attaches failure handler. Receives { error, stepName, input }. Called when a ste
 | config.storage              | StorageAdapter | required         | Storage backend                                |
 | config.workflows            | Workflow[]     | required         | Workflows to register                          |
 | config.hooks                | EngineHooks    | undefined        | Lifecycle hooks                                |
-| config.concurrency          | number         | 1                | Runs to process in parallel per tick           |
+| config.concurrency          | number         | 1                | Maximum runs executing at once                 |
 | config.runLeaseDurationMs   | number         | 30000            | Lease duration before reclaim                  |
 | config.heartbeatIntervalMs  | number         | leaseDuration/3  | Lease renewal interval                         |
 
 ### engine.start(pollIntervalMs?)
 
-Initializes storage and starts polling loop. Default pollIntervalMs: 1000. Call once at startup.
+Initializes storage and starts the engine. Work this instance enqueues, resumes, or sends an event to starts at once; every pollIntervalMs (default 1000) it also checks storage for work from other processes, elapsed sleeps, due schedules, and stale runs. Call once at startup.
 
 ### engine.stop()
 
@@ -505,7 +539,19 @@ Recurring workflow enqueue. Returns scheduleId. Cancel with engine.unschedule(sc
 
 ### engine.getRunStatus(runId)
 
-Returns { run, steps } or null.
+Returns { run, steps } or null. run carries status, startedAt, finishedAt, output (completed runs), error ({ stepName, message, code } for failed runs), wakeAt, and waitingFor. Each step carries status, output, error, attempts, startedAt, and updatedAt.
+
+### engine.waitForRun(runId, { signal?, pollIntervalMs? })
+
+Resolves with the run once completed, failed, or cancelled (a failed run resolves, it does not reject). Use AbortSignal.timeout(ms) as signal for a deadline. Throws RunNotFoundError for an unknown run.
+
+### engine.countRuns(filter?)
+
+Returns a count for every run status, optionally for one workflow.
+
+### engine.prune({ olderThan, statuses? })
+
+Deletes finished runs older than olderThan (ms or '30d'), with their steps and events. Never deletes runs that can still progress. Returns the number deleted.
 
 ### testEngine(config)
 

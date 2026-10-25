@@ -16,7 +16,7 @@ const engine = createEngine({
 | `storage` | `StorageAdapter` | required | Backend for runs and step results |
 | `workflows` | `Workflow[]` | required | Workflows to register |
 | `hooks` | `EngineHooks` | — | Lifecycle hooks (may be sync or `async`) |
-| `concurrency` | `number` | `1` | Runs processed in parallel per tick |
+| `concurrency` | `number` | `1` | Maximum runs executing at once |
 | `runLeaseDurationMs` | `number` | `30000` | How long a claimed run stays `running` before another engine may reclaim it |
 | `heartbeatIntervalMs` | `number` | `lease / 3` | How often the active worker renews its lease |
 

@@ -24,6 +24,7 @@ if (error instanceof ReflowError) {
 | `ReflowError` | — | Base class for all Reflow errors | `code` |
 | `ConfigError` | `CONFIG` | Invalid engine, retry, schedule, or stream config | — |
 | `WorkflowNotFoundError` | `WORKFLOW_NOT_FOUND` | `enqueue()` / `schedule()` with an unknown name | `workflowName` |
+| `RunNotFoundError` | `RUN_NOT_FOUND` | `waitForRun()` with an unknown run id | `runId` |
 | `DuplicateWorkflowError` | `DUPLICATE_WORKFLOW` | Same workflow name registered twice in one engine | `workflowName` |
 | `DuplicateStepError` | `DUPLICATE_STEP` | `.step()` / `.parallel()` reuses a name | `workflowName`, `stepName` |
 | `ParallelCompleteError` | `PARALLEL_COMPLETE` | `complete()` called inside a parallel branch | `stepName` |

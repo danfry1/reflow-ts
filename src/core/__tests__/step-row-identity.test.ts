@@ -39,6 +39,12 @@ describe('step row identity across re-execution', () => {
       status: 'pending',
       createdAt: now,
       updatedAt: now,
+      startedAt: null,
+      finishedAt: null,
+      output: undefined,
+      error: null,
+      wakeAt: null,
+      waitingFor: null,
     })
 
     const claimed = await storage.claimNextRun(['reclaim'])
@@ -54,6 +60,8 @@ describe('step row identity across re-execution', () => {
       attempts: 1,
       createdAt: now,
       updatedAt: now,
+      startedAt: null,
+      history: [],
     }, claimed?.leaseId)
 
     // Let the lease go stale so the engine reclaims the run and re-runs `a`.

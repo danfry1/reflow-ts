@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitepress'
 
 const description =
@@ -7,22 +8,37 @@ export default defineConfig({
   title: 'Reflow',
   description,
   lang: 'en-US',
-  base: '/reflow-ts/',
+  base: '/',
   cleanUrls: true,
   lastUpdated: true,
-  sitemap: { hostname: 'https://danfry1.github.io/reflow-ts/' },
+  sitemap: { hostname: 'https://reflow.danfry.dev/' },
+  // The home page runs the real engine and dashboard in the browser; this maps
+  // the Node modules they import to browser equivalents or unused stand-ins.
+  vite: {
+    resolve: {
+      alias: {
+        'node:crypto': fileURLToPath(new URL('./theme/playground/node-crypto.ts', import.meta.url)),
+        'node:stream/promises': fileURLToPath(new URL('./theme/playground/node-stream.ts', import.meta.url)),
+        'node:stream': fileURLToPath(new URL('./theme/playground/node-stream.ts', import.meta.url)),
+      },
+    },
+  },
   head: [
-    ['link', { rel: 'icon', href: '/reflow-ts/favicon.svg', type: 'image/svg+xml' }],
-    ['meta', { name: 'theme-color', content: '#e46d2f' }],
+    ['link', { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' }],
+    ['meta', { name: 'theme-color', content: '#14213d' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' }],
+    ['link', { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&display=swap' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:site_name', content: 'Reflow' }],
-    ['meta', { property: 'og:image', content: 'https://danfry1.github.io/reflow-ts/og-card.png' }],
+    ['meta', { property: 'og:image', content: 'https://reflow.danfry.dev/og-card.png' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
-    ['meta', { name: 'twitter:image', content: 'https://danfry1.github.io/reflow-ts/og-card.png' }],
+    ['meta', { name: 'twitter:image', content: 'https://reflow.danfry.dev/og-card.png' }],
     ['meta', { property: 'og:title', content: 'Reflow — Durable Workflows for TypeScript' }],
     ['meta', { name: 'twitter:title', content: 'Reflow — Durable Workflows for TypeScript' }],
   ],
   themeConfig: {
+    logo: '/favicon.svg',
     search: { provider: 'local' },
     socialLinks: [{ icon: 'github', link: 'https://github.com/danfry1/reflow-ts' }],
     editLink: {
@@ -68,7 +84,10 @@ export default defineConfig({
             { text: 'Scheduled Workflows', link: '/guide/scheduling' },
             { text: 'Concurrency', link: '/guide/concurrency' },
             { text: 'Crash Recovery', link: '/guide/crash-recovery' },
+            { text: 'Changing Workflows', link: '/guide/changing-workflows' },
             { text: 'Storage', link: '/guide/storage' },
+            { text: 'Inspecting Runs', link: '/guide/inspecting-runs' },
+            { text: 'Dashboard', link: '/guide/dashboard' },
           ],
         },
         {
@@ -77,6 +96,7 @@ export default defineConfig({
             { text: 'Testing', link: '/guide/testing' },
             { text: 'Type Safety', link: '/guide/type-safety' },
             { text: 'Error Handling', link: '/guide/error-handling' },
+            { text: 'Migrating to 0.8', link: '/guide/migrating-0-8' },
             { text: 'Migrating to 0.7', link: '/guide/migrating-0-7' },
             { text: 'Migrating to 0.6', link: '/guide/migrating-0-6' },
           ],

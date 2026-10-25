@@ -91,6 +91,12 @@ describe('translateStorageErrors', () => {
       status: 'pending',
       createdAt: 0,
       updatedAt: 0,
+      startedAt: null,
+      finishedAt: null,
+      output: undefined,
+      error: null,
+      wakeAt: null,
+      waitingFor: null,
     }))).toBeInstanceOf(StorageError)
   })
 
@@ -107,6 +113,12 @@ describe('translateStorageErrors', () => {
       status: 'pending',
       createdAt: now,
       updatedAt: now,
+      startedAt: null,
+      finishedAt: null,
+      output: undefined,
+      error: null,
+      wakeAt: null,
+      waitingFor: null,
     })
 
     expect(created).toBe(true)

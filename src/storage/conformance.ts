@@ -25,6 +25,12 @@ import type {
 /** A single contract case. Receives a freshly initialized, empty storage. */
 export interface ConformanceCase {
   readonly name: string
+  /**
+   * Whether the case applies to this adapter — false for a case covering an
+   * optional method the adapter does not implement. A runner can report the
+   * case as skipped; `run` also passes without checking anything in that case.
+   */
+  appliesTo?(storage: StorageAdapter): boolean
   run(storage: StorageAdapter): Promise<void>
 }
 
@@ -59,6 +65,12 @@ function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     status: 'pending',
     createdAt: now,
     updatedAt: now,
+    startedAt: null,
+    finishedAt: null,
+    output: undefined,
+    error: null,
+    wakeAt: null,
+    waitingFor: null,
     ...overrides,
   }
 }
@@ -75,6 +87,8 @@ function makeStep(overrides: Partial<StepResult> = {}): StepResult {
     attempts: 1,
     createdAt: now,
     updatedAt: now,
+    startedAt: now,
+    history: [],
     ...overrides,
   }
 }
@@ -200,6 +214,99 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
   {
+    name: 'claimNextRun skips a workflow already running as many runs as its limit',
+    appliesTo: (storage) => storage.supportsConcurrencyLimits === true,
+    async run(storage) {
+      if (storage.supportsConcurrencyLimits !== true) return
+      const now = Date.now()
+      const limits = new Map([['test', 2]])
+      await storage.createRun(makeRun({ id: 'a', createdAt: now - 3_000, updatedAt: now - 3_000 }))
+      await storage.createRun(makeRun({ id: 'b', createdAt: now - 2_000, updatedAt: now - 2_000 }))
+      await storage.createRun(makeRun({ id: 'c', createdAt: now - 1_000, updatedAt: now - 1_000 }))
+      await storage.createRun(makeRun({ id: 'other', workflow: 'other', createdAt: now, updatedAt: now }))
+
+      assertEqual((await storage.claimNextRun(['test'], now - 30_000, limits))?.id, 'a', 'first place')
+      const second = await storage.claimNextRun(['test'], now - 30_000, limits)
+      assertEqual(second?.id, 'b', 'second place')
+      assertEqual(await storage.claimNextRun(['test'], now - 30_000, limits), null, 'no third run while two are running')
+      assertEqual(
+        (await storage.claimNextRun(['test', 'other'], now - 30_000, limits))?.id,
+        'other',
+        'a workflow with no limit is still claimed',
+      )
+
+      assert(second, 'second claim')
+      await storage.completeRun(second.id, second.leaseId, null)
+      assertEqual((await storage.claimNextRun(['test'], now - 30_000, limits))?.id, 'c', 'a finished run frees its place')
+    },
+  },
+  {
+    name: 'claimNextRun does not count a run whose lease has gone stale toward its limit',
+    appliesTo: (storage) => storage.supportsConcurrencyLimits === true,
+    async run(storage) {
+      if (storage.supportsConcurrencyLimits !== true) return
+      const now = Date.now()
+      // Its process died: the lease was last renewed a minute ago.
+      await storage.createRun(makeRun({ id: 'stale', status: 'running', createdAt: now - 120_000, updatedAt: now - 60_000 }))
+      await storage.createRun(makeRun({ id: 'next', createdAt: now - 1_000, updatedAt: now - 1_000 }))
+
+      const claimed = await storage.claimNextRun(['test'], now - 30_000, new Map([['test', 1]]))
+      assertEqual(claimed?.id, 'stale', 'the stale run is reclaimed, in its own place')
+      assertEqual(await storage.claimNextRun(['test'], now - 30_000, new Map([['test', 1]])), null, 'and now holds the only place')
+    },
+  },
+  {
+    name: 'claimNextRun claims pending runs in the order they became pending',
+    async run(storage) {
+      const now = Date.now()
+      await storage.createRun(makeRun({ id: 'newer', createdAt: now - 1_000, updatedAt: now - 1_000 }))
+      await storage.createRun(makeRun({ id: 'older', createdAt: now - 2_000, updatedAt: now - 2_000 }))
+
+      assertEqual((await claim(storage)).id, 'older', 'first claim')
+      assertEqual((await claim(storage)).id, 'newer', 'second claim')
+    },
+  },
+  {
+    name: 'claimNextRun does not starve a woken sleeper behind newer pending runs',
+    async run(storage) {
+      await storage.createRun(makeRun({ id: 'sleeper', createdAt: 1, updatedAt: 1 }))
+      const sleeper = await claim(storage)
+      await storage.sleepRun('sleeper', sleeper.leaseId, Date.now() - 60_000)
+      await storage.createRun(makeRun({ id: 'fresh' }))
+
+      assertEqual(
+        (await claim(storage)).id,
+        'sleeper',
+        'a run due a minute ago must be claimed before one enqueued just now',
+      )
+    },
+  },
+  {
+    name: 'claimNextRun orders a woken sleeper by its wake time, not ahead of older pending runs',
+    async run(storage) {
+      const now = Date.now()
+      await storage.createRun(makeRun({ id: 'sleeper' }))
+      const sleeper = await claim(storage)
+      await storage.sleepRun('sleeper', sleeper.leaseId, now - 1_000)
+      await storage.createRun(makeRun({ id: 'waiting-longer', createdAt: now - 60_000, updatedAt: now - 60_000 }))
+
+      assertEqual((await claim(storage)).id, 'waiting-longer', 'first claim')
+      assertEqual((await claim(storage)).id, 'sleeper', 'second claim')
+    },
+  },
+  {
+    name: 'claimNextRun does not starve a stale run behind newer pending runs',
+    async run(storage) {
+      const now = Date.now()
+      // Last heartbeat two minutes ago with a 30s lease: due for 90s.
+      await storage.createRun(makeRun({ id: 'stale', status: 'running', updatedAt: now - 120_000 }))
+      await storage.createRun(makeRun({ id: 'fresh' }))
+
+      const reclaimed = await storage.claimNextRun(['test'], now - 30_000)
+      assertEqual(reclaimed?.id, 'stale', 'a run whose lease expired 90s ago must be claimed first')
+    },
+  },
+  {
     name: 'heartbeatRun succeeds with the held lease and fails once it is lost',
     async run(storage) {
       await storage.createRun(makeRun())
@@ -213,32 +320,276 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
   {
-    name: 'updateClaimedRunStatus respects the lease, updateRunStatus does not',
+    name: 'claimNextRun records when a run first started and keeps it across reclaims',
+    async run(storage) {
+      const now = Date.now()
+      await storage.createRun(makeRun({ status: 'running', startedAt: 5, updatedAt: now - 120_000 }))
+
+      const reclaimed = await storage.claimNextRun(['test'], now - 30_000)
+
+      assertEqual(reclaimed?.startedAt, 5, 'claimed run startedAt')
+      assertEqual((await storage.getRun('run_1'))?.startedAt, 5, 'stored startedAt')
+    },
+  },
+  {
+    name: 'claimNextRun sets startedAt on a run that has never started',
+    async run(storage) {
+      const before = Date.now()
+      await storage.createRun(makeRun())
+      const claimed = await claim(storage)
+
+      assert(claimed.startedAt !== null && claimed.startedAt >= before, 'startedAt must be set on first claim')
+      assertEqual((await storage.getRun('run_1'))?.startedAt, claimed.startedAt, 'stored startedAt')
+    },
+  },
+  {
+    name: 'completeRun records the output and finish time under the held lease only',
     async run(storage) {
       await storage.createRun(makeRun())
       const claimed = await claim(storage)
 
-      assert(
-        !(await storage.updateClaimedRunStatus('run_1', 'wrong', 'completed')),
-        'a foreign lease must not change status',
-      )
-      assert(
-        await storage.updateClaimedRunStatus('run_1', claimed.leaseId, 'completed'),
-        'the held lease must change status',
-      )
-      assertEqual((await storage.getRun('run_1'))?.status, 'completed', 'status after update')
+      assert(!(await storage.completeRun('run_1', 'not-the-lease', { n: 1 })), 'a foreign lease must not complete')
+      assert(await storage.completeRun('run_1', claimed.leaseId, { n: 1 }), 'the held lease must complete')
+
+      const run = await storage.getRun('run_1')
+      assertEqual(run?.status, 'completed', 'status')
+      assertEqual(run?.output, { n: 1 }, 'output')
+      assert(run?.finishedAt !== null && run?.finishedAt !== undefined, 'finishedAt must be set')
+      assert(!(await storage.heartbeatRun('run_1', claimed.leaseId)), 'completing must release the lease')
     },
   },
   {
-    name: 'updateRunStatus reports whether the run exists',
+    name: 'completeRun distinguishes a null output from no output',
+    async run(storage) {
+      await storage.createRun(makeRun({ id: 'nulled' }))
+      await storage.createRun(makeRun({ id: 'pending' }))
+      const claimed = await claim(storage)
+      await storage.completeRun(claimed.id, claimed.leaseId, null)
+
+      assertEqual((await storage.getRun('nulled'))?.output, null, 'a completed null output')
+      assert((await storage.getRun('pending'))?.output === undefined, 'an unfinished run has no output')
+    },
+  },
+  {
+    name: 'failRun records the error and finish time under the held lease only',
     async run(storage) {
       await storage.createRun(makeRun())
+      const claimed = await claim(storage)
+      const error = { stepName: 'charge', message: 'card declined', code: 'E_DECLINED' }
 
-      assert(await storage.updateRunStatus('run_1', 'cancelled'), 'existing run')
-      assert(!(await storage.updateRunStatus('missing', 'cancelled')), 'missing run')
+      assert(!(await storage.failRun('run_1', 'not-the-lease', error)), 'a foreign lease must not fail the run')
+      assert(await storage.failRun('run_1', claimed.leaseId, error), 'the held lease must fail the run')
+
+      const run = await storage.getRun('run_1')
+      assertEqual(run?.status, 'failed', 'status')
+      assertEqual(run?.error, error, 'error')
+      assert(run?.finishedAt !== null && run?.finishedAt !== undefined, 'finishedAt must be set')
+    },
+  },
+  {
+    name: 'cancelRun cancels a live run, held or not, but never a finished one',
+    async run(storage) {
+      await storage.createRun(makeRun({ id: 'pending' }))
+      await storage.createRun(makeRun({ id: 'done', status: 'completed' }))
+
+      assert(await storage.cancelRun('pending'), 'a pending run must cancel')
+      assertEqual((await storage.getRun('pending'))?.status, 'cancelled', 'status')
+      assert((await storage.getRun('pending'))?.finishedAt !== null, 'finishedAt must be set')
+      assert(!(await storage.cancelRun('pending')), 'an already-cancelled run must not cancel again')
+      assert(!(await storage.cancelRun('done')), 'a completed run must not cancel')
+      assertEqual((await storage.getRun('done'))?.status, 'completed', 'completed run untouched')
+      assert(!(await storage.cancelRun('missing')), 'a missing run must not cancel')
+    },
+  },
+  {
+    name: 'cancelRun releases the lease of a running run',
+    async run(storage) {
+      await storage.createRun(makeRun())
+      const claimed = await claim(storage)
+
+      assert(await storage.cancelRun('run_1'), 'a running run must cancel')
+      assert(!(await storage.heartbeatRun('run_1', claimed.leaseId)), 'the lease must be released')
+      assert(!(await storage.completeRun('run_1', claimed.leaseId, null)), 'the former holder must not complete it')
+    },
+  },
+  {
+    name: 'waitRun records the awaited event and deadline, and claiming clears them',
+    async run(storage) {
+      await storage.createRun(makeRun())
+      const claimed = await claim(storage)
+      await storage.waitRun('run_1', claimed.leaseId, 'approved', 1_000)
+
+      const waiting = await storage.getRun('run_1')
+      assertEqual(waiting?.waitingFor, 'approved', 'waitingFor')
+      assertEqual(waiting?.wakeAt, 1_000, 'wakeAt')
+
+      const woken = await claim(storage)
+      assertEqual([woken.waitingFor, woken.wakeAt], [null, null], 'claimed run')
+      const stored = await storage.getRun('run_1')
+      assertEqual([stored?.waitingFor, stored?.wakeAt], [null, null], 'stored after claim')
+    },
+  },
+  {
+    name: 'sleepRun records the wake time',
+    async run(storage) {
+      await storage.createRun(makeRun())
+      const claimed = await claim(storage)
+      await storage.sleepRun('run_1', claimed.leaseId, Date.now() + 60_000)
+
+      const run = await storage.getRun('run_1')
+      assert(run?.wakeAt !== null && run?.wakeAt !== undefined && run.wakeAt > Date.now(), 'wakeAt')
+      assertEqual(run?.waitingFor, null, 'a sleep awaits no event')
+    },
+  },
+  {
+    name: 'requeueRun clears the finish time and error but keeps the start time',
+    async run(storage) {
+      await storage.createRun(makeRun())
+      const claimed = await claim(storage)
+      await storage.failRun('run_1', claimed.leaseId, { stepName: 'a', message: 'boom', code: null })
+
+      assert(await storage.requeueRun('run_1'), 'a failed run must requeue')
+
+      const run = await storage.getRun('run_1')
+      assertEqual([run?.finishedAt, run?.error], [null, null], 'finish fields')
+      assertEqual(run?.startedAt, claimed.startedAt, 'startedAt')
+    },
+  },
+  {
+    name: 'requeueRun discards a step that was waiting out a retry, so it starts over',
+    async run(storage) {
+      await storage.createRun(makeRun({ status: 'cancelled' }))
+      await storage.saveStepResult(makeStep({ id: 'done', name: 'a', status: 'completed' }))
+      await storage.saveStepResult(makeStep({ id: 'backing-off', name: 'b', status: 'retrying', attempts: 1, output: 0 }))
+
+      assert(await storage.requeueRun('run_1'), 'a cancelled run must requeue')
+
+      assertEqual(
+        (await storage.getStepResults('run_1')).map((step) => step.name),
+        ['a'],
+        'remaining steps',
+      )
+    },
+  },
+  {
+    name: 'countRuns counts every status, including those with no runs',
+    async run(storage) {
+      await storage.createRun(makeRun({ id: 'a' }))
+      await storage.createRun(makeRun({ id: 'b' }))
+      await storage.createRun(makeRun({ id: 'c', status: 'failed' }))
+      await storage.createRun(makeRun({ id: 'd', workflow: 'other' }))
+
+      assertEqual(
+        await storage.countRuns(),
+        { pending: 3, running: 0, sleeping: 0, waiting: 0, completed: 0, failed: 1, cancelled: 0 },
+        'all workflows',
+      )
+      assertEqual(
+        await storage.countRuns({ workflow: 'other' }),
+        { pending: 1, running: 0, sleeping: 0, waiting: 0, completed: 0, failed: 0, cancelled: 0 },
+        'one workflow',
+      )
+    },
+  },
+  {
+    name: 'deleteRuns removes finished runs older than the cutoff, with their steps and events',
+    async run(storage) {
+      await storage.createRun(makeRun({ id: 'old', status: 'completed', finishedAt: 100 }))
+      await storage.createRun(makeRun({ id: 'recent', status: 'completed', finishedAt: 900 }))
+      await storage.createRun(makeRun({ id: 'live', status: 'pending' }))
+      await storage.saveStepResult(makeStep({ id: 's', runId: 'old' }))
+      await storage.deliverEvent('old', 'e', null)
+
+      const deleted = await storage.deleteRuns({ finishedBefore: 500, statuses: ['completed'], limit: 10 })
+
+      assertEqual(deleted, 1, 'deleted count')
+      assertEqual(await storage.getRun('old'), null, 'old run removed')
+      assertEqual(await storage.getStepResults('old'), [], 'its steps removed')
+      assertEqual(await storage.takeEvent('old', 'e'), null, 'its events removed')
+      assert(await storage.getRun('recent'), 'a run finished after the cutoff stays')
+      assert(await storage.getRun('live'), 'a live run stays')
+    },
+  },
+  {
+    name: 'deleteRuns honours the status filter and the limit, oldest first',
+    async run(storage) {
+      await storage.createRun(makeRun({ id: 'failed', status: 'failed', finishedAt: 100 }))
+      await storage.createRun(makeRun({ id: 'c2', status: 'completed', finishedAt: 300 }))
+      await storage.createRun(makeRun({ id: 'c1', status: 'completed', finishedAt: 200 }))
+
+      assertEqual(await storage.deleteRuns({ finishedBefore: 1_000, statuses: ['completed'], limit: 1 }), 1, 'limited')
+      assertEqual(await storage.getRun('c1'), null, 'the oldest completed run goes first')
+      assert(await storage.getRun('c2'), 'the limit holds back the next')
+      assert(await storage.getRun('failed'), 'an unlisted status stays')
+    },
+  },
+  {
+    name: 'saveStepResult round-trips the step start time',
+    async run(storage) {
+      await storage.createRun(makeRun())
+      await storage.saveStepResult(makeStep({ startedAt: 42 }))
+
+      assertEqual((await storage.getStepResults('run_1'))[0]?.startedAt, 42, 'startedAt')
+    },
+  },
+  {
+    name: 'saveStepResult round-trips the attempt history, in order',
+    async run(storage) {
+      const history = [
+        { startedAt: 10, finishedAt: 12, error: 'gateway timed out' },
+        { startedAt: 1_012, finishedAt: 1_015, error: null },
+      ]
+      await storage.createRun(makeRun())
+      await storage.saveStepResult(makeStep({ attempts: 2, history }))
+
+      const [step] = await storage.getStepResults('run_1')
+      assertEqual(step?.history, history, 'history')
+
+      // Mutating what was read must not reach the stored record.
+      step?.history.push({ startedAt: 0, finishedAt: 0, error: null })
+      assertEqual((await storage.getStepResults('run_1'))[0]?.history, history, 'history after mutating a read')
     },
   },
 
+  {
+    name: "getStepResultsForRuns returns each run's steps in order, and an empty list for the rest",
+    appliesTo: (storage) => storage.getStepResultsForRuns !== undefined,
+    async run(storage) {
+      if (!storage.getStepResultsForRuns) return
+      await storage.createRun(makeRun({ id: 'a' }))
+      await storage.createRun(makeRun({ id: 'b' }))
+      await storage.saveStepResult(makeStep({ id: 'a2', runId: 'a', name: 'second', createdAt: 2 }))
+      await storage.saveStepResult(makeStep({ id: 'a1', runId: 'a', name: 'first', createdAt: 1 }))
+
+      const byRun = await storage.getStepResultsForRuns(['a', 'b', 'missing'])
+
+      assertEqual([...byRun.keys()].sort(), ['a', 'b', 'missing'], 'every run asked for')
+      assertEqual(byRun.get('a')?.map((step) => step.name), ['first', 'second'], 'steps in creation order')
+      assertEqual(byRun.get('b'), [], 'a run with no steps')
+      assertEqual(byRun.get('missing'), [], 'a run that does not exist')
+    },
+  },
+  {
+    name: 'runActivity counts runs started, completed, and failed per bucket',
+    appliesTo: (storage) => storage.runActivity !== undefined,
+    async run(storage) {
+      if (!storage.runActivity) return
+      const finished = (id: string, workflow: string, status: 'completed' | 'failed', createdAt: number, finishedAt: number) =>
+        storage.createRun(makeRun({ id, workflow, status, createdAt, updatedAt: finishedAt, finishedAt }))
+      await finished('a', 'w', 'completed', 1_000, 1_500)
+      await finished('b', 'w', 'failed', 1_900, 2_100)
+      await finished('c', 'other', 'completed', 1_000, 1_100)
+      await storage.createRun(makeRun({ id: 'd', workflow: 'w', createdAt: 2_500 }))
+      await storage.createRun(makeRun({ id: 'early', workflow: 'w', createdAt: 999 }))
+      await storage.createRun(makeRun({ id: 'late', workflow: 'w', createdAt: 3_000 }))
+
+      const activity = await storage.runActivity({ workflow: 'w', since: 1_000, bucketMs: 1_000, buckets: 2 })
+
+      assertEqual(activity, { started: [2, 1], completed: [1, 0], failed: [0, 1] }, 'activity for w')
+      const all = await storage.runActivity({ since: 1_000, bucketMs: 1_000, buckets: 2 })
+      assertEqual(all.started, [3, 1], 'every workflow')
+    },
+  },
   {
     name: 'listRuns returns runs newest first',
     async run(storage) {

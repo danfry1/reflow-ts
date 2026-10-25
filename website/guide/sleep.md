@@ -35,7 +35,7 @@ An invalid duration throws [`ConfigError`](/api/errors) when the workflow is def
 
 - **`prev` passes through.** A sleep produces no output; the next step receives the previous step's output as `prev`, unchanged.
 - **The name must be unique** within the workflow (like a step), and the sleep appears in [`getRunStatus()`](/api/engine) as a step — `sleeping` while waiting, then `completed` once it elapses.
-- **Wake granularity** is the engine poll interval (default 1s). A run sleeping until time *T* resumes on the first `tick()` at or after *T*, not at *T* exactly.
+- **Wake granularity.** A started engine resumes a sleep of under five minutes that it began itself on time. Any other sleep — a longer one, or one begun by another instance — resumes on the first poll at or after its wake time, so up to the poll interval (default 1s) late.
 - **Crash-safe.** The wake time is persisted before the run is suspended, so a restart does not restart the timer or skip the wait.
 - **Cancellable.** [`cancel()`](/api/engine) works on a sleeping run; it never resumes.
 

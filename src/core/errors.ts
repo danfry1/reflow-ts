@@ -24,6 +24,7 @@ import type { PersistedValue } from './types'
 export type ReflowErrorCode =
   | 'CONFIG'
   | 'WORKFLOW_NOT_FOUND'
+  | 'RUN_NOT_FOUND'
   | 'DUPLICATE_WORKFLOW'
   | 'DUPLICATE_STEP'
   | 'PARALLEL_COMPLETE'
@@ -132,6 +133,18 @@ export class WorkflowNotFoundError extends ReflowError {
 
   protected override context() {
     return { workflowName: this.workflowName }
+  }
+}
+
+/** Thrown when an operation names a run that storage does not have. */
+export class RunNotFoundError extends ReflowError {
+  constructor(public readonly runId: string) {
+    super('RUN_NOT_FOUND', `Run "${runId}" not found`)
+    this.name = 'RunNotFoundError'
+  }
+
+  protected override context() {
+    return { runId: this.runId }
   }
 }
 
@@ -281,9 +294,10 @@ export class StepFailedError extends ReflowError {
   constructor(
     public readonly stepName: string,
     public readonly attempts: number,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; lastError?: string },
   ) {
-    super('STEP_FAILED', `Step "${stepName}" failed after ${attempts} attempt(s)`, options)
+    const last = options?.lastError === undefined ? '' : `: ${options.lastError}`
+    super('STEP_FAILED', `Step "${stepName}" failed after ${attempts} attempt(s)${last}`, options)
     this.name = 'StepFailedError'
   }
 
@@ -504,6 +518,28 @@ export function toError(value: unknown): Error {
   }
 
   return new ThrownValueError(value)
+}
+
+/**
+ * An error's message as a string, for persisting.
+ *
+ * `message` is typed as a string but is an ordinary writable property, and
+ * some libraries put other values in it. Storage checks the shape of what it
+ * reads back, so a non-string would leave the record unreadable rather than
+ * merely odd.
+ */
+export function errorMessage(error: Error): string {
+  const message: unknown = error.message
+  if (typeof message === 'string') {
+    return message
+  }
+  if (message === undefined || message === null) {
+    return ''
+  }
+  // Objects keep to their tag: their own toString could throw or mislead.
+  return typeof message === 'object' || typeof message === 'function'
+    ? Object.prototype.toString.call(message)
+    : String(message)
 }
 
 /**

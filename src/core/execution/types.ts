@@ -1,5 +1,5 @@
 import type { EngineEvent } from '../events'
-import type { ClaimedRun, PersistedValue, StepResult, StepStatus, StorageAdapter } from '../types'
+import type { ClaimedRun, PersistedValue, StepAttempt, StepResult, StepStatus, StorageAdapter } from '../types'
 import type { AnyWorkflow, ExecutionUnit } from '../workflow'
 
 /**
@@ -23,6 +23,13 @@ export interface StepRecord {
   readonly output: PersistedValue
   readonly error?: string | null
   readonly attempts?: number
+  /**
+   * When this execution of the step began. Omit to keep the time already
+   * recorded for the step (or, on its first save, to use now).
+   */
+  readonly startedAt?: number
+  /** Every attempt at the step's handler so far. Omit to keep what is already recorded. */
+  readonly history?: readonly StepAttempt[]
 }
 
 /**
@@ -38,6 +45,13 @@ export interface ExecutionContext {
   readonly workflow: AnyWorkflow
   readonly storage: StorageAdapter
   readonly signals: RunSignals
+
+  /**
+   * Whether a retry backoff should suspend the run durably. True on a started
+   * engine, whose polling will resume it; false for one driven by `tick()`,
+   * where nothing would, so the backoff is waited out in process instead.
+   */
+  readonly durableBackoff: boolean
 
   /**
    * Step results persisted by earlier executions of this run, keyed by step
@@ -89,8 +103,11 @@ export type UnitOutcome =
   | { readonly kind: 'advance'; readonly output: PersistedValue }
   /** Continue to the next unit, leaving `prev` untouched (a sleep, or a skipped step). */
   | { readonly kind: 'passthrough' }
-  /** The run is durably suspended and its lease released. Stop; a later claim resumes it. */
-  | { readonly kind: 'suspend' }
+  /**
+   * The run is durably suspended and its lease released. Stop; a later claim
+   * resumes it — at `wakeAt` (epoch ms), or when an event arrives if `null`.
+   */
+  | { readonly kind: 'suspend'; readonly wakeAt: number | null }
   /** A handler called `complete()`. Finish the run as completed with `output`. */
   | { readonly kind: 'complete'; readonly output: PersistedValue }
   /** The unit failed. Mark the run failed and report `stepName` / `error`. */

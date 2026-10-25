@@ -30,7 +30,7 @@ export function at<T>(items: readonly T[], index: number): T {
  * A complete `StorageAdapter` delegating to `delegate`, with `overrides` applied.
  *
  * Tests that need one flaky or instrumented method should not have to restate
- * the other thirteen — and cannot simply spread the instance, because
+ * the rest — and cannot simply spread the instance, because
  * `MemoryStorage`'s methods live on the prototype, so `{ ...instance }` would
  * copy its internal maps and none of its behaviour.
  */
@@ -41,7 +41,8 @@ export function delegatingAdapter(
   const base: StorageAdapter = {
     initialize: () => delegate.initialize(),
     createRun: (run) => delegate.createRun(run),
-    claimNextRun: (names, staleBefore) => delegate.claimNextRun(names, staleBefore),
+    claimNextRun: (names, staleBefore, limits) => delegate.claimNextRun(names, staleBefore, limits),
+    supportsConcurrencyLimits: delegate.supportsConcurrencyLimits,
     heartbeatRun: (runId, leaseId) => delegate.heartbeatRun(runId, leaseId),
     sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
     waitRun: (runId, leaseId, name, wakeAt) => delegate.waitRun(runId, leaseId, name, wakeAt),
@@ -52,9 +53,11 @@ export function delegatingAdapter(
     requeueRun: (runId) => delegate.requeueRun(runId),
     getStepResults: (runId) => delegate.getStepResults(runId),
     saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
-    updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
-    updateClaimedRunStatus: (runId, leaseId, status) =>
-      delegate.updateClaimedRunStatus(runId, leaseId, status),
+    completeRun: (runId, leaseId, output) => delegate.completeRun(runId, leaseId, output),
+    failRun: (runId, leaseId, error) => delegate.failRun(runId, leaseId, error),
+    cancelRun: (runId) => delegate.cancelRun(runId),
+    countRuns: (filter) => delegate.countRuns(filter),
+    deleteRuns: (filter) => delegate.deleteRuns(filter),
     upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
     claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
     deleteSchedule: (key) => delegate.deleteSchedule(key),

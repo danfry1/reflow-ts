@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.9.0 — 2026-10-24
+
+Room to grow, and durability stated exactly. Workflows written against a SQLite
+file now run unchanged on PostgreSQL, shared by workers on many machines. Every
+step gets an idempotency key that is the same however many times it runs, so a
+step repeated after a crash can tell the API it calls. Runs can start later,
+one workflow can be capped at so many runs at once across every process, and
+the dashboard can be protected with a password in one line.
+
+**Upgrading:** nothing to change. The built-in adapters need no migration. A
+custom storage adapter keeps working; it only needs the new `limits` argument
+of `claimNextRun` (and `supportsConcurrencyLimits = true`) once a workflow sets
+`concurrency`.
+
+### Added
+
+- **PostgreSQL storage.** `reflow-ts/postgres` exports `PostgresStorage`, for running workflows from many processes on many machines against one database; install `pg` alongside. Pass a connection string or your app's own pool. Its tables live in their own Postgres schema (`reflow` by default), created and migrated by `initialize()` under an advisory lock, so every process can start at once. Claims take each due run with `FOR UPDATE SKIP LOCKED` from per-status partial indexes, so workers never take the same run or wait on one another; per-workflow concurrency limits are counted under a transaction-scoped advisory lock. It passes the full storage conformance suite, tested in CI against PostgreSQL 14 and 17. The storage guide covers moving an app from SQLite.
+- **Limit how many runs of one workflow run at once.** `createWorkflow({ name, input, concurrency: 2 })` caps that workflow's running runs across every process sharing the storage — for calls to a rate-limited API, say — while other workflows carry on. Storage counts them in the same transaction that claims the next run, so two workers cannot both take the last place; sleeping and waiting runs hold no place, and a crashed run frees its place once its lease expires. Every process sharing the storage must use the same `runLeaseDurationMs`. `StorageAdapter.claimNextRun` takes the limits as an optional third argument, and an adapter declares it honours them with `supportsConcurrencyLimits`; an engine whose workflows set a limit refuses an adapter that does not. The built-in adapters support it, and the conformance suite tests it.
+- **Start a run later.** `enqueue(name, input, { delay: '1h' })` or `{ startAt: date }` saves the run straight away and starts it when due. It waits in storage as a sleeping run, holding no worker, so it survives restarts and starts on time on whichever process is running then. The dashboard shows it as *Starts at …*.
+- **Steps know who they are.** Every step handler receives `idempotencyKey`, `runId`, and `attempt`. `idempotencyKey` is the same each time that step runs for that run — across retries, crashes, and other processes picking the run up — and different for every other step and run, so a step that calls a payment provider or any API accepting an idempotency key can pass it along and a repeat after a crash returns the first result instead of acting twice. The crash recovery guide now states plainly that a step cut off mid-run runs again: finished steps never repeat, and steps run at least once.
+- **`basicAuth({ username, password })`** from `reflow-ts/dashboard`, an `authorize` that protects the dashboard with a password through the browser's own sign-in prompt — for apps with no sign-in of their own to reuse. An empty or unset password throws a `ConfigError` at startup instead of serving the dashboard unprotected.
+- **`authorize` may return a `Response`**, which is sent in place of the dashboard: a redirect to the app's login page, say, or a 403. Returning `false` still answers 401.
+
+### Documentation
+
+- **Changing workflows** is a new guide: what a run part-way through does when it resumes under changed code — a renamed step runs again, a step inserted earlier runs late, a removed workflow's runs are never claimed — and how to ship such changes as a new version beside the old one. Tests pin each behaviour it describes.
+- The dashboard guide starts from the two ways to run it, with a complete example for an app, and shows how to open a production database over SSH without exposing a port. Its sign-in examples no longer check a bearer token, which a browser cannot send when visiting the page.
+
+### Fixed
+
+- `MemoryStorage` is exported from `reflow-ts/test`, as the storage guide always said it was.
+
+## 0.8.0 — 2026-10-23
+
+Runs become something you can see and reason about, and SQLite holds up under
+real load. Every run records when it started and finished, what it returned,
+why it failed, and every attempt at every step; a dashboard — in your app or
+from `npx reflow-ts dashboard` — shows them, workflow by workflow. Underneath,
+several processes can share one SQLite file, claims seek an index however long
+the queue, the worker pool keeps every slot busy, and retry backoff survives a
+crash.
+
+**Upgrading:** nothing to change if you use the built-in storage adapters —
+they migrate their tables on `initialize()`. Custom storage adapters implement
+a revised contract; see [Migrating to 0.8](https://reflow.danfry.dev/guide/migrating-0-8).
+
+### Added
+
+- **A dashboard.** `reflow-ts/dashboard` exports `createDashboard({ storage, authorize, engine? })`, a standard Fetch API handler that serves a web view of your runs from inside your own app: each workflow with its steps and how its runs stand; a workflow's runs, each labelled by its input, with a sentence on where it stands and the steps it has reached; one run's steps with their status and timing, a retried step's attempts with each error and the wait before the next, and any stretch where nothing ran; and registered schedules. For each workflow it also shows, from its recent runs, how many reached each step, finished it, failed there, or are paused there now; their failures grouped by step and message; and how many started, completed, and failed each minute of the last hour. Pass `workflows` to list every workflow with its steps, including those a run has not reached, and to name runs by each workflow's `label`. It mounts directly in Bun, Deno, Hono, and Next.js route handlers; `toNodeHandler()` adapts it for `node:http` and Express. With `engine` it can cancel and resume runs and updates live; without, it is read-only. `authorize` is required, `allowedHosts` pins the hosts it answers to, actions need a same-host request carrying a header a cross-site page cannot send, and the page loads nothing external under a nonce-based content security policy. ([#91](https://github.com/danfry1/reflow-ts/issues/91))
+- **`npx reflow-ts dashboard ./reflow.db`** serves that dashboard for a SQLite file, read-only, on `127.0.0.1`. It opens the file read-only, leaving it exactly as it was; answers only to requests addressed to the host it is bound on, so a site cannot reach it through DNS rebinding; refuses to upgrade an older database unless given `--migrate`; and never creates a database at a mistyped path.
+- **`createWorkflow({ label })`** names each run for people, from its typed input — an order number, a user id — wherever runs are listed. Without it a run is shown by its idempotency key, or else its id.
+- **Runs record their lifecycle.** `WorkflowRun` gains `startedAt` (first claimed, kept across crash recovery), `finishedAt`, `output` (a completed run's final output, including a `complete()` value), `error` (`{ stepName, message, code }` for a failed run), `wakeAt` (when a sleeping run wakes or a waiting run times out), and `waitingFor` (the event a waiting run awaits). `StepResult` gains `startedAt`, so a finished step's duration is `updatedAt - startedAt`, and `history` — its attempts at its handler, carried across durable backoffs and crashes, each with when it started and finished and the error it failed with, so the gaps between attempts show the backoffs it waited out. `error.code` is the error's own string code when it has one — `'STEP_TIMEOUT'`, or a system code like `'ECONNREFUSED'` — so failures can be grouped without parsing messages. New exported types: `RunError`, `TerminalRunStatus`, `StepAttempt`.
+- **`engine.waitForRun(runId, { signal? })`** — wait for a run to finish and get it back, completed, failed, or cancelled. A run finishing on this engine resolves the wait immediately; one finished by another process is noticed by polling storage. Pass `AbortSignal.timeout(ms)` for a deadline. New exported error: `RunNotFoundError` (code `RUN_NOT_FOUND`). New exported type: `WaitForRunOptions`.
+- **`engine.countRuns(filter?)`** — runs per status, every status present, optionally for one workflow. New exported types: `RunCounts`, `CountRunsFilter`.
+- **`engine.prune({ olderThan, statuses? })`** — delete finished runs, with their steps and events, that finished longer ago than a cutoff. Runs that can still progress are never deleted. Works in batches of 500 so it never holds SQLite's write lock for long. New exported type: `PruneOptions`.
+- **Read-only SQLite connections** — `new SQLiteStorage(path, { readOnly: true })` opens an existing database for reading only, on all three adapters: writes fail, and the file is left untouched, journal mode included. For inspecting a database another process owns, or a backup. New exported type: `SQLiteStorageOptions`.
+- `SQLiteStorage#schemaVersion()` reports a database's schema version and the one this build writes.
+- `RUN_STATUSES` and `STEP_STATUSES` — every run and step status as a readonly array; `RunStatus` and `StepStatus` are now derived from them.
+- A guide to [inspecting runs](https://reflow.danfry.dev/guide/inspecting-runs) and retention.
+
+### Fixed
+
+- **Retry backoff no longer holds the run, and survives a crash.** A step waiting between attempts held its run's lease and a concurrency slot for the whole delay, and the attempt count lived only in memory — a crash mid-backoff restarted the step's attempts from one, so `maxAttempts` did not hold across restarts. On a started engine, backoff is now a durable suspension: the step is recorded as `retrying` with its attempts and latest error, the run sleeps until the next attempt with its lease released, and whichever engine resumes it continues at the right attempt. An engine driven only by `tick()` — and so `testEngine` — has nothing to resume a suspended run, and keeps waiting in process; so do parallel branches, whose siblings are still running. `onRunStart` fires again when a backed-off run resumes, as after a sleep. Resuming a run cancelled mid-backoff starts that step's attempts over. If a redeploy lowers `maxAttempts` below the attempts already made, the step fails with its last real error. New step status: `retrying`.
+- **Short sleeps, wait timeouts, and retry backoffs resume on time.** A started engine sets a timer for runs it suspended that wake within five minutes, rather than leaving them to the next poll; previously every wake was up to `pollIntervalMs` late.
+- **Several processes can share one SQLite database.** The `better-sqlite3` (`reflow-ts/sqlite-node`) and `bun:sqlite` (`reflow-ts/sqlite-bun`) adapters ran their transactions in SQLite's default deferred mode. A deferred transaction starts as a reader and upgrades to a writer on its first write; if another connection commits in between, the upgrade fails with `SQLITE_BUSY_SNAPSHOT`, which `busy_timeout` cannot retry. Claiming a run reads and then writes, so with four processes claiming from one file most claims failed outright. Every transaction now begins with `BEGIN IMMEDIATE`, taking the write lock up front, so contention becomes a short wait instead of an error. The `node:sqlite` adapter already did this.
+- **Claiming no longer starves woken and crashed runs.** `claimNextRun` ranked every pending run ahead of every sleeping, waiting, or stale one, so while new runs kept arriving, a run whose `.sleep()` had elapsed, whose `.waitForEvent()` had timed out, or whose worker had crashed could wait indefinitely. Runs are now claimed in the order they became claimable: a pending run from when it became pending, a sleeping or waiting run from its wake time, a stale run from when its lease expired.
+- **One slow run no longer holds the engine's other slots idle.** A started engine ran in batches: each poll claimed up to `concurrency` runs and waited for every one of them to finish before claiming more, so a single long step kept the remaining slots empty for its whole duration. Slots are now independent — when a run finishes, its slot is refilled straight away. On a workload where one run in ten takes 200ms and the rest 5ms, 300 runs at `concurrency: 10` drain in under a second instead of about six.
+- **A failed claim no longer strands runs already claimed in the same batch.** When a claim threw partway through filling the slots, the runs claimed before it were never started and stayed `running` until their leases expired. They now start, and the claim failure is still reported — `tick()` rejects with it once they finish; a started engine delivers it to `onError`.
+
+### Changed
+
+- **Breaking for custom adapters:** `StorageAdapter.updateRunStatus` and `updateClaimedRunStatus` are replaced by `completeRun(runId, leaseId, output)`, `failRun(runId, leaseId, error)`, and `cancelRun(runId)`. A generic status setter could mark a run completed without an output, and made cancelling a read-then-write that could race a run completing; `cancelRun` refuses a finished run in the same write. Adapters also implement `countRuns` and `deleteRuns`, and store the new run and step fields. `engine.cancel()` behaves as before, without the race.
+- **SQLite schema migrations are versioned.** The adapters record the schema version in `PRAGMA user_version` and apply only the migrations a database is missing, each in its own `BEGIN IMMEDIATE` transaction, so processes starting together cannot apply one twice. Existing databases upgrade in place; runs that finished before the upgrade get a `finishedAt` so they can be pruned. A database written by a newer version is refused with a `ConfigError` instead of being opened.
+- Stored run and step statuses are validated when read rather than cast, so a corrupt or foreign row fails loudly.
+- **SQLite claims and lists runs by seeking an index, however large the queue or history** (schema version 4). Claiming sorted every claimable run of the engine's workflows to find the oldest, so with 100k runs queued each claim took about 12ms and a worker drained at about 80 runs a second; it now seeks each workflow's oldest due run directly, in about 0.1ms, whatever the backlog, the history, or the number of workflows. The status indexes carry when runs became due; new indexes on creation time, overall and per workflow, on workflow and finish time, and on failed and cancelled runs let the newest runs be listed and the last hour counted without sorting the table. The upgrade builds them in about 9 seconds per million runs, during which other processes wait for the write lock — see [Migrating to 0.8](https://reflow.danfry.dev/guide/migrating-0-8#databases-migrate-themselves).
+- `StorageAdapter` gains two optional methods, `getStepResultsForRuns` and `runActivity`, which the dashboard uses when present to read less; `reflow-ts/conformance` checks them when an adapter has them. New exported types: `RunActivity`, `RunActivityFilter`.
+- `MemoryStorage.getStepResults` orders steps by creation time, as the contract states, rather than by when each was first saved.
+- An error whose `message` is not a string — some libraries assign other values to it — is recorded with its message converted to one, instead of being stored as it was and leaving the run's record unreadable.
+- A step that fails without making all its attempts, because the run was aborted part way, reports the attempts it actually made rather than `maxAttempts`.
+- **The `StorageAdapter.claimNextRun` contract specifies claim order**, as described above. `reflow-ts/conformance` gains four cases for it; a custom adapter that ranks by status will fail them.
+- The three SQLite adapters now share one implementation, each supplying only a small driver for its binding, so a fix to the SQL, the schema, or the transaction handling reaches all three at once. The `better-sqlite3` and `node:sqlite` adapters also cache prepared statements rather than preparing each query on every call; `bun:sqlite` does not, since its statements keep the column names they were prepared with. The public classes and their constructors are unchanged.
+- **Work this instance creates starts without waiting for the next poll.** `enqueue()`, `resume()`, and `sendEvent()` on a started engine claim the run into a free slot at once, rather than after up to `pollIntervalMs`. Polling still picks up work the instance was not told about directly: runs enqueued by other processes, elapsed sleeps and wait timeouts, due schedules, and stale runs.
+- `tick()` claims into whichever slots are free and resolves once those runs finish. Called on an idle engine it behaves as before; called while other runs are executing, it no longer skips outright but fills the remaining slots. `concurrency` is never exceeded between the two.
+
 ## 0.7.0 — 2026-08-10
 
 Schedules gain cron. The stored next-occurrence introduced in 0.6 is what makes
@@ -9,7 +93,7 @@ but a stored next-run time can.
 **Upgrading:** one breaking change, `WorkflowSchedule.intervalMs` becoming
 `recurrence`. It affects code reading `engine.listSchedules()` and custom
 storage adapters; the SQLite adapters migrate themselves. See
-[Migrating to 0.7](https://danfry1.github.io/reflow-ts/guide/migrating-0-7).
+[Migrating to 0.7](https://reflow.danfry.dev/guide/migrating-0-7).
 
 ### Added
 
@@ -35,7 +119,7 @@ process that registered it. Every storage adapter those features rest on is
 held to one shared contract, runnable against your own adapter too.
 
 **Upgrading:** this release breaks the `schedule()` API and adds methods to
-`StorageAdapter`. Everything else is additive. See [Migrating to 0.6](https://danfry1.github.io/reflow-ts/guide/migrating-0-6).
+`StorageAdapter`. Everything else is additive. See [Migrating to 0.6](https://reflow.danfry.dev/guide/migrating-0-6).
 
 ### Added
 

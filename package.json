@@ -1,6 +1,6 @@
 {
   "name": "reflow-ts",
-  "version": "0.7.0",
+  "version": "0.9.0",
   "description": "Durable workflow execution for TypeScript",
   "author": "Daniel Fry",
   "license": "MIT",
@@ -8,7 +8,7 @@
     "type": "git",
     "url": "git+https://github.com/danfry1/reflow-ts.git"
   },
-  "homepage": "https://danfry1.github.io/reflow-ts/",
+  "homepage": "https://reflow.danfry.dev/",
   "bugs": "https://github.com/danfry1/reflow-ts/issues",
   "type": "module",
   "sideEffects": false,
@@ -16,6 +16,9 @@
   "types": "./dist/index.d.mts",
   "engines": {
     "node": ">=18.18.0"
+  },
+  "bin": {
+    "reflow-ts": "./dist/cli.mjs"
   },
   "exports": {
     ".": {
@@ -34,6 +37,10 @@
       "types": "./dist/storage/sqlite-node-builtin.d.mts",
       "import": "./dist/storage/sqlite-node-builtin.mjs"
     },
+    "./postgres": {
+      "types": "./dist/storage/postgres.d.mts",
+      "import": "./dist/storage/postgres.mjs"
+    },
     "./test": {
       "types": "./dist/test/index.d.mts",
       "import": "./dist/test/index.mjs"
@@ -41,6 +48,10 @@
     "./conformance": {
       "types": "./dist/conformance.d.mts",
       "import": "./dist/conformance.mjs"
+    },
+    "./dashboard": {
+      "types": "./dist/dashboard.d.mts",
+      "import": "./dist/dashboard.mjs"
     }
   },
   "publishConfig": {
@@ -56,7 +67,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:bun": "bun scripts/smoke-bun-adapter.ts",
+    "test:cli": "node scripts/smoke-cli.mjs",
     "bench": "bun benchmarks/index.ts",
+    "contributors": "bun scripts/contributors.ts",
     "typecheck": "tsc --noEmit",
     "lint:deps": "syncpack lint",
     "fix:deps": "syncpack fix",
@@ -75,25 +88,36 @@
     "pipeline"
   ],
   "peerDependencies": {
-    "better-sqlite3": ">=9.0.0"
+    "better-sqlite3": ">=9.0.0",
+    "pg": "^8.0.0"
   },
   "peerDependenciesMeta": {
     "better-sqlite3": {
       "optional": true
+    },
+    "pg": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
     "@types/better-sqlite3": "7.6.13",
-    "@vitest/coverage-v8": "4.1.10",
-    "better-sqlite3": "13.0.2",
-    "syncpack": "15.3.2",
-    "tsdown": "0.22.14",
+    "@types/pg": "8.23.1",
+    "@vitest/coverage-v8": "4.1.11",
+    "better-sqlite3": "13.0.3",
+    "happy-dom": "20.14.6",
+    "pg": "8.23.1",
+    "syncpack": "15.3.3",
+    "tsdown": "0.23.0",
     "typescript": "7.0.2",
     "vitepress": "1.6.4",
-    "vitest": "4.1.10",
-    "zod": "4.4.3"
+    "vitest": "4.1.11",
+    "zod": "4.6.6"
   },
   "dependencies": {
     "@standard-schema/spec": "^1.1.0"
+  },
+  "overrides": {
+    "vite": "6.4.4"
   }
 }

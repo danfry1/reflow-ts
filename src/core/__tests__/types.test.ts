@@ -27,6 +27,12 @@ describe('core types', () => {
       status: 'pending',
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      startedAt: null,
+      finishedAt: null,
+      output: undefined,
+      error: null,
+      wakeAt: null,
+      waitingFor: null,
     }
     expect(run.id).toBe('run_1')
     expect(run.status).toBe('pending')
@@ -43,6 +49,8 @@ describe('core types', () => {
       attempts: 1,
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      startedAt: null,
+      history: [],
     }
     expect(step.name).toBe('charge')
     expect(step.output).toStrictEqual({ chargeId: 'ch_123' })

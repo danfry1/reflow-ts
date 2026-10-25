@@ -5,8 +5,8 @@ import { createWorkflow } from '../workflow'
 import { createEngine } from '../engine'
 import { MemoryStorage } from '../../storage/memory'
 import { ParallelCompleteError } from '../errors'
-import type { PersistedValue, StorageAdapter } from '../types'
-import { at } from '../../__tests__/helpers'
+import type { PersistedValue } from '../types'
+import { at, delegatingAdapter } from '../../__tests__/helpers'
 
 function expectPresent<T>(value: T | null | undefined): T {
   expect(value).not.toBeNull()
@@ -449,6 +449,51 @@ describe('Parallel engine execution', () => {
       expect(flakyStep?.output).toStrictEqual({ recovered: true })
       expect(flakyStep?.attempts).toBe(3)
     })
+
+    it("records each branch's own attempts", async () => {
+      let attempts = 0
+      const wf = createWorkflow({ name: 'branch-history', input: z.object({}) })
+        .parallel({
+          flaky: {
+            retry: { maxAttempts: 2, backoff: 'linear', initialDelayMs: 0 },
+            handler: async () => {
+              attempts++
+              if (attempts < 2) throw new Error('transient')
+              return {}
+            },
+          },
+          stable: async () => ({}),
+        })
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('branch-history', {})
+
+      await engine.tick()
+
+      const steps = await storage.getStepResults(run.id)
+      const errors = (name: string) => steps.find((step) => step.name === name)?.history.map((attempt) => attempt.error)
+      expect(errors('flaky')).toStrictEqual(['transient', null])
+      expect(errors('stable')).toStrictEqual([null])
+    })
+
+    it('records the attempts of a branch that failed the group', async () => {
+      const wf = createWorkflow({ name: 'branch-history-failed', input: z.object({}) })
+        .parallel({
+          broken: {
+            retry: { maxAttempts: 2, backoff: 'linear', initialDelayMs: 0 },
+            handler: async () => {
+              throw new Error('always')
+            },
+          },
+          stable: async () => ({}),
+        })
+      const engine = createEngine({ storage, workflows: [wf] })
+      const run = await engine.enqueue('branch-history-failed', {})
+
+      await engine.tick()
+
+      const broken = (await storage.getStepResults(run.id)).find((step) => step.name === 'broken')
+      expect(broken?.history.map((attempt) => attempt.error)).toStrictEqual(['always', 'always'])
+    })
   })
 
   describe('per-branch timeout', () => {
@@ -572,6 +617,8 @@ describe('Parallel engine execution', () => {
         attempts: 1,
         createdAt: now,
         updatedAt: now,
+        startedAt: null,
+        history: [],
       })
 
       await engine.tick()
@@ -618,6 +665,8 @@ describe('Parallel engine execution', () => {
         attempts: 1,
         createdAt: now,
         updatedAt: now,
+        startedAt: null,
+        history: [],
       })
 
       await engine.tick()
@@ -653,6 +702,8 @@ describe('Parallel engine execution', () => {
         attempts: 1,
         createdAt: now,
         updatedAt: now,
+        startedAt: null,
+        history: [],
       })
 
       await engine.tick()
@@ -694,6 +745,8 @@ describe('Parallel engine execution', () => {
         attempts: 1,
         createdAt: now,
         updatedAt: now,
+        startedAt: null,
+        history: [],
       })
 
       await engine.tick()
@@ -739,6 +792,8 @@ describe('Parallel engine execution', () => {
         attempts: 1,
         createdAt: now,
         updatedAt: now,
+        startedAt: null,
+        history: [],
       })
       await storage.saveStepResult({
         id: randomUUID(),
@@ -750,6 +805,8 @@ describe('Parallel engine execution', () => {
         attempts: 1,
         createdAt: now,
         updatedAt: now,
+        startedAt: null,
+        history: [],
       })
 
       await engine.tick()
@@ -847,35 +904,14 @@ describe('Parallel engine execution', () => {
       await delegate.initialize()
 
       let saveCalls = 0
-      const flakyStorage: StorageAdapter = {
-        initialize: () => delegate.initialize(),
-        createRun: (run) => delegate.createRun(run),
-        claimNextRun: (workflowNames, staleBefore) =>
-          delegate.claimNextRun(workflowNames, staleBefore),
-        heartbeatRun: (runId, leaseId) => delegate.heartbeatRun(runId, leaseId),
-        sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
-        waitRun: (runId, leaseId, eventName, wakeAt) => delegate.waitRun(runId, leaseId, eventName, wakeAt),
-        deliverEvent: (runId, eventName, payload) => delegate.deliverEvent(runId, eventName, payload),
-        takeEvent: (runId, eventName) => delegate.takeEvent(runId, eventName),
-        getRun: (runId) => delegate.getRun(runId),
-        getStepResults: (runId) => delegate.getStepResults(runId),
-        listRuns: (filter) => delegate.listRuns(filter),
-        requeueRun: (runId) => delegate.requeueRun(runId),
+      const flakyStorage = delegatingAdapter(delegate, {
         saveStepResult: async (result, leaseId) => {
           saveCalls++
           // Drop the first parallel-branch save to simulate lease loss mid-persistence.
           if (saveCalls === 1) return false
           return delegate.saveStepResult(result, leaseId)
         },
-        updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
-        updateClaimedRunStatus: (runId, leaseId, status) =>
-          delegate.updateClaimedRunStatus(runId, leaseId, status),
-        upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
-        claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
-        deleteSchedule: (key) => delegate.deleteSchedule(key),
-        listSchedules: () => delegate.listSchedules(),
-        close: () => delegate.close(),
-      }
+      })
 
       const wf = createWorkflow({ name: 'lease-loss', input: z.object({}) })
         .parallel({
@@ -904,34 +940,13 @@ describe('Parallel engine execution', () => {
       await delegate.initialize()
 
       let heartbeatCalls = 0
-      const flakyStorage: StorageAdapter = {
-        initialize: () => delegate.initialize(),
-        createRun: (run) => delegate.createRun(run),
-        claimNextRun: (workflowNames, staleBefore) =>
-          delegate.claimNextRun(workflowNames, staleBefore),
+      const flakyStorage = delegatingAdapter(delegate, {
         heartbeatRun: async (runId, leaseId) => {
           heartbeatCalls++
           if (heartbeatCalls === 1) throw new Error('heartbeat exploded')
           return delegate.heartbeatRun(runId, leaseId)
         },
-        sleepRun: (runId, leaseId, wakeAt) => delegate.sleepRun(runId, leaseId, wakeAt),
-        waitRun: (runId, leaseId, eventName, wakeAt) => delegate.waitRun(runId, leaseId, eventName, wakeAt),
-        deliverEvent: (runId, eventName, payload) => delegate.deliverEvent(runId, eventName, payload),
-        takeEvent: (runId, eventName) => delegate.takeEvent(runId, eventName),
-        getRun: (runId) => delegate.getRun(runId),
-        getStepResults: (runId) => delegate.getStepResults(runId),
-        listRuns: (filter) => delegate.listRuns(filter),
-        requeueRun: (runId) => delegate.requeueRun(runId),
-        saveStepResult: (result, leaseId) => delegate.saveStepResult(result, leaseId),
-        updateRunStatus: (runId, status) => delegate.updateRunStatus(runId, status),
-        updateClaimedRunStatus: (runId, leaseId, status) =>
-          delegate.updateClaimedRunStatus(runId, leaseId, status),
-        upsertSchedule: (schedule) => delegate.upsertSchedule(schedule),
-        claimDueSchedule: (names, now) => delegate.claimDueSchedule(names, now),
-        deleteSchedule: (key) => delegate.deleteSchedule(key),
-        listSchedules: () => delegate.listSchedules(),
-        close: () => delegate.close(),
-      }
+      })
 
       const wf = createWorkflow({ name: 'heartbeat-parallel', input: z.object({}) })
         .parallel({

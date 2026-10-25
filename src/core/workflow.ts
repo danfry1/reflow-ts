@@ -19,6 +19,24 @@ export interface StepContext<
   complete: (value?: PersistedValue) => never
   /** Results of all previously completed steps, keyed by step name. */
   steps: TStepsSoFar
+  /** The id of the run this step belongs to. */
+  runId: string
+  /**
+   * Which attempt at this step this is, from 1. For a sequential step on a
+   * started engine the count is saved with each retry, so an attempt cut off
+   * by a crash is made again under the same number. A parallel branch, or a
+   * step on an engine driven only by `tick()`, retries in memory, and its
+   * count starts again from 1 after a crash.
+   */
+  attempt: number
+  /**
+   * A key that is the same every time this step runs for this run — across
+   * retries, crashes, and other processes picking the run up — and different
+   * for every other step and run. Pass it to an API that accepts an
+   * idempotency key, such as a payment provider, so a step repeated after a
+   * crash does not repeat its effect.
+   */
+  idempotencyKey: string
 }
 
 /**
@@ -151,6 +169,18 @@ export interface Workflow<
   readonly inputSchema: StandardSchemaV1<TInput>
   readonly executionUnits: readonly ExecutionUnit[]
   readonly failureHandler?: (ctx: FailureContext<TInput>) => Promise<void>
+  /**
+   * Names a run for people looking at it, such as in the dashboard: the
+   * customer's email, an order number. Given the run's input. Without it a
+   * run is shown by its idempotency key, or else its id.
+   */
+  readonly label?: (input: TInput) => string
+  /**
+   * The most runs of this workflow that may be running at once, across every
+   * process sharing the storage. Runs past it wait their turn as `pending`.
+   * Unset means no limit beyond the engine's own `concurrency`.
+   */
+  readonly concurrency?: number
 
   step<TStepName extends string, TOutput extends PersistedValue | void>(
     name: TStepName,
@@ -274,8 +304,22 @@ export type PrettyStepsMap<T extends Record<string, unknown>> = Prettify<T>
 export function createWorkflow<TName extends string, TInput extends PersistedValue>(config: {
   name: TName
   input: StandardSchemaV1<TInput>
+  /** A name for each run, from its input, shown wherever runs are listed. See {@link Workflow.label}. */
+  label?: (input: TInput) => string
+  /** The most runs of this workflow running at once, across all processes. See {@link Workflow.concurrency}. */
+  concurrency?: number
 }): Workflow<TName, TInput, undefined, {}> {
-  return buildWorkflow(config.name, config.input, [])
+  const { concurrency } = config
+  if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
+    throw new ConfigError(`Workflow "${config.name}" concurrency must be a positive integer`)
+  }
+  return buildWorkflow(config.name, config.input, [], undefined, { label: config.label, concurrency })
+}
+
+/** What a workflow carries beside its steps, unchanged as steps are added. */
+interface WorkflowSettings<TInput extends PersistedValue> {
+  readonly label?: (input: TInput) => string
+  readonly concurrency?: number
 }
 
 function getAllStepNames(units: readonly ExecutionUnit[]): Set<string> {
@@ -303,13 +347,16 @@ function buildWorkflow<
   name: TName,
   inputSchema: StandardSchemaV1<TInput>,
   executionUnits: ExecutionUnit[],
-  failureHandler?: (ctx: FailureContext<TInput>) => Promise<void>,
+  failureHandler: ((ctx: FailureContext<TInput>) => Promise<void>) | undefined,
+  settings: WorkflowSettings<TInput>,
 ): Workflow<TName, TInput, TPrev, TSteps> {
   return {
     name,
     inputSchema,
     executionUnits,
     failureHandler,
+    label: settings.label,
+    concurrency: settings.concurrency,
 
     step<TStepName extends string, TOutput extends PersistedValue | void>(
       stepName: TStepName,
@@ -349,6 +396,7 @@ function buildWorkflow<
         inputSchema,
         [...executionUnits, { kind: 'step', definition: newStep }],
         failureHandler,
+        settings,
       )
     },
 
@@ -407,6 +455,7 @@ function buildWorkflow<
         inputSchema,
         [...executionUnits, { kind: 'parallel', branches: branchDefs }],
         failureHandler,
+        settings,
       )
     },
 
@@ -422,6 +471,7 @@ function buildWorkflow<
         inputSchema,
         [...executionUnits, { kind: 'sleep', name: sleepName, durationMs }],
         failureHandler,
+        settings,
       )
     },
 
@@ -449,13 +499,14 @@ function buildWorkflow<
           },
         ],
         failureHandler,
+        settings,
       )
     },
 
     onFailure(
       handler: (ctx: FailureContext<TInput>) => Promise<void>,
     ): Workflow<TName, TInput, TPrev, TSteps> {
-      return buildWorkflow(name, inputSchema, executionUnits, handler)
+      return buildWorkflow(name, inputSchema, executionUnits, handler, settings)
     },
 
     parseInput(input: unknown): TInput {

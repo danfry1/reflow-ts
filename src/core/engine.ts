@@ -10,11 +10,13 @@ import {
   assertNever,
   ConfigError,
   DuplicateWorkflowError,
+  errorMessage,
   HookError,
   IdempotencyConflictError,
   LeaseExpiredError,
   RunCancelledError,
   RunControlError,
+  RunNotFoundError,
   ValidationError,
   WorkflowNotFoundError,
 } from './errors'
@@ -30,7 +32,11 @@ import type { ExecutionContext, RunSignals, StepRecord, UnitOutcome } from './ex
 import { waitForEventExecutor } from './execution/wait-for-event'
 import type {
   ClaimedRun,
+  CountRunsFilter,
   ListRunsFilter,
+  RunCounts,
+  RunStatus,
+  TerminalRunStatus,
   PersistedValue,
   RunInfo,
   StepResult,
@@ -76,7 +82,7 @@ export interface EngineConfig<TWorkflows extends readonly AnyWorkflow[] = readon
   workflows: TWorkflows
   /** Optional lifecycle hooks. */
   hooks?: EngineHooks
-  /** Maximum runs to process in parallel per tick (default: 1). */
+  /** Maximum runs this instance executes at once (default: 1). */
   concurrency?: number
   /** How long a run's lease is valid before another engine can reclaim it (default: 30000). */
   runLeaseDurationMs?: number
@@ -84,10 +90,38 @@ export interface EngineConfig<TWorkflows extends readonly AnyWorkflow[] = readon
   heartbeatIntervalMs?: number
 }
 
+/** Options for `engine.waitForRun()`. */
+export interface WaitForRunOptions {
+  /** Stop waiting when this aborts — `AbortSignal.timeout(ms)` for a deadline. Rejects with its reason. */
+  signal?: AbortSignal
+  /**
+   * How often to re-read the run from storage, which is how a run finished by
+   * another process is noticed (default: 1000). A run finishing on this engine
+   * resolves the wait at once regardless.
+   */
+  pollIntervalMs?: number
+}
+
+/** Options for `engine.prune()`. */
+export interface PruneOptions {
+  /** Delete runs that finished longer ago than this: milliseconds, or a duration string such as `'30d'`. */
+  olderThan: number | string
+  /** Which finished statuses to delete. Defaults to all three: `completed`, `failed`, and `cancelled`. */
+  statuses?: readonly TerminalRunStatus[]
+}
+
 /** Options for `engine.enqueue()`. */
 export interface EnqueueOptions {
   /** Prevents duplicate runs. Same key + same input returns the existing run. Same key + different input throws. */
   idempotencyKey?: string
+  /**
+   * Start the run this long from now rather than straight away: milliseconds,
+   * or a duration string such as `'10m'`. The run waits in storage, holding
+   * no worker, and starts on time whichever process is running then.
+   */
+  delay?: number | string
+  /** Start the run at this time rather than straight away. A time already past starts it now. */
+  startAt?: Date | number
 }
 
 /**
@@ -133,6 +167,36 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    * Filter by `status` and/or `workflow`, page with `limit` and `before`.
    */
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
+  /**
+   * Wait for a run to finish, resolving with it once it is `completed`,
+   * `failed`, or `cancelled` — check `status`, `output`, and `error` to see
+   * which. Resolves at once for a run that has already finished.
+   *
+   * A run finishing on this engine resolves the wait once its hooks and
+   * `onFailure` have run; one finished by any other engine instance — in
+   * another process or this one — is noticed on the next read of storage.
+   * The wait polls storage itself, so it works on an engine that was never
+   * started, and outlives `stop()`: pass a `signal` to bound it. Throws
+   * {@link RunNotFoundError} for an unknown run.
+   *
+   * ```ts
+   * const { id } = await engine.enqueue('report', input)
+   * const run = await engine.waitForRun(id, { signal: AbortSignal.timeout(30_000) })
+   * if (run.status === 'completed') send(run.output)
+   * ```
+   */
+  waitForRun(runId: string, options?: WaitForRunOptions): Promise<WorkflowRun>
+  /** How many runs are in each status, optionally for one workflow. */
+  countRuns(filter?: CountRunsFilter): Promise<RunCounts>
+  /**
+   * Delete finished runs older than `olderThan`, with their steps and events.
+   * Runs that can still progress are never touched. Resolves to how many runs
+   * were deleted.
+   *
+   * Deletes in small batches, so on SQLite it never holds the write lock long
+   * enough to stall workers sharing the database. Safe to call on a schedule.
+   */
+  prune(options: PruneOptions): Promise<number>
   /**
    * Re-queue a `failed` or `cancelled` run so the engine picks it up again,
    * resuming from the failed step (completed steps are skipped on replay).
@@ -199,12 +263,25 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    * disposing the stream, unsubscribes automatically.
    */
   stream(options?: StreamOptions): ResultStream
-  /** Process one batch of pending runs. Useful for tests and CLI tools. */
+  /**
+   * Claim runs into the free `concurrency` slots, execute them, and resolve once
+   * they have finished. Useful for tests and CLI tools; `start()` does this
+   * continuously.
+   */
   tick(): Promise<void>
-  /** Initialize storage and start the polling loop. Call once at startup. */
+  /**
+   * Initialize storage and start executing runs. Call once at startup.
+   *
+   * Up to `concurrency` runs execute at once, and a slot is refilled as soon as
+   * its run finishes. Work this instance enqueues, resumes, or sends an event to
+   * starts immediately; every `pollIntervalMs` the engine also checks storage
+   * for work it was not told about directly — runs from other processes,
+   * elapsed sleeps and wait timeouts, due schedules, and stale runs.
+   */
   start(pollIntervalMs?: number): Promise<void>
   /**
-   * Stop the polling loop and wait for in-flight ticks to finish.
+   * Stop the engine, abort in-flight runs, and wait for its in-flight claims
+   * and runs to settle. Aborted runs are left `running`, to be reclaimed.
    *
    * Durable schedules are deliberately left registered — they belong to the
    * storage, not to this instance, and stopping one worker must not cancel a
@@ -212,6 +289,12 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    * remove one.
    */
   stop(): Promise<void>
+}
+
+/** What one pass of claiming started, and the claim failure that ended it early, if any. */
+interface ClaimBatch {
+  started: Promise<void>[]
+  failure: { error: unknown } | null
 }
 
 interface ActiveRunState {
@@ -270,9 +353,28 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   const subscribers = new Set<AbortableSubscriber<EngineEvent>>()
   let running = false
   let timer: ReturnType<typeof setInterval> | null = null
-  let tickInFlight = false
-  let tickPromise: Promise<void> | null = null
   let stopGeneration = 0
+  /** Runs this instance is executing. Each holds one `concurrency` slot. */
+  const executions = new Set<Promise<void>>()
+  /**
+   * Slots reserved by claims that are awaiting storage, or that have claimed a
+   * run not yet started. Shared by every caller — the pool and any manual
+   * `tick()` — so between them they never hold more than `concurrency`.
+   */
+  let reservedSlots = 0
+  /**
+   * Every background operation a `stop()` must outlast — claims, schedule
+   * passes, executions — with the stop generation it began in.
+   */
+  const pendingWork = new Map<Promise<unknown>, number>()
+  let fillInFlight = false
+  let refillRequested = false
+  let pollInFlight = false
+  /** Wake-ups for `waitForRun()` callers, keyed by the run they wait on. */
+  const finishWaiters = new Map<string, Set<() => void>>()
+  /** Soon-due wake times of runs this instance suspended, ascending. See {@link scheduleWake}. */
+  const wakeTimes: number[] = []
+  let wakeTimer: ReturnType<typeof setTimeout> | null = null
 
   for (const wf of workflows) {
     if (registry.has(wf.name)) {
@@ -283,6 +385,18 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   }
 
   const workflowNames = Array.from(registry.keys())
+  // Per-workflow caps, enforced by storage at claim time so they hold across
+  // every process, not just this one.
+  const limits = new Map<string, number>()
+  for (const wf of registry.values()) {
+    if (wf.concurrency !== undefined) limits.set(wf.name, wf.concurrency)
+  }
+  if (limits.size > 0 && rawStorage.supportsConcurrencyLimits !== true) {
+    throw new ConfigError(
+      `Workflow "${limits.keys().next().value}" sets concurrency, but this storage adapter does not enforce concurrency limits`,
+    )
+  }
+  const claimLimits = limits.size > 0 ? limits : undefined
 
   async function enqueue(
     workflowName: string,
@@ -295,21 +409,36 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     const idempotencyKey = normalizeIdempotencyKey(options?.idempotencyKey)
     const parsedInput = wf.parseInput(input)
     const now = Date.now()
+    const startAt = startTimeOf(options, now)
+    const delayed = startAt > now
 
     const run: WorkflowRun = {
       id: randomUUID(),
       workflow: workflowName,
       input: parsedInput,
       idempotencyKey,
-      status: 'pending',
+      // A delayed run waits as a sleeper does, so every adapter already claims
+      // it once it is due.
+      status: delayed ? 'sleeping' : 'pending',
       createdAt: now,
       updatedAt: now,
+      startedAt: null,
+      finishedAt: null,
+      output: undefined,
+      error: null,
+      wakeAt: delayed ? startAt : null,
+      waitingFor: null,
     }
 
     const { run: storedRun, created } = await storage.createRun(run)
 
     if (!created && idempotencyKey && !persistedValuesEqual(storedRun.input, parsedInput)) {
       throw new IdempotencyConflictError(workflowName, idempotencyKey)
+    }
+
+    if (created) {
+      if (delayed) scheduleWake(startAt)
+      else requestFill()
     }
 
     return storedRun
@@ -333,6 +462,114 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     return storage.listRuns(filter)
   }
 
+  async function waitForRun(runId: string, options: WaitForRunOptions = {}): Promise<WorkflowRun> {
+    const { signal } = options
+    const pollIntervalMs = options.pollIntervalMs ?? 1000
+    if (!isTimerDelay(pollIntervalMs)) {
+      throw new ConfigError(`waitForRun pollIntervalMs must be a positive number of milliseconds up to ${MAX_TIMER_DELAY_MS}`)
+    }
+
+    for (;;) {
+      if (signal?.aborted) {
+        throw toError(signal.reason)
+      }
+
+      // Armed before the read, so a run finishing between the two still wakes us.
+      const wake = armFinishWait(runId, pollIntervalMs, signal)
+      let run: WorkflowRun | null
+      try {
+        run = await storage.getRun(runId)
+      } catch (error) {
+        wake.cancel()
+        throw error
+      }
+
+      if (!run) {
+        wake.cancel()
+        throw new RunNotFoundError(runId)
+      }
+      if (isTerminalStatus(run.status)) {
+        wake.cancel()
+        return run
+      }
+
+      await wake.settled
+    }
+  }
+
+  /**
+   * A promise that resolves when `runId` finishes on this engine, after
+   * `timeoutMs` (for runs finished elsewhere), or when `signal` aborts —
+   * whichever comes first. `cancel()` disarms it.
+   *
+   * It never rejects. An abort that lands while the caller is still reading
+   * storage would otherwise reject a promise nobody is waiting on yet — an
+   * unhandled rejection — so the caller checks `signal.aborted` itself.
+   */
+  function armFinishWait(
+    runId: string,
+    timeoutMs: number,
+    signal: AbortSignal | undefined,
+  ): { settled: Promise<void>; cancel(): void } {
+    let disarm = noop
+    const settled = new Promise<void>((resolve) => {
+      const waiters = finishWaiters.get(runId) ?? new Set<() => void>()
+      finishWaiters.set(runId, waiters)
+
+      const wake = () => {
+        disarm()
+        resolve()
+      }
+      const timer = setTimeout(wake, timeoutMs)
+
+      disarm = () => {
+        clearTimeout(timer)
+        waiters.delete(wake)
+        if (waiters.size === 0 && finishWaiters.get(runId) === waiters) {
+          finishWaiters.delete(runId)
+        }
+        signal?.removeEventListener('abort', wake)
+      }
+
+      waiters.add(wake)
+      signal?.addEventListener('abort', wake, { once: true })
+    })
+
+    return { settled, cancel: () => disarm() }
+  }
+
+  function notifyFinished(runId: string): void {
+    const waiters = finishWaiters.get(runId)
+    if (!waiters) {
+      return
+    }
+    for (const wake of [...waiters]) {
+      wake()
+    }
+  }
+
+  async function prune(options: PruneOptions): Promise<number> {
+    const olderThanMs = parseDuration(options.olderThan)
+    const statuses = options.statuses ?? TERMINAL_STATUSES
+    // The types already forbid a live status; this guards JavaScript callers,
+    // for whom deleting a run mid-flight would be silent data loss.
+    for (const status of statuses) {
+      if (!TERMINAL_STATUSES.includes(status)) {
+        throw new ConfigError(`prune() only deletes finished runs; "${status}" is not a finished status`)
+      }
+    }
+
+    const finishedBefore = Date.now() - olderThanMs
+    let deleted = 0
+    for (;;) {
+      const batch = await storage.deleteRuns({ finishedBefore, statuses, limit: PRUNE_BATCH_SIZE })
+      deleted += batch
+      if (batch < PRUNE_BATCH_SIZE) {
+        return deleted
+      }
+    }
+  }
+
   async function resume(runId: string): Promise<boolean> {
     const run = await storage.getRun(runId)
     if (!run) {
@@ -344,7 +581,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     if (!registry.has(run.workflow)) {
       throw new WorkflowNotFoundError(run.workflow)
     }
-    return storage.requeueRun(runId)
+    const requeued = await storage.requeueRun(runId)
+    if (requeued) {
+      requestFill()
+    }
+    return requeued
   }
 
   /**
@@ -481,6 +722,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         attempts: record.attempts ?? 0,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
+        // A suspended sleep or wait finishing on a later claim keeps the time
+        // it began; an executor re-running a step passes a fresh one.
+        startedAt: record.startedAt ?? existing?.startedAt ?? now,
+        history: record.history ? [...record.history] : existing?.history ?? [],
       }, run.leaseId)
     }
 
@@ -489,6 +734,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       workflow,
       storage,
       signals: activeRun.signals,
+      durableBackoff: running,
       replay,
       steps,
       emit: (event) => emit(event, observerSignal),
@@ -574,7 +820,9 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
           case 'passthrough':
             continue
           case 'halt':
+            return
           case 'suspend':
+            scheduleWake(outcome.wakeAt)
             return
           case 'complete':
             await finishRun(run, ctx, outcome.output)
@@ -598,18 +846,23 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         throw error
       }
     } finally {
-      cleanupActiveRun(run.id)
+      cleanupActiveRun(run.id, activeRun)
     }
   }
 
   /** Mark a run completed and announce it. No-ops if the lease was lost. */
   async function finishRun(run: ClaimedRun, ctx: ExecutionContext, output: PersistedValue): Promise<void> {
-    const completed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'completed')
+    const completed = await storage.completeRun(run.id, run.leaseId, output)
     if (!completed) {
       return
     }
-
-    await ctx.emit({ type: 'runComplete', runId: run.id, workflow: run.workflow, output })
+    // Waiters wake only after the run's hooks have had their turn, so code
+    // that awaits a run and then stops the engine cannot cut them short.
+    try {
+      await ctx.emit({ type: 'runComplete', runId: run.id, workflow: run.workflow, output })
+    } finally {
+      notifyFinished(run.id)
+    }
   }
 
   /** Mark a run failed, announce it, then invoke the workflow's `onFailure`. No-ops if the lease was lost. */
@@ -620,33 +873,40 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     stepName: string,
     error: Error,
   ): Promise<void> {
-    const failed = await storage.updateClaimedRunStatus(run.id, run.leaseId, 'failed')
+    const failed = await storage.failRun(run.id, run.leaseId, {
+      stepName,
+      message: errorMessage(error),
+      code: errorCode(error),
+    })
     if (!failed) {
       return
     }
+    // Waiters wake once `onFailure` has run, so awaiting a run and then
+    // stopping the engine cannot skip its compensation.
+    try {
+      await ctx.emit({ type: 'runFailed', runId: run.id, workflow: run.workflow, stepName, error })
 
-    await ctx.emit({ type: 'runFailed', runId: run.id, workflow: run.workflow, stepName, error })
-
-    if (wf.failureHandler) {
-      try {
-        await wf.failureHandler({ error, stepName, input: run.input })
-      } catch (failureError) {
-        // Compensation logic must not change the run's outcome — it is already
-        // failed — but a broken `onFailure` is reported rather than lost.
-        reportError(new HookError('onFailure handler', { cause: toError(failureError) }))
+      if (wf.failureHandler) {
+        try {
+          await wf.failureHandler({ error, stepName, input: run.input })
+        } catch (failureError) {
+          // Compensation logic must not change the run's outcome — it is already
+          // failed — but a broken `onFailure` is reported rather than lost.
+          reportError(new HookError('onFailure handler', { cause: toError(failureError) }))
+        }
       }
+    } finally {
+      notifyFinished(run.id)
     }
   }
 
   async function cancel(runId: string): Promise<boolean> {
-    const run = await storage.getRun(runId)
-    if (!run || run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
-      return false
-    }
-
-    const cancelled = await storage.updateRunStatus(runId, 'cancelled')
+    // One conditional write rather than read-then-write, so a run finishing
+    // at the same moment is never reported as cancelled.
+    const cancelled = await storage.cancelRun(runId)
     if (cancelled) {
       abortActiveRun(runId, new RunCancelledError(runId))
+      notifyFinished(runId)
     }
 
     return cancelled
@@ -670,7 +930,11 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }
 
     const validated = validateEventPayload(eventName, unit.schema, payload)
-    return storage.deliverEvent(runId, eventName, validated)
+    const delivered = await storage.deliverEvent(runId, eventName, validated)
+    if (delivered) {
+      requestFill()
+    }
+    return delivered
   }
 
   async function schedule(
@@ -748,46 +1012,198 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }
   }
 
-  async function tick(): Promise<void> {
-    if (registry.size === 0 || tickInFlight) {
+  /**
+   * Track a background operation so `stop()` can wait for it to settle.
+   * Returns the same promise, so callers keep its result and its rejection.
+   */
+  function track<T>(work: Promise<T>): Promise<T> {
+    pendingWork.set(work, stopGeneration)
+    const forget = () => {
+      pendingWork.delete(work)
+    }
+    void work.then(forget, forget)
+    return work
+  }
+
+  /**
+   * Claim runs into this instance's free slots, then start executing them
+   * without waiting for any to finish.
+   *
+   * Slots are reserved before each claim is awaited, so callers racing each
+   * other — the pool refilling while a manual `tick()` runs — can never hold
+   * more than `concurrency` runs between them. The whole batch is claimed
+   * before any of it starts, so the claims run back to back instead of
+   * interleaving with the executions they start.
+   *
+   * A failed claim ends the batch but is returned rather than thrown: the runs
+   * already claimed must still start, or they would sit stranded until their
+   * leases expired.
+   */
+  async function claimIntoFreeSlots(): Promise<ClaimBatch> {
+    const generation = stopGeneration
+    const claimed: ClaimedRun[] = []
+    let failure: ClaimBatch['failure'] = null
+
+    try {
+      // Stops claiming the moment stop() lands, rather than filling every slot
+      // with runs that would only sit out their leases.
+      while (registry.size > 0 && generation === stopGeneration && executions.size + reservedSlots < concurrency) {
+        // The slot stays reserved from here until the run starts executing (or
+        // the claim comes back empty), so a concurrent caller cannot count it
+        // as free while this batch is still being claimed.
+        reservedSlots++
+        let run: ClaimedRun | null
+        try {
+          run = await track(storage.claimNextRun(workflowNames, Date.now() - runLeaseDurationMs, claimLimits))
+        } catch (error) {
+          reservedSlots--
+          throw error
+        }
+
+        if (!run) {
+          reservedSlots--
+          break
+        }
+
+        claimed.push(run)
+      }
+    } catch (error) {
+      failure = { error }
+    }
+
+    reservedSlots -= claimed.length
+    // Runs claimed as stop() lands are left to their leases, like every other
+    // run a stopped instance holds, and reclaimed once those expire.
+    const started = generation === stopGeneration ? claimed.map(execute) : []
+    return { started, failure }
+  }
+
+  /** Execute a claimed run in its slot, freeing the slot and refilling it when the run ends. */
+  function execute(run: ClaimedRun): Promise<void> {
+    const execution: Promise<void> = executeRun(run).finally(() => {
+      executions.delete(execution)
+      requestFill()
+    })
+    executions.add(execution)
+    return track(execution)
+  }
+
+  /**
+   * Top up free slots from storage, while the polling loop is running.
+   *
+   * Requested on every poll, whenever a run ends, and whenever this instance
+   * enqueues, resumes, or delivers an event to a run — so a free slot is filled
+   * as soon as there is work for it, not at the next poll. Requests that land
+   * mid-fill are folded into one more pass rather than claiming concurrently.
+   */
+  function requestFill(): void {
+    if (!running) {
       return
     }
 
-    const generation = stopGeneration
-    tickInFlight = true
-    const promise = (async () => {
-      try {
-        await processDueSchedules()
+    if (fillInFlight) {
+      refillRequested = true
+      return
+    }
 
-        const staleBefore = Date.now() - runLeaseDurationMs
-        const runs: ClaimedRun[] = []
-
-        for (let index = 0; index < concurrency; index++) {
-          const run = await storage.claimNextRun(workflowNames, staleBefore)
-          if (!run) {
-            break
-          }
-
-          runs.push(run)
+    fillInFlight = true
+    refillRequested = false
+    void claimIntoFreeSlots()
+      .then(({ started, failure }) => {
+        // Nothing awaits the pool, so its failures are reported here.
+        for (const execution of started) {
+          execution.catch(reportError)
         }
-
-        if (generation !== stopGeneration) {
-          return
+        if (failure) {
+          reportError(failure.error)
         }
+      })
+      .finally(() => {
+        fillInFlight = false
+        if (refillRequested) {
+          requestFill()
+        }
+      })
+  }
 
-        await Promise.all(runs.map((run) => executeRun(run)))
-      } finally {
-        tickInFlight = false
-        tickPromise = null
+  /**
+   * Refill slots when a run this instance suspended is due to wake, rather
+   * than leaving it for the next poll.
+   *
+   * Polling already finds every due run eventually; this only makes a short
+   * sleep, wait timeout, or retry backoff resume on time instead of up to
+   * `pollIntervalMs` late. Wakes further out than {@link LOCAL_WAKE_HORIZON_MS}
+   * are left to polling, where that delay is negligible, so the list stays
+   * small however many long sleeps are outstanding.
+   */
+  function scheduleWake(wakeAt: number | null): void {
+    if (wakeAt === null || !running || wakeAt - Date.now() > LOCAL_WAKE_HORIZON_MS) {
+      return
+    }
+
+    const index = sortedIndex(wakeTimes, wakeAt)
+    wakeTimes.splice(index, 0, wakeAt)
+    if (index === 0) {
+      armWakeTimer()
+    }
+  }
+
+  function armWakeTimer(): void {
+    if (wakeTimer) {
+      clearTimeout(wakeTimer)
+      wakeTimer = null
+    }
+
+    const [next] = wakeTimes
+    if (next === undefined) {
+      return
+    }
+
+    // A millisecond late rather than early: a timer can fire just before its
+    // target, when the run would not yet be claimable.
+    wakeTimer = setTimeout(() => {
+      wakeTimer = null
+      const now = Date.now()
+      while (wakeTimes[0] !== undefined && wakeTimes[0] <= now) {
+        wakeTimes.shift()
       }
-    })()
-    tickPromise = promise
-    await promise
+      requestFill()
+      armWakeTimer()
+    }, Math.max(0, next - Date.now()) + 1)
+  }
+
+  /** One polling cycle: fire due schedules, then fill free slots. Cycles never overlap. */
+  async function poll(): Promise<void> {
+    if (pollInFlight || !running) {
+      return
+    }
+
+    pollInFlight = true
+    try {
+      await track(processDueSchedules())
+    } finally {
+      pollInFlight = false
+    }
+
+    requestFill()
+  }
+
+  async function tick(): Promise<void> {
+    if (registry.size === 0) {
+      return
+    }
+
+    await track(processDueSchedules())
+    const { started, failure } = await claimIntoFreeSlots()
+    await Promise.all(started)
+    if (failure) {
+      throw failure.error
+    }
   }
 
   async function start(pollIntervalMs = 1000): Promise<void> {
-    if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
-      throw new ConfigError('Engine pollIntervalMs must be a positive number')
+    if (!isTimerDelay(pollIntervalMs)) {
+      throw new ConfigError(`Engine pollIntervalMs must be a positive number of milliseconds up to ${MAX_TIMER_DELAY_MS}`)
     }
 
     await storage.initialize()
@@ -798,23 +1214,15 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     running = true
 
     const triggerPoll = () => {
-      void runPollCycle().catch(reportError)
+      void poll().catch(reportError)
     }
 
     triggerPoll()
     timer = setInterval(triggerPoll, pollIntervalMs)
   }
 
-  async function runPollCycle(): Promise<void> {
-    if (!running) {
-      return
-    }
-
-    await tick()
-  }
-
   async function stop(): Promise<void> {
-    stopGeneration++
+    const stopping = stopGeneration++
     running = false
 
     if (timer) {
@@ -822,27 +1230,46 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       timer = null
     }
 
-    for (const [runId] of activeRuns) {
+    if (wakeTimer) {
+      clearTimeout(wakeTimer)
+      wakeTimer = null
+    }
+    wakeTimes.length = 0
+
+    for (const [runId, activeRun] of activeRuns) {
       abortActiveRun(runId, new RunControlError('Engine stopped'))
-      cleanupActiveRun(runId)
+      cleanupActiveRun(runId, activeRun)
     }
 
     // End all streams and unblock any producer paused on backpressure, so a
-    // pending tick can settle instead of deadlocking on a consumer that is gone.
+    // pending run can settle instead of deadlocking on a consumer that is gone.
     for (const subscriber of subscribers) {
       subscriber.close()
     }
     subscribers.clear()
 
-    if (tickPromise) {
-      await tickPromise.catch(noop)
+    // Settling one operation can start another (a run ending requests a fill,
+    // which no-ops once stopped but may already be claiming), so drain until
+    // nothing is left rather than snapshotting once. Only work begun before
+    // this stop counts: an engine started again meanwhile must not keep a
+    // stop() pending for as long as it stays busy.
+    for (;;) {
+      const outstanding = [...pendingWork].filter(([, generation]) => generation <= stopping).map(([work]) => work)
+      if (outstanding.length === 0) {
+        return
+      }
+      await Promise.allSettled(outstanding)
     }
   }
 
   function registerActiveRun(run: ClaimedRun): ActiveRunState {
+    // This instance reclaimed a run it was still executing: the earlier
+    // execution's lease has lapsed (its heartbeats stalled), so it can no
+    // longer write anything, and must stop before the new one runs alongside it.
     const existing = activeRuns.get(run.id)
     if (existing) {
-      cleanupActiveRun(run.id)
+      abortRunState(existing, new LeaseExpiredError(run.id))
+      cleanupActiveRun(run.id, existing)
     }
 
     const activeRun: ActiveRunState = {
@@ -868,10 +1295,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       try {
         const ok = await storage.heartbeatRun(run.id, activeRun.leaseId)
         if (!ok) {
-          abortActiveRun(run.id, new LeaseExpiredError(run.id))
+          abortRunState(activeRun, new LeaseExpiredError(run.id))
         }
       } catch (error) {
-        abortActiveRun(run.id, toError(error))
+        abortRunState(activeRun, toError(error))
       } finally {
         activeRun.heartbeatInFlight = false
       }
@@ -882,25 +1309,30 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     }, heartbeatIntervalMs)
   }
 
-  function cleanupActiveRun(runId: string): void {
-    const activeRun = activeRuns.get(runId)
-    if (!activeRun) {
-      return
-    }
-
+  /**
+   * Stop `activeRun`'s heartbeat and forget it — only it. Keyed by the state
+   * object rather than the run id, so an execution finishing after this
+   * instance has reclaimed the same run cannot tear down the new execution.
+   */
+  function cleanupActiveRun(runId: string, activeRun: ActiveRunState): void {
     if (activeRun.heartbeatTimer) {
       clearInterval(activeRun.heartbeatTimer)
+      activeRun.heartbeatTimer = null
     }
 
-    activeRuns.delete(runId)
+    if (activeRuns.get(runId) === activeRun) {
+      activeRuns.delete(runId)
+    }
   }
 
   function abortActiveRun(runId: string, reason: Error): void {
     const activeRun = activeRuns.get(runId)
-    if (!activeRun) {
-      return
+    if (activeRun) {
+      abortRunState(activeRun, reason)
     }
+  }
 
+  function abortRunState(activeRun: ActiveRunState, reason: Error): void {
     if (!activeRun.signals.run.signal.aborted) {
       activeRun.signals.run.abort(reason)
     }
@@ -919,6 +1351,9 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     enqueue,
     getRunStatus,
     listRuns,
+    waitForRun,
+    countRuns: (filter?: CountRunsFilter) => storage.countRuns(filter),
+    prune,
     resume,
     cancel,
     sendEvent,
@@ -1008,6 +1443,30 @@ function deriveScheduleKey(
     .slice(0, 22)
 }
 
+
+/**
+ * When a run enqueued with these options should start, in epoch ms.
+ *
+ * @throws {ConfigError} if both `delay` and `startAt` are given, or either is invalid.
+ */
+function startTimeOf(options: EnqueueOptions | undefined, now: number): number {
+  const { delay, startAt } = options ?? {}
+  if (delay !== undefined && startAt !== undefined) {
+    throw new ConfigError('enqueue: pass delay or startAt, not both')
+  }
+  if (delay !== undefined) {
+    // Whole milliseconds, as every other time the engine stores.
+    return Math.ceil(now + parseDuration(delay))
+  }
+  if (startAt !== undefined) {
+    const time = startAt instanceof Date ? startAt.getTime() : startAt
+    if (!Number.isFinite(time)) {
+      throw new ConfigError('enqueue: startAt must be a valid Date or epoch milliseconds')
+    }
+    return Math.ceil(time)
+  }
+  return now
+}
 /**
  * Normalise the caller's recurrence, validating it before anything is stored.
  *
@@ -1058,6 +1517,47 @@ function normalizeIdempotencyKey(idempotencyKey?: string): string | null {
 function defaultHeartbeatInterval(runLeaseDurationMs: number): number {
   return Math.max(1, Math.min(runLeaseDurationMs - 1, Math.floor(runLeaseDurationMs / 3)))
 }
+
+/** The error's string `code` — a `ReflowErrorCode`, a Node system code like `ECONNREFUSED` — or `null`. */
+function errorCode(error: Error): string | null {
+  return 'code' in error && typeof error.code === 'string' ? error.code : null
+}
+
+const TERMINAL_STATUSES: readonly TerminalRunStatus[] = ['completed', 'failed', 'cancelled']
+
+function isTerminalStatus(status: RunStatus): status is TerminalRunStatus {
+  const terminal: readonly RunStatus[] = TERMINAL_STATUSES
+  return terminal.includes(status)
+}
+
+/** The longest delay `setTimeout` honours; anything larger silently fires after 1ms. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+
+function isTimerDelay(ms: number): boolean {
+  return Number.isFinite(ms) && ms > 0 && ms <= MAX_TIMER_DELAY_MS
+}
+
+/** How far ahead {@link scheduleWake} sets a local timer; later wakes are left to polling. */
+const LOCAL_WAKE_HORIZON_MS = 5 * 60_000
+
+/** Where `value` belongs in the ascending `sorted`, after any equal values. */
+function sortedIndex(sorted: readonly number[], value: number): number {
+  let low = 0
+  let high = sorted.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    const candidate = sorted[middle]
+    if (candidate !== undefined && candidate <= value) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+  return low
+}
+
+/** Runs deleted per `deleteRuns` call during `prune()`: each batch is one short write transaction. */
+const PRUNE_BATCH_SIZE = 500
 
 function noop() {}
 

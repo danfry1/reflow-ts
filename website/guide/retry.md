@@ -33,6 +33,32 @@ The delay between attempts grows with the backoff strategy:
 | `initialDelayMs` | `number` | Base delay in ms (default `1000`) |
 | `timeoutMs` | `number` | Per-attempt timeout (see below) |
 
+## Backoff is durable
+
+On a [started](/guide/engine#polling-vs-manual-ticks) engine, the run is suspended in storage between attempts rather than waiting in memory. While it backs off:
+
+- it holds **no lease and no [concurrency](/guide/concurrency) slot**, so a long backoff does not stop other runs from executing;
+- the run is `sleeping`, with `wakeAt` set to the next attempt, and the step is `retrying`, recording the attempts so far and the latest error;
+- a crash or deploy **does not reset the attempt count** — whichever engine picks the run up continues at the next attempt, and `maxAttempts` holds across restarts.
+
+```typescript
+const { run, steps } = await engine.getRunStatus(runId)
+run.status     // 'sleeping'
+run.wakeAt     // when the next attempt starts
+steps[0].status   // 'retrying'
+steps[0].attempts // attempts made so far
+steps[0].error    // the latest attempt's error
+```
+
+A started engine wakes a run backing off for under five minutes on time; longer backoffs are picked up by the next poll after they end. `onStepStart` fires once, before the first attempt, and `stepComplete` once the step finally succeeds.
+
+Two cases wait in process instead, as before:
+
+- An engine driven only by `tick()` — tests, CLI scripts — has no polling to resume a suspended run, so it waits out the backoff and the tick still finishes the step. [`testEngine`](/guide/testing) works this way.
+- Branches of a [`.parallel()`](/guide/parallel) group: their siblings are still running.
+
+`onRunStart` fires each time an engine picks the run up again after a backoff, as it does after a sleep or a wait.
+
 ## Timeouts
 
 Stop a step from hanging indefinitely with `timeoutMs`:

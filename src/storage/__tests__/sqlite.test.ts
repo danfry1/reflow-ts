@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { SQLiteStorage } from '../sqlite-node'
+import { SqliteStorageBase } from '../sqlite/core'
 import { unlinkSync, existsSync } from 'node:fs'
 import type { WorkflowRun, StepResult, WorkflowSchedule } from '../../core/types'
 import { at } from '../../__tests__/helpers'
@@ -27,6 +28,12 @@ function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     status: 'pending',
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    startedAt: null,
+    finishedAt: null,
+    output: undefined,
+    error: null,
+    wakeAt: null,
+    waitingFor: null,
     ...overrides,
   }
 }
@@ -42,6 +49,8 @@ function makeStep(overrides: Partial<StepResult> = {}): StepResult {
     attempts: 1,
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    startedAt: null,
+    history: [],
     ...overrides,
   }
 }
@@ -85,38 +94,32 @@ describe('SQLiteStorage', () => {
     it('returns the existing run when an idempotent insert loses a unique-key race', async () => {
       await storage.createRun(makeRun({ id: 'run_1', idempotencyKey: 'same-key', input: { x: 1 } }))
 
-      const db = (storage as any).db
-      const originalPrepare = db.prepare.bind(db)
+      // A second connection whose first idempotency lookup misses, as if a
+      // concurrent writer inserted the key between that lookup and the INSERT.
+      const db = new Database(DB_PATH)
       let firstLookupMissed = false
+      const racing = new SqliteStorageBase({
+        exec: (sql) => {
+          db.exec(sql)
+        },
+        get: <T>(sql: string, params: readonly unknown[]) => {
+          if (!firstLookupMissed && sql.includes('idempotency_key = ?')) {
+            firstLookupMissed = true
+            return undefined
+          }
+          return db.prepare(sql).get(...params) as T | undefined
+        },
+        all: <T>(sql: string, params: readonly unknown[]) => db.prepare(sql).all(...params) as T[],
+        run: (sql, params) => db.prepare(sql).run(...params).changes,
+        close: () => {
+          db.close()
+        },
+      })
 
-      vi.spyOn(db, 'prepare').mockImplementation(((sql: unknown) => {
-        const sqlText = String(sql)
-        const statement = originalPrepare(sqlText)
-        if (!sqlText.includes('SELECT * FROM workflow_runs') || !sqlText.includes('idempotency_key')) {
-          return statement
-        }
+      const result = await racing.createRun(makeRun({ id: 'run_2', idempotencyKey: 'same-key', input: { x: 1 } }))
+      racing.close()
 
-        return new Proxy(statement, {
-          get(target, property, receiver) {
-            if (property === 'get') {
-              return (...args: unknown[]) => {
-                if (!firstLookupMissed) {
-                  firstLookupMissed = true
-                  return undefined
-                }
-
-                return Reflect.get(target, property, receiver).apply(target, args)
-              }
-            }
-
-            const value = Reflect.get(target, property, receiver)
-            return typeof value === 'function' ? value.bind(target) : value
-          },
-        })
-      }) as any)
-
-      const result = await storage.createRun(makeRun({ id: 'run_2', idempotencyKey: 'same-key', input: { x: 1 } }))
-
+      expect(firstLookupMissed).toBe(true)
       expect(result.created).toBe(false)
       expect(result.run.id).toBe('run_1')
     })
@@ -333,10 +336,10 @@ describe('SQLiteStorage', () => {
 
     it('reflects status updates', async () => {
       await storage.createRun(makeRun({ id: 'run_1' }))
-      await storage.updateRunStatus('run_1', 'completed')
+      await storage.cancelRun('run_1')
 
       const run = expectPresent(await storage.getRun('run_1'))
-      expect(run.status).toBe('completed')
+      expect(run.status).toBe('cancelled')
     })
 
     it('roundtrips complex JSON input', async () => {
@@ -368,36 +371,6 @@ describe('SQLiteStorage', () => {
     it('returns false for a nonexistent run', async () => {
       const ok = await storage.heartbeatRun('nonexistent', 'some-lease')
       expect(ok).toBe(false)
-    })
-  })
-
-  describe('updateRunStatus', () => {
-    it('updates the status of a run', async () => {
-      await storage.createRun(makeRun({ id: 'run_1' }))
-      await storage.updateRunStatus('run_1', 'completed')
-
-      const claimed = await storage.claimNextRun(['test'])
-      expect(claimed).toBeNull()
-    })
-
-    it('transitions through all status values', async () => {
-      await storage.createRun(makeRun({ id: 'run_1' }))
-      await storage.updateRunStatus('run_1', 'running')
-      await storage.updateRunStatus('run_1', 'failed')
-      // Should not throw
-    })
-
-    it('returns false for a nonexistent run', async () => {
-      const ok = await storage.updateRunStatus('nonexistent', 'completed')
-      expect(ok).toBe(false)
-    })
-
-    it('updates a claimed run only when the lease matches', async () => {
-      await storage.createRun(makeRun({ id: 'run_1' }))
-      const claimed = expectPresent(await storage.claimNextRun(['test']))
-
-      expect(await storage.updateClaimedRunStatus('run_1', 'wrong-lease', 'completed')).toBe(false)
-      expect(await storage.updateClaimedRunStatus('run_1', claimed.leaseId, 'completed')).toBe(true)
     })
   })
 

@@ -1,8 +1,8 @@
-import { BranchFailedError, ParallelCompleteError, RunControlError } from '../errors'
-import type { PersistedValue } from '../types'
+import { BranchFailedError, errorMessage, ParallelCompleteError, RunControlError } from '../errors'
+import type { PersistedValue, StepAttempt } from '../types'
 import type { StepDefinition } from '../workflow'
 import { toError } from './signals'
-import { runStepHandler } from './step'
+import { recent, runStepHandlerInProcess } from './step'
 import type { UnitExecutor, UnitOutcome } from './types'
 
 /**
@@ -38,6 +38,8 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
 
     const frozenSteps = ctx.snapshotSteps()
     const runSignal = ctx.signals.run.signal
+    // Branches start together, so they share one start time.
+    const startedAt = Date.now()
 
     // Branches share a group-scoped abort so one failure can cancel its
     // siblings without aborting the run itself.
@@ -46,6 +48,9 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
     // fail because they observed the abort are downstream effects, not the
     // cause — distinguishing them keeps `onRunFailed` accurate.
     let causeBranch: BranchFailedError | null = null
+    // Each branch's attempts, kept beside the settled results rather than
+    // threaded through the branch error.
+    const histories = new Map<string, StepAttempt[]>()
 
     const onRunAbort = () => {
       if (!groupAbort.signal.aborted) {
@@ -83,9 +88,9 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
             }),
           }
 
-          const outcome = await runStepHandler(
+          const outcome = await runStepHandlerInProcess(
             guardedDef,
-            { input: ctx.run.input, runSignal: groupAbort.signal },
+            { runId: ctx.run.id, input: ctx.run.input, runSignal: groupAbort.signal },
             prev,
             frozenSteps,
           )
@@ -94,6 +99,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
           // ParallelCompleteError (a plain error) before EarlyCompleteError can
           // be raised, so a branch only ever completes or fails.
           if (outcome.kind === 'failed') {
+            histories.set(branchDef.name, recent(outcome.history))
             const failure = new BranchFailedError(branchDef.name, outcome.error, outcome.attempts)
             if (!groupAbort.signal.aborted) {
               causeBranch = failure
@@ -102,6 +108,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
             throw failure
           }
 
+          histories.set(branchDef.name, recent(outcome.history))
           return { name: branchDef.name, output: outcome.output, attempts: outcome.attempts }
         }),
       )
@@ -127,8 +134,10 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
           name: firstFailure.branchName,
           status: 'failed',
           output: null,
-          error: firstFailure.branchError.message,
+          error: errorMessage(firstFailure.branchError),
           attempts: firstFailure.attempts,
+          startedAt,
+          history: histories.get(firstFailure.branchName) ?? [],
         })
 
         return { kind: 'failed', stepName: firstFailure.branchName, error: firstFailure.branchError }
@@ -143,6 +152,8 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
           status: 'completed',
           output: branch.output,
           attempts: branch.attempts,
+          startedAt,
+          history: histories.get(branch.name) ?? [],
         })
 
         await ctx.emit({

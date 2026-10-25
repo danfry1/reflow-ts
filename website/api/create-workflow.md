@@ -16,6 +16,8 @@ const workflow = createWorkflow({
 |---|---|---|
 | `config.name` | `string` | Unique workflow name. Captured as a string-literal type. |
 | `config.input` | `StandardSchemaV1` | Any [Standard Schema](https://github.com/standard-schema/standard-schema)-compatible schema used to validate input. |
+| `config.label` | `(input) => string` | Optional. Names each run for people, from its typed input — an order number, a user id — wherever runs are listed, such as the [dashboard](/guide/dashboard#naming-runs). Without it a run is shown by its idempotency key, or else its id. |
+| `config.concurrency` | `number` | Optional. The most runs of this workflow running at once, across every process sharing the storage; the rest wait as `pending`. See [limiting a workflow](/guide/concurrency#limiting-one-workflow). |
 
 Returns a [`Workflow`](/api/workflow) with `.step()`, `.parallel()`, `.onFailure()`, and `.parseInput()`.
 
