@@ -8,7 +8,7 @@
     "type": "git",
     "url": "git+https://github.com/danfry1/reflow-ts.git"
   },
-  "homepage": "https://danfry1.github.io/reflow-ts/",
+  "homepage": "https://reflow.danfry.dev/",
   "bugs": "https://github.com/danfry1/reflow-ts/issues",
   "type": "module",
   "sideEffects": false,

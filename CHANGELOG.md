@@ -44,7 +44,7 @@ crash.
 
 **Upgrading:** nothing to change if you use the built-in storage adapters —
 they migrate their tables on `initialize()`. Custom storage adapters implement
-a revised contract; see [Migrating to 0.8](https://danfry1.github.io/reflow-ts/guide/migrating-0-8).
+a revised contract; see [Migrating to 0.8](https://reflow.danfry.dev/guide/migrating-0-8).
 
 ### Added
 
@@ -58,7 +58,7 @@ a revised contract; see [Migrating to 0.8](https://danfry1.github.io/reflow-ts/g
 - **Read-only SQLite connections** — `new SQLiteStorage(path, { readOnly: true })` opens an existing database for reading only, on all three adapters: writes fail, and the file is left untouched, journal mode included. For inspecting a database another process owns, or a backup. New exported type: `SQLiteStorageOptions`.
 - `SQLiteStorage#schemaVersion()` reports a database's schema version and the one this build writes.
 - `RUN_STATUSES` and `STEP_STATUSES` — every run and step status as a readonly array; `RunStatus` and `StepStatus` are now derived from them.
-- A guide to [inspecting runs](https://danfry1.github.io/reflow-ts/guide/inspecting-runs) and retention.
+- A guide to [inspecting runs](https://reflow.danfry.dev/guide/inspecting-runs) and retention.
 
 ### Fixed
 
@@ -74,7 +74,7 @@ a revised contract; see [Migrating to 0.8](https://danfry1.github.io/reflow-ts/g
 - **Breaking for custom adapters:** `StorageAdapter.updateRunStatus` and `updateClaimedRunStatus` are replaced by `completeRun(runId, leaseId, output)`, `failRun(runId, leaseId, error)`, and `cancelRun(runId)`. A generic status setter could mark a run completed without an output, and made cancelling a read-then-write that could race a run completing; `cancelRun` refuses a finished run in the same write. Adapters also implement `countRuns` and `deleteRuns`, and store the new run and step fields. `engine.cancel()` behaves as before, without the race.
 - **SQLite schema migrations are versioned.** The adapters record the schema version in `PRAGMA user_version` and apply only the migrations a database is missing, each in its own `BEGIN IMMEDIATE` transaction, so processes starting together cannot apply one twice. Existing databases upgrade in place; runs that finished before the upgrade get a `finishedAt` so they can be pruned. A database written by a newer version is refused with a `ConfigError` instead of being opened.
 - Stored run and step statuses are validated when read rather than cast, so a corrupt or foreign row fails loudly.
-- **SQLite claims and lists runs by seeking an index, however large the queue or history** (schema version 4). Claiming sorted every claimable run of the engine's workflows to find the oldest, so with 100k runs queued each claim took about 12ms and a worker drained at about 80 runs a second; it now seeks each workflow's oldest due run directly, in about 0.1ms, whatever the backlog, the history, or the number of workflows. The status indexes carry when runs became due; new indexes on creation time, overall and per workflow, on workflow and finish time, and on failed and cancelled runs let the newest runs be listed and the last hour counted without sorting the table. The upgrade builds them in about 9 seconds per million runs, during which other processes wait for the write lock — see [Migrating to 0.8](https://danfry1.github.io/reflow-ts/guide/migrating-0-8#databases-migrate-themselves).
+- **SQLite claims and lists runs by seeking an index, however large the queue or history** (schema version 4). Claiming sorted every claimable run of the engine's workflows to find the oldest, so with 100k runs queued each claim took about 12ms and a worker drained at about 80 runs a second; it now seeks each workflow's oldest due run directly, in about 0.1ms, whatever the backlog, the history, or the number of workflows. The status indexes carry when runs became due; new indexes on creation time, overall and per workflow, on workflow and finish time, and on failed and cancelled runs let the newest runs be listed and the last hour counted without sorting the table. The upgrade builds them in about 9 seconds per million runs, during which other processes wait for the write lock — see [Migrating to 0.8](https://reflow.danfry.dev/guide/migrating-0-8#databases-migrate-themselves).
 - `StorageAdapter` gains two optional methods, `getStepResultsForRuns` and `runActivity`, which the dashboard uses when present to read less; `reflow-ts/conformance` checks them when an adapter has them. New exported types: `RunActivity`, `RunActivityFilter`.
 - `MemoryStorage.getStepResults` orders steps by creation time, as the contract states, rather than by when each was first saved.
 - An error whose `message` is not a string — some libraries assign other values to it — is recorded with its message converted to one, instead of being stored as it was and leaving the run's record unreadable.
@@ -93,7 +93,7 @@ but a stored next-run time can.
 **Upgrading:** one breaking change, `WorkflowSchedule.intervalMs` becoming
 `recurrence`. It affects code reading `engine.listSchedules()` and custom
 storage adapters; the SQLite adapters migrate themselves. See
-[Migrating to 0.7](https://danfry1.github.io/reflow-ts/guide/migrating-0-7).
+[Migrating to 0.7](https://reflow.danfry.dev/guide/migrating-0-7).
 
 ### Added
 
@@ -119,7 +119,7 @@ process that registered it. Every storage adapter those features rest on is
 held to one shared contract, runnable against your own adapter too.
 
 **Upgrading:** this release breaks the `schedule()` API and adds methods to
-`StorageAdapter`. Everything else is additive. See [Migrating to 0.6](https://danfry1.github.io/reflow-ts/guide/migrating-0-6).
+`StorageAdapter`. Everything else is additive. See [Migrating to 0.6](https://reflow.danfry.dev/guide/migrating-0-6).
 
 ### Added
 

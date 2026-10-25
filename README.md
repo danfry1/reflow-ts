@@ -436,7 +436,7 @@ const dashboard = createDashboard({
 Bun.serve({ port: 4400, fetch: dashboard }) // or Hono, Next.js, toNodeHandler() for Express
 ```
 
-The [dashboard guide](https://danfry1.github.io/reflow-ts/guide/dashboard) covers mounting it in each server, using your app's own sign-in, and opening a production database over SSH.
+The [dashboard guide](https://reflow.danfry.dev/guide/dashboard) covers mounting it in each server, using your app's own sign-in, and opening a production database over SSH.
 
 ### Hooks
 
@@ -676,7 +676,7 @@ interface StorageAdapter {
 }
 ```
 
-Each method's contract is in the [Storage API reference](https://danfry1.github.io/reflow-ts/api/storage), and `reflow-ts/conformance` checks an adapter against it.
+Each method's contract is in the [Storage API reference](https://reflow.danfry.dev/api/storage), and `reflow-ts/conformance` checks an adapter against it.
 
 Persisted workflow input and step output must be plain data: objects, arrays, strings, numbers, booleans, `null`, `undefined`, and `Date`.
 
