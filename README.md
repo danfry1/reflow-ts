@@ -1,18 +1,23 @@
-# Reflow
+<p align="center">
+  <img src="https://reflow.danfry.dev/favicon.svg" width="96" height="96" alt="" />
+</p>
+
+<h1 align="center">Reflow</h1>
 
 Durable workflow execution for TypeScript. Define multi-step workflows with full type safety, automatic retries, and crash recovery via stale-run reclamation. Pause for days with `.sleep()` or wait on a webhook with `.waitForEvent()` — the process doesn't need to stay alive. Start on a SQLite file with no external services; move to PostgreSQL when workers span machines, with the same workflow code.
 
 ```typescript
 import { createWorkflow, createEngine } from 'reflow-ts'
-import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+import { SQLiteStorage } from 'reflow-ts/sqlite-node-builtin' // Node's built-in SQLite
 import { z } from 'zod' // or valibot, arktype, etc.
 
 const orderWorkflow = createWorkflow({
   name: 'order-fulfillment',
   input: z.object({ orderId: z.string(), amount: z.number() }),
 })
-  .step('charge', async ({ input, signal }) => {
-    const charge = await stripe.charges.create({ amount: input.amount })
+  .step('charge', async ({ input, idempotencyKey }) => {
+    // Steps run at least once; the key lets Stripe drop a repeated charge
+    const charge = await stripe.charges.create({ amount: input.amount }, { idempotencyKey })
     return { chargeId: charge.id }
   })
   .step('fulfill', async ({ prev }) => {
@@ -51,7 +56,7 @@ Now the user is charged but never got their welcome email. Worse — you don't k
 
 **The usual fix** is to build manual checkpoint logic: state columns, retry loops, deduplication. That's 200 lines of infrastructure code that's hard to test and easy to get wrong.
 
-**Reflow makes each step durable.** If the process crashes after step 2 of 5, a new engine instance can reclaim the stale run after its lease expires and pick up at step 3. Active workers heartbeat their lease while they run, completed steps are never re-executed, and each step's output is persisted in SQLite — no external services required.
+**Reflow makes each step durable.** If the process crashes after step 2 of 5, a new engine instance can reclaim the stale run after its lease expires and pick up at step 3. Active workers heartbeat their lease while they run, completed steps are never re-executed, and each step's output is persisted in SQLite or Postgres — no other services required.
 
 ## Who Is This For?
 
@@ -65,7 +70,7 @@ Now the user is charged but never got their welcome email. Worse — you don't k
 |---|---|---|---|
 | Infrastructure | A SQLite file, or your Postgres | Temporal Server + DB | Cloud service |
 | Type safety | Full end-to-end | Partial | Partial |
-| Setup | `bun add reflow-ts`  | Cluster deployment | Account + SDK |
+| Setup | `npm install reflow-ts` | Cluster deployment | Account + SDK |
 | Best for | Apps, CLIs, and AI agents, from one process to many machines | Very large, multi-language systems | Serverless |
 
 **Don't use Reflow when:**
@@ -89,36 +94,37 @@ Reflow's overhead is small — most of the cost in real workflows is your own st
 ## Install
 
 ```bash
-# Bun (uses built-in bun:sqlite — no native dependencies)
-bun add reflow-ts
+# Node.js 22.13+ or Bun — SQLite is built in, nothing else to install
+npm install reflow-ts        # or: bun add reflow-ts
 
-# Node.js (requires better-sqlite3)
+# Older Node (18.18+), or to use better-sqlite3
 npm install reflow-ts better-sqlite3
+
+# PostgreSQL, for workers on many machines
+npm install reflow-ts pg
 ```
 
-Node.js 18.18 or newer is required.
-
-**On Node 18–21, pin `better-sqlite3@12`** — version 13 raises its own floor to Node 22, so the
-plain install above fails there with an engine error. Reflow accepts `better-sqlite3 >= 9`, so
-`npm install reflow-ts better-sqlite3@12` works on any supported Node. On Node 22+, the latest is
-fine. This applies only to the `reflow-ts/sqlite-node` adapter; Bun and the `node:sqlite` adapter
-have no native dependency.
-
-Then pick a storage adapter based on your runtime:
+Then pick the storage adapter for your runtime. Each SQLite adapter takes a file path and behaves the same; only the driver differs.
 
 ```typescript
-// Bun — zero native deps
+// Node.js 22.13+ — built-in node:sqlite
+import { SQLiteStorage } from 'reflow-ts/sqlite-node-builtin'
+const storage = new SQLiteStorage('./reflow.db')
+
+// Bun — built-in bun:sqlite
 import { SQLiteStorage } from 'reflow-ts/sqlite-bun'
 const storage = new SQLiteStorage('./reflow.db')
 
-// Node.js — uses better-sqlite3
+// Node.js 18.18+ — better-sqlite3
 import { SQLiteStorage } from 'reflow-ts/sqlite-node'
 const storage = new SQLiteStorage('./reflow.db')
 
-// PostgreSQL — for workers on many machines (npm install pg)
+// PostgreSQL
 import { PostgresStorage } from 'reflow-ts/postgres'
 const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL })
 ```
+
+`node:sqlite` is still marked experimental by Node, which prints an `ExperimentalWarning` once at startup; it works unflagged from Node 22.13 and 23.4 (Node 22.5–22.12 need `--experimental-sqlite`). If you'd rather not see the warning, or you're on an older Node, use `reflow-ts/sqlite-node` with `better-sqlite3`. On Node 18–21, pin `better-sqlite3@12`: version 13 requires Node 22, and Reflow accepts `better-sqlite3 >= 9`.
 
 Reflow uses [Standard Schema](https://github.com/standard-schema/standard-schema) for input validation, so you can bring any compatible library:
 
@@ -157,6 +163,8 @@ Each `.step()` receives:
 - `steps` — typed access to all previously completed step results by name (e.g. `steps.charge.chargeId`)
 - `signal` — an `AbortSignal` that is aborted when the run is cancelled, its lease is lost, or the step times out
 - `complete(value?)` — finish the workflow early, skipping remaining steps (optionally persist a final value)
+- `runId`, `attempt` — the run's id, and which attempt at this step this is (from 1)
+- `idempotencyKey` — stable for this step of this run (`${runId}:${stepName}`); pass it to payment and email APIs so a step that reruns after a crash isn't charged or sent twice
 
 The builder is **immutable** — each `.step()` returns a new workflow instance, so you can safely branch:
 
@@ -239,6 +247,8 @@ Steps can be configured with automatic retry and backoff:
 ```
 
 Without retry config, a failing step immediately fails the entire workflow run.
+
+On a started engine, the wait between attempts is durable: the step is saved as `retrying` and the run sleeps with its lease and concurrency slot released, so a long backoff holds no worker and survives a restart. An engine driven only by `tick()` (and `testEngine`) waits in process instead.
 
 ### Failure Handling
 
@@ -423,6 +433,8 @@ See what your runs are doing — what is waiting and on what, what failed and wh
 npx reflow-ts dashboard ./reflow.db   # read-only, on 127.0.0.1
 ```
 
+The CLI opens SQLite files; for Postgres, mount the dashboard in your app as below.
+
 Or serve it from your own app, behind a password or your own sign-in, with cancel, resume, and live updates. Nothing is hosted elsewhere; your run data stays on your server.
 
 ```typescript
@@ -460,7 +472,8 @@ const engine = createEngine({
       alerting.notify(`${workflow} failed at ${stepName}: ${error.message}`)
     },
     onError: (error) => {
-      // Fires on background failures (scheduled enqueues, poll cycles)
+      // Background failures (poll cycles, scheduled enqueues) and errors thrown by
+      // hooks, stream consumers, or onFailure, wrapped in HookError
       console.error('Engine error:', error)
     },
   },
@@ -469,8 +482,9 @@ const engine = createEngine({
 
 Hooks may be **synchronous or `async`**. An async hook is awaited before the engine
 moves on, so you can use it to flush a metric, persist an audit row, or apply
-backpressure. A hook that throws (or rejects) never affects engine state — the error
-is swallowed so a broken observer can't fail a workflow.
+backpressure. A hook that throws (or rejects) never affects engine state: the error
+is reported to `onError` as a `HookError`, so a broken observer can't fail a workflow.
+`onStepSkipped` also fires when a step's `when` predicate returns `false`.
 
 ### Streaming Results
 
@@ -490,8 +504,8 @@ for await (const event of engine.stream()) {
 ```
 
 Each call to `engine.stream()` returns an independent stream. The event is a
-discriminated union (`runStart`, `stepStart`, `stepComplete`, `runComplete`,
-`runFailed`), so TypeScript narrows `event.output`, `event.error`, etc. once you
+discriminated union (`runStart`, `stepStart`, `stepSkipped`, `stepComplete`,
+`runComplete`, `runFailed`), so TypeScript narrows `event.output`, `event.error`, etc. once you
 check `event.type`.
 
 **Backpressure.** By default the stream buffers without bound and never slows the
@@ -552,18 +566,26 @@ const engine = createEngine({
 
 With `concurrency: 5`, the engine keeps up to 5 runs executing at once. Slots are independent: when a run finishes, its slot is refilled straight away, so one slow run never holds the others idle. Steps within a single run still execute sequentially.
 
+To cap one workflow across every process sharing the storage — for a rate-limited API, say — set `concurrency` on the workflow:
+
+```typescript
+const sync = createWorkflow({ name: 'sync-crm', input: schema, concurrency: 2 })
+```
+
+Runs past the limit wait their turn as `pending`. All the built-in adapters support it; a custom adapter must set `supportsConcurrencyLimits`, or `createEngine` throws `ConfigError`.
+
 ### Run Cancellation
 
-Cancel pending or running workflows:
+Cancel any run that hasn't finished — pending, running, sleeping, or waiting:
 
 ```typescript
 const run = await engine.enqueue('order-fulfillment', { orderId: 'ORD_1', amount: 100 })
 
 const cancelled = await engine.cancel(run.id)
-// true if cancelled, false if already completed/failed/cancelled
+// true if cancelled, false if it doesn't exist or has already finished
 ```
 
-Cancellation aborts the current step's `AbortSignal` immediately and prevents later steps from starting. If a handler ignores the signal, its underlying work may continue outside Reflow, but the run remains `cancelled`.
+Cancellation aborts the current step's `AbortSignal` immediately and prevents later steps from starting. If a handler ignores the signal, its underlying work may continue outside Reflow, but the run remains `cancelled`. `engine.resume(runId)` re-queues a failed or cancelled run from the step where it stopped.
 
 If your step handler cooperates with the provided `AbortSignal`, cancellation can stop it immediately:
 
@@ -614,7 +636,7 @@ await engine.start()
 
 ### Storage
 
-Reflow ships with three storage adapters:
+Reflow ships with three SQLite adapters, one per driver, a PostgreSQL adapter, and an in-memory adapter for tests:
 
 **SQLiteStorage** — for Bun runtime. Uses the built-in `bun:sqlite` module with zero native dependencies.
 
@@ -632,7 +654,7 @@ import { SQLiteStorage } from 'reflow-ts/sqlite-node'
 const storage = new SQLiteStorage('./workflows.db')
 ```
 
-**SQLiteStorage** — for Node.js with **no native dependencies**, using the built-in `node:sqlite` module (Node ≥ 22.5). The Node equivalent of the Bun adapter.
+**SQLiteStorage** — for Node.js with **no native dependencies**, using the built-in `node:sqlite` module (Node ≥ 22.13 without a flag). The Node equivalent of the Bun adapter.
 
 ```typescript
 import { SQLiteStorage } from 'reflow-ts/sqlite-node-builtin'
@@ -640,10 +662,19 @@ import { SQLiteStorage } from 'reflow-ts/sqlite-node-builtin'
 const storage = new SQLiteStorage('./workflows.db')
 ```
 
+**PostgresStorage** — for workers on many machines. Needs the `pg` package. Tables live in their own schema (`reflow` by default) and migrate themselves on `initialize()`.
+
+```typescript
+import { PostgresStorage } from 'reflow-ts/postgres'
+
+const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL })
+// or share your app's pool: new PostgresStorage({ pool })
+```
+
 **MemoryStorage** — used internally by the test helper. For custom use, import from `reflow-ts/test`.
 
 ```typescript
-import { testEngine } from 'reflow-ts/test'
+import { MemoryStorage } from 'reflow-ts/test'
 ```
 
 You can implement your own adapter by conforming to the `StorageAdapter` interface:
@@ -652,7 +683,8 @@ You can implement your own adapter by conforming to the `StorageAdapter` interfa
 interface StorageAdapter {
   initialize(): Promise<void>
   createRun(run: WorkflowRun): Promise<CreateRunResult>
-  claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
+  claimNextRun(workflowNames: readonly string[], staleBefore?: number, limits?: ReadonlyMap<string, number>): Promise<ClaimedRun | null>
+  readonly supportsConcurrencyLimits?: boolean
   heartbeatRun(runId: string, leaseId: string): Promise<boolean>
   sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean>
   waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
@@ -662,6 +694,8 @@ interface StorageAdapter {
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
   requeueRun(runId: string): Promise<boolean>
   getStepResults(runId: string): Promise<StepResult[]>
+  getStepResultsForRuns?(runIds: readonly string[]): Promise<Map<string, StepResult[]>>
+  runActivity?(filter: RunActivityFilter): Promise<RunActivity>
   saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
   completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean>
   failRun(runId: string, leaseId: string, error: RunError): Promise<boolean>
@@ -682,7 +716,7 @@ Persisted workflow input and step output must be plain data: objects, arrays, st
 
 ## Testing
 
-Reflow includes a test helper that runs workflows synchronously and returns typed results:
+Reflow includes a test helper that runs a workflow to completion in memory and returns typed results:
 
 ```typescript
 import { testEngine } from 'reflow-ts/test'
@@ -715,6 +749,8 @@ describe('order workflow', () => {
 })
 ```
 
+`run()` executes one pass, so a workflow that sleeps or waits for an event throws `TestRunIncompleteError`; test those with a real engine and `waitForRun()`.
+
 ## Type Safety
 
 Reflow tracks types through the entire workflow chain:
@@ -736,20 +772,23 @@ workflow.step('x', async ({ prev }) => {
 
 ## Error Handling
 
-Every error Reflow throws extends `ReflowError`, so a single `instanceof` check catches them all, and carries a stable literal `code`. Subclasses carry structured context in typed fields — no message parsing needed.
+Every error Reflow throws extends `ReflowError`, so a single `instanceof` check catches them all, and carries a stable literal `code`. (The one exception: a schema whose validation is async is rejected with a plain `TypeError`.) Subclasses carry structured context in typed fields — no message parsing needed.
 
 **Prefer `code` over `instanceof` for branching.** It's a closed union, so a `switch` over it can be checked for exhaustiveness, and it keeps working across bundling, duplicate copies of the package in a dependency tree, and realm boundaries — all cases where `instanceof` silently fails.
 
 ```typescript
 if (error instanceof ReflowError) {
   switch (error.code) {
-    case 'STEP_TIMEOUT': return retryLater(error.timeoutMs)
-    case 'WAIT_TIMEOUT': return escalate(error.eventName)
-    case 'VALIDATION':   return badRequest(error.issues)
-    default:             return report(error)
+    case 'STEP_TIMEOUT':       return retryLater()
+    case 'WAIT_TIMEOUT':       return escalate(error.message)
+    case 'VALIDATION':         return badRequest(error.message)
+    case 'WORKFLOW_NOT_FOUND': return notFound()
+    default:                   return report(error)
   }
 }
 ```
+
+Switching on `code` narrows the code, not the class; to read a subclass's fields, such as `timeoutMs` or `issues`, check it with `instanceof` as below.
 
 Errors also implement `toJSON()`, so `JSON.stringify(error)` emits the discriminant, the structured context, and a flattened `cause` chain — no custom log serializer needed.
 
@@ -800,9 +839,10 @@ hooks: {
 | `DuplicateStepError` | `DUPLICATE_STEP` | `.step()` reuses an existing name | `workflowName`, `stepName` |
 | `ValidationError` | `VALIDATION` | Input fails schema validation | `issues` |
 | `IdempotencyConflictError` | `IDEMPOTENCY_CONFLICT` | Same idempotency key with different input | `workflowName`, `idempotencyKey` |
-| `SerializationError` | `SERIALIZATION` | Step output contains non-JSON data (NaN, functions, etc.) | `path` |
+| `SerializationError` | `SERIALIZATION` | Input or step output contains data that can't be persisted (NaN, functions, etc.) | `path` |
 | `StepTimeoutError` | `STEP_TIMEOUT` | Step exceeds `timeoutMs` | `timeoutMs` |
 | `RunCancelledError` | `RUN_CANCELLED` | Run cancelled via `engine.cancel()` | `runId` |
+| `RunNotFoundError` | `RUN_NOT_FOUND` | `waitForRun()` with an unknown run id | `runId` |
 | `LeaseExpiredError` | `LEASE_EXPIRED` | Worker lost its lease on a run | `runId` |
 | `WaitTimeoutError` | `WAIT_TIMEOUT` | A `waitForEvent` step's `timeoutMs` elapsed | `eventName`, `timeoutMs` |
 | `ParallelCompleteError` | `PARALLEL_COMPLETE` | `complete()` called inside a parallel branch | `stepName` |
@@ -810,6 +850,7 @@ hooks: {
 | `StepFailedError` | `STEP_FAILED` | A step exhausted its retries with no error of its own | `stepName`, `attempts` |
 | `HookError` | `HOOK` | A hook, stream consumer, or `onFailure` threw. Delivered to `onError`, never into a run | `source`, `cause` |
 | `ThrownValueError` | `THROWN_VALUE` | User code threw a non-`Error` value | `value`, `cause` |
+| `TestRunIncompleteError` | `TEST_RUN_INCOMPLETE` | `testEngine().run()` on a workflow that sleeps or waits | `runId`, `status` |
 | `InternalError` | `INTERNAL` | An invariant was violated — a bug in reflow-ts | — |
 
 ## API Reference
@@ -822,8 +863,10 @@ Creates a new workflow builder.
 |---|---|---|
 | `config.name` | `string` | Unique workflow name (becomes a literal type) |
 | `config.input` | `StandardSchemaV1` | Any Standard Schema-compatible schema for input validation |
+| `config.concurrency` | `number` | Optional. Most runs of this workflow running at once, across every process sharing the storage |
+| `config.label` | `(input) => string` | Optional. Names a run in the dashboard, such as an order number |
 
-Returns a `Workflow` with `.step()`, `.onFailure()`, and `.parseInput()` methods.
+Returns a `Workflow` with `.step()`, `.parallel()`, `.sleep()`, `.waitForEvent()`, `.onFailure()`, and `.parseInput()` methods.
 
 ### `workflow.step(name, handler | config)`
 
@@ -832,7 +875,7 @@ Adds a step to the workflow. Accepts either a handler function or a config objec
 **Handler function form:**
 
 ```typescript
-.step('name', async ({ input, prev, steps, signal, complete }) => {
+.step('name', async ({ input, prev, steps, signal, complete, idempotencyKey }) => {
   return { result: 'value' }
 })
 ```
@@ -846,12 +889,16 @@ Adds a step to the workflow. Accepts either a handler function or a config objec
 | `steps` | `TStepsSoFar` | Typed record of all previously completed step results by name |
 | `signal` | `AbortSignal` | Aborted on cancellation, lease loss, or step timeout |
 | `complete` | `(value?) => never` | Finish the workflow early, skipping remaining steps |
+| `runId` | `string` | The run's id |
+| `attempt` | `number` | Which attempt at this step this is, from 1. Restarts from 1 after a crash for parallel branches and on engines driven only by `tick()` |
+| `idempotencyKey` | `string` | `${runId}:${stepName}`, stable across retries and crash recovery. Pass it to APIs that deduplicate, since a step interrupted by a crash runs again |
 
 **Config object form:**
 
 | Parameter | Type | Description |
 |---|---|---|
-| `handler` | `(ctx) => Promise<T>` | Step handler. Receives `{ input, prev, steps, signal, complete }` |
+| `handler` | `(ctx) => Promise<T>` | Step handler. Receives the step context above |
+| `when` | `({ input, prev, steps }) => boolean` | Optional. Runs the step only when it returns `true`; when skipped, `prev` passes through unchanged. Sequential steps only |
 | `retry` | `RetryConfig` | Optional retry configuration (see below) |
 | `timeoutMs` | `number` | Optional timeout per attempt in milliseconds |
 
@@ -859,7 +906,7 @@ Adds a step to the workflow. Accepts either a handler function or a config objec
 
 | Parameter | Type | Description |
 |---|---|---|
-| `maxAttempts` | `number` | Maximum number of attempts (default: 1, no retry) |
+| `maxAttempts` | `number` | Maximum number of attempts, at least 1. Without `retry`, a step gets one attempt |
 | `backoff` | `'linear' \| 'exponential'` | Backoff strategy between retries |
 | `initialDelayMs` | `number` | Base delay in milliseconds (default: 1000) |
 | `timeoutMs` | `number` | Timeout per attempt. Step-level `timeoutMs` takes precedence |
@@ -901,7 +948,7 @@ Creates an engine that executes workflows.
 |---|---|---|---|
 | `config.storage` | `StorageAdapter` | required | Storage backend |
 | `config.workflows` | `Workflow[]` | required | Workflows to register |
-| `config.hooks` | `EngineHooks` | `undefined` | Lifecycle hooks (`onRunStart`, `onStepStart`, `onStepComplete`, `onRunComplete`, `onRunFailed`, `onError`). May be sync or `async` (awaited) |
+| `config.hooks` | `EngineHooks` | `undefined` | Lifecycle hooks (`onRunStart`, `onStepStart`, `onStepSkipped`, `onStepComplete`, `onRunComplete`, `onRunFailed`, `onError`). May be sync or `async` (awaited) |
 | `config.concurrency` | `number` | `1` | Maximum runs executing at once |
 | `config.runLeaseDurationMs` | `number` | `30000` | How long a claimed run stays `running` before another engine may reclaim it |
 | `config.heartbeatIntervalMs` | `number` | `leaseDuration / 3` | How often the active worker renews its lease |
@@ -914,7 +961,7 @@ Initializes storage and starts the engine. Work this instance enqueues, resumes,
 
 ### `engine.stop()`
 
-Stops the polling loop, clears all schedules, and waits for any in-flight tick to finish. Returns a `Promise<void>`.
+Stops polling, aborts in-flight runs (left `running`, to be reclaimed by another engine), ends open streams, and waits for in-flight work to settle. Durable schedules stay registered, since other workers still serve them; use `unschedule()` to remove one. Returns a `Promise<void>`.
 
 ### `engine.tick()`
 
@@ -922,7 +969,7 @@ Claims up to `concurrency` pending or stale runs and executes them in parallel. 
 
 ### `engine.stream(options?)`
 
-Returns a pull-based `ResultStream` — an `AsyncIterableIterator<EngineEvent>` (and `AsyncDisposable`) of execution events. Each call returns an independent stream; iterate it with `for await`. `EngineEvent` is a discriminated union on `type`: `runStart`, `stepStart`, `stepComplete` (`{ output, attempts }`), `runComplete` (`{ output }`), and `runFailed` (`{ stepName, error }`) — all carrying `runId` and `workflow`.
+Returns a pull-based `ResultStream` — an `AsyncIterableIterator<EngineEvent>` (and `AsyncDisposable`) of execution events. Each call returns an independent stream; iterate it with `for await`. `EngineEvent` is a discriminated union on `type`: `runStart`, `stepStart`, `stepSkipped`, `stepComplete` (`{ output, attempts }`), `runComplete` (`{ output }`), and `runFailed` (`{ stepName, error }`) — all carrying `runId` and `workflow`.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -937,20 +984,32 @@ Submits a workflow run. Type-safe - only accepts registered workflow names with 
 | Option | Type | Description |
 |---|---|---|
 | `idempotencyKey` | `string` | Prevents duplicate runs. Same key + same input returns the existing run. Same key + different input throws |
+| `delay` | `number \| string` | Start the run later: milliseconds or a duration such as `'10m'` |
+| `startAt` | `Date \| number` | Start the run at this time; a time already past starts it now. Not together with `delay` |
+
+A delayed run is stored as `sleeping` until it starts, so it survives restarts and can be cancelled.
 
 ### `engine.cancel(runId)`
 
-Cancels a pending or running workflow. Returns `true` if cancelled, `false` if already completed/failed/cancelled. Aborts the current step's `AbortSignal` immediately.
+Cancels any run that hasn't finished (pending, running, sleeping, or waiting). Returns `true` if cancelled, `false` if the run doesn't exist or has already finished. Aborts the current step's `AbortSignal` immediately.
+
+### `engine.resume(runId)`
+
+Re-queues a `failed` or `cancelled` run, resuming from the step where it stopped; completed steps are not run again. Returns `false` if the run isn't resumable.
+
+### `engine.listRuns(filter?)`
+
+Returns runs newest first, filtered by `status` and/or `workflow`. `limit` defaults to 100; page with `before` and `beforeId` from the last run of the previous page.
 
 ### `engine.sendEvent(runId, name, payload)`
 
 Delivers an external event to a run waiting on `waitForEvent(name)`. Returns `false` if the run does not exist or has already finished; throws if the workflow has no such event step or the payload fails validation.
 
-### `engine.schedule(name, input, intervalMs, options?)`
+### `engine.schedule(name, input, spec, options?)`
 
 Registers a durable recurring schedule. Returns a `Promise<string>` resolving to the schedule's key, for later removal with `engine.unschedule(key)`.
 
-The recurrence is a number of milliseconds, `{ every }` (ms or a duration string), or `{ cron }` (five fields, evaluated in UTC; malformed or unsatisfiable expressions throw at registration). The schedule is persisted, so it survives restarts and deploys. Registering the same key again updates it in place and preserves the existing cadence unless the recurrence changed. Due firings are claimed atomically, so N instances sharing a schedule still produce one run per interval. `options.key` overrides the identity, which otherwise defaults to a hash of the workflow name, interval, and input. Missed occurrences are skipped rather than backfilled.
+`spec` is a number of milliseconds, `{ every }` (ms or a duration string), or `{ cron }` (five fields, evaluated in UTC; malformed or unsatisfiable expressions throw at registration). The schedule is persisted, so it survives restarts and deploys. Registering the same key again updates it in place and preserves the existing cadence unless the recurrence changed. Due firings are claimed atomically, so N instances sharing a schedule still produce one run per interval. `options.key` overrides the identity, which otherwise defaults to a hash of the workflow name, interval, and input. Missed occurrences are skipped rather than backfilled.
 
 ### `engine.unschedule(key)`
 
@@ -966,7 +1025,7 @@ Returns `{ run, steps }` with the run's current status and all step results, or 
 
 ### `engine.waitForRun(runId, { signal?, pollIntervalMs? })`
 
-Resolves with the run once it is `completed`, `failed`, or `cancelled`. Immediate for runs finishing on this engine; runs finished elsewhere are noticed by polling storage. Pass `AbortSignal.timeout(ms)` as `signal` for a deadline.
+Resolves with the run once it is `completed`, `failed`, or `cancelled`. Immediate for runs finishing on this engine; runs finished elsewhere are noticed by polling storage. Pass `AbortSignal.timeout(ms)` as `signal` for a deadline. `pollIntervalMs` defaults to 1000. Works on an engine that was never started; throws `RunNotFoundError` for an unknown run.
 
 ### `engine.countRuns(filter?)`
 
@@ -978,23 +1037,29 @@ Deletes finished runs that finished longer ago than `olderThan` (ms or a duratio
 
 ### `testEngine(config)`
 
-Creates a test engine with in-memory storage. Accepts `{ workflows }` and returns a `run()` method for synchronous workflow execution.
+Creates a test engine with in-memory storage. Accepts `{ workflows }` and returns an async `run(name, input)` that executes the run in one pass and returns its typed step results. Throws `TestRunIncompleteError` if the workflow sleeps or waits.
 
 ### `storageConformanceCases` — `reflow-ts/conformance`
 
-The behavioural contract the built-in adapters are held to, as a list of `{ name, run(storage) }` cases. Run them against a custom `StorageAdapter` to validate it. Each case takes a freshly initialized, empty adapter and throws on failure, with no test-framework dependency.
+The behavioural contract the built-in adapters are held to, as a list of `{ name, appliesTo?(storage), run(storage) }` cases. Run them against a custom `StorageAdapter` to validate it, skipping a case whose `appliesTo` returns `false`. Each case takes a freshly initialized, empty adapter and throws on failure, with no test-framework dependency.
 
-### `SQLiteStorage(path)` — Bun
+### `SQLiteStorage(path, options?)` — Bun
 
 SQLite storage adapter for Bun runtime. Uses the built-in `bun:sqlite` module — no native dependencies. WAL mode and transactional claiming.
 
-### `SQLiteStorage(path)` — Node.js
+### `SQLiteStorage(path, options?)` — Node.js
 
 SQLite storage adapter for Node.js. Uses `better-sqlite3`. WAL mode and transactional claiming.
 
-### `SQLiteStorage(path)` — Node.js built-in
+### `SQLiteStorage(path, options?)` — Node.js built-in
 
-SQLite storage adapter for Node.js using the built-in `node:sqlite` module — no native dependencies. Requires Node ≥ 22.5 (`--experimental-sqlite` before Node 23.4). WAL mode and transactional claiming. Import from `reflow-ts/sqlite-node-builtin`.
+SQLite storage adapter for Node.js using the built-in `node:sqlite` module — no native dependencies. Requires Node ≥ 22.5 (no flag needed from Node 22.13 and 23.4; earlier releases need `--experimental-sqlite`). WAL mode and transactional claiming. Import from `reflow-ts/sqlite-node-builtin`.
+
+For every SQLite adapter, `options.readOnly` opens the file read-only, as the dashboard CLI does.
+
+### `PostgresStorage(options)` — `reflow-ts/postgres`
+
+PostgreSQL storage adapter, for workers on many machines. Requires the `pg` package. Pass `{ connectionString, poolConfig? }` to have Reflow create and own a pool, or `{ pool }` to share yours (`close()` then leaves it open). `schema` names the Postgres schema for Reflow's tables (default `reflow`; lowercase letters, digits, and underscores). Runs are claimed with `FOR UPDATE SKIP LOCKED`, and migrations run under an advisory lock on `initialize()`.
 
 ## Contributors
 

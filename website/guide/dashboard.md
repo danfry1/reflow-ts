@@ -44,7 +44,7 @@ Then open `http://127.0.0.1:4400/` on your own machine. The dashboard listens on
 ```typescript
 import { createServer } from 'node:http'
 import { createEngine } from 'reflow-ts'
-import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+import { SQLiteStorage } from 'reflow-ts/sqlite-node-builtin'
 import { basicAuth, createDashboard, toNodeHandler } from 'reflow-ts/dashboard'
 import { order, signup } from './workflows'
 

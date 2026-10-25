@@ -1,6 +1,6 @@
 # Cancellation
 
-Cancel a pending or running workflow with `engine.cancel(runId)`:
+Cancel any run that hasn't finished — pending, running, sleeping, or waiting — with `engine.cancel(runId)`:
 
 ```typescript
 const run = await engine.enqueue('order-fulfillment', { orderId: 'ORD_1', amount: 100 })

@@ -3,10 +3,11 @@
  * No native dependencies required — unlike the `better-sqlite3`-backed
  * `reflow-ts/sqlite-node` adapter.
  *
- * Requires **Node.js >= 22.5** (when `node:sqlite` was added). On Node 22.x and
- * 23.x before 23.4 it is gated behind the `--experimental-sqlite` flag; from
- * Node 23.4 it is available by default (still experimental). On older Node, or
- * on Bun, use `reflow-ts/sqlite-node` or `reflow-ts/sqlite-bun` instead.
+ * Requires **Node.js >= 22.5** (when `node:sqlite` was added). It is available
+ * without a flag from Node 22.13 and 23.4; earlier releases need
+ * `--experimental-sqlite`. Node still marks it experimental and prints an
+ * `ExperimentalWarning`. On older Node, or on Bun, use `reflow-ts/sqlite-node`
+ * or `reflow-ts/sqlite-bun` instead.
  *
  * @example
  * ```ts

@@ -203,7 +203,7 @@ export interface Engine<TWorkflowMap extends Record<string, PersistedValue> = Re
    * Returns true if the run was resumable, false otherwise.
    */
   resume(runId: string): Promise<boolean>
-  /** Cancel a pending or running workflow. Returns true if cancelled. */
+  /** Cancel a run that has not finished (pending, running, sleeping, or waiting). Returns true if cancelled, false if it does not exist or has already finished. */
   cancel(runId: string): Promise<boolean>
   /**
    * Deliver an external event to a run that is (or will be) waiting on

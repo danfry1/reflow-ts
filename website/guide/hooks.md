@@ -55,7 +55,7 @@ hooks: {
 
 ## Hooks never affect engine state
 
-A hook that throws — or an async hook that rejects — can never fail a workflow or crash the engine. The error is swallowed. Likewise, the `output` and `error` your hooks receive are **defensive clones**: mutating them does not affect engine state, the persisted result, or what other observers see.
+A hook that throws — or an async hook that rejects — can never fail a workflow or crash the engine. The error is reported to `onError` as a `HookError`. Likewise, the `output` and `error` your hooks receive are **defensive clones**: mutating them does not affect engine state, the persisted result, or what other observers see.
 
 Without an `onError` hook, background errors (from scheduled enqueues or the poll loop) are silently swallowed — set it if you want visibility.
 
