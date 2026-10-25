@@ -63,6 +63,9 @@ interface StorageAdapter {
   deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
   takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
   consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult>
+  getCachedStep?(key: string): Promise<CachedStep | null>
+  putCachedStep?(entry: CachedStep): Promise<void>
+  deleteExpiredCachedSteps?(now: number): Promise<number>
   getRun(runId: string): Promise<WorkflowRun | null>
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
   requeueRun(runId: string): Promise<boolean>
@@ -95,6 +98,7 @@ interface StorageAdapter {
 | `deliverEvent` | Durably buffer an event and wake the run if it is `waiting`. Return `false` if the run does not exist. Backs `engine.sendEvent()`. |
 | `takeEvent` | Atomically consume the oldest buffered event for `(runId, eventName)`, or return `null`. |
 | `consumeEvent` | Optional. In one transaction, and only while `leaseId` is held: consume the oldest buffered event named `step.name` for `step.runId` and save `step` with the event's payload as its output. Returns `{ status: 'consumed', payload }`, `{ status: 'none' }`, or `{ status: 'lease-lost' }`, changing nothing in the last two cases. Without it, an event taken by a process that dies before saving the step is lost. |
+| `getCachedStep` / `putCachedStep` / `deleteExpiredCachedSteps` | Optional, together. Read, store (replacing by `key`), and delete expired [cached step results](/guide/caching): `{ key, workflow, stepName, output, createdAt, expiresAt }`. `getCachedStep` returns an entry whether or not it has expired. An engine with a cached step refuses an adapter without all three. |
 | `getRun` / `getStepResults` | Read a run / its step results. |
 | `listRuns` | List runs most-recent-first, filtered by `status` / `workflow` and paged with `limit` / `before`. Backs `engine.listRuns()`. |
 | `requeueRun` | Reset a `failed` / `cancelled` run to `pending`, clear `finishedAt` / `output` / `error`, and discard its `failed` step results. Return `false` if the run is not in a resumable state. Backs `engine.resume()`. |

@@ -11,7 +11,7 @@ type EngineEvent =
   | { type: 'runStart';     runId: string; workflow: string }
   | { type: 'stepStart';    runId: string; workflow: string; stepName: string }
   | { type: 'stepSkipped';  runId: string; workflow: string; stepName: string }
-  | { type: 'stepComplete'; runId: string; workflow: string; stepName: string; output: PersistedValue; attempts: number }
+  | { type: 'stepComplete'; runId: string; workflow: string; stepName: string; output: PersistedValue; attempts: number; cached?: boolean }
   | { type: 'runComplete';  runId: string; workflow: string; output: PersistedValue }
   | { type: 'runFailed';    runId: string; workflow: string; stepName: string; error: Error }
 ```
@@ -21,7 +21,7 @@ type EngineEvent =
 | `runStart` | An engine picks up a run to execute it — when it first starts, and again each time it resumes after a sleep, wait, retry backoff, or crash recovery |
 | `stepStart` | Before each step (or parallel branch) runs |
 | `stepSkipped` | A step's [`when`](/api/workflow) predicate returned false and the step was skipped |
-| `stepComplete` | After a step's result is persisted |
+| `stepComplete` | After a step's result is persisted. `cached: true` when it was reused from a [cached](/guide/caching) result |
 | `runComplete` | A run finishes successfully; `output` is the final result |
 | `runFailed` | A run fails; `stepName` is the offending step, `error` the cause |
 

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type {
+  CachedStep,
   ConsumeEventResult,
   ClaimedRun,
   CountRunsFilter,
@@ -667,6 +668,39 @@ export class SqliteStorageBase implements StorageAdapter {
       this.writeStep({ ...step, output: payload })
       return { status: 'consumed', payload }
     })
+  }
+
+  async getCachedStep(key: string): Promise<CachedStep | null> {
+    const row = this.get<{ key: string; workflow: string; step_name: string; output: string | null; created_at: number; expires_at: number }>(
+      `SELECT * FROM workflow_step_cache WHERE key = ?`,
+      key,
+    )
+    return row
+      ? {
+          key: row.key,
+          workflow: row.workflow,
+          stepName: row.step_name,
+          output: row.output === null ? null : deserializePersistedValue(row.output),
+          createdAt: row.created_at,
+          expiresAt: row.expires_at,
+        }
+      : null
+  }
+
+  async putCachedStep(entry: CachedStep): Promise<void> {
+    this.run(
+      `INSERT OR REPLACE INTO workflow_step_cache (key, workflow, step_name, output, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      entry.key,
+      entry.workflow,
+      entry.stepName,
+      serializePersistedValue(entry.output, 'Cached step output'),
+      entry.createdAt,
+      entry.expiresAt,
+    )
+  }
+
+  async deleteExpiredCachedSteps(now: number): Promise<number> {
+    return this.run(`DELETE FROM workflow_step_cache WHERE expires_at <= ?`, now)
   }
 
   /** Insert or replace a step's row. Call inside a transaction. */

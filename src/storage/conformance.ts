@@ -823,6 +823,38 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
   {
+    name: 'cached steps are stored, replaced by key, and read back expired or not',
+    appliesTo: (storage) => storage.getCachedStep !== undefined && storage.putCachedStep !== undefined,
+    async run(storage) {
+      if (!storage.getCachedStep || !storage.putCachedStep) return
+      const now = Date.now()
+      const entry = { key: 'k1', workflow: 'test', stepName: 'a', output: { n: 1 }, createdAt: now, expiresAt: now + 1_000 }
+
+      assertEqual(await storage.getCachedStep('k1'), null, 'nothing cached yet')
+      await storage.putCachedStep(entry)
+      assertEqual(await storage.getCachedStep('k1'), entry, 'stored as given')
+      await storage.putCachedStep({ ...entry, output: { n: 2 }, createdAt: now - 5_000, expiresAt: now - 1 })
+      assertEqual((await storage.getCachedStep('k1'))?.output, { n: 2 }, 'a second put under the key replaces the first')
+      assertEqual((await storage.getCachedStep('k1'))?.expiresAt, now - 1, 'an expired entry is still returned; the engine decides')
+    },
+  },
+  {
+    name: 'deleteExpiredCachedSteps deletes entries expired by now and keeps the rest',
+    appliesTo: (storage) => storage.deleteExpiredCachedSteps !== undefined && storage.putCachedStep !== undefined,
+    async run(storage) {
+      if (!storage.deleteExpiredCachedSteps || !storage.putCachedStep || !storage.getCachedStep) return
+      const now = Date.now()
+      const entry = (key: string, expiresAt: number) => ({ key, workflow: 'test', stepName: 'a', output: null, createdAt: now - 10_000, expiresAt })
+      await storage.putCachedStep(entry('gone', now - 1))
+      await storage.putCachedStep(entry('edge', now))
+      await storage.putCachedStep(entry('live', now + 1))
+
+      assertEqual(await storage.deleteExpiredCachedSteps(now), 2, 'expired at or before now')
+      assertEqual(await storage.getCachedStep('edge'), null, 'expiring exactly now counts as expired')
+      assertEqual((await storage.getCachedStep('live'))?.key, 'live', 'a live entry is kept')
+    },
+  },
+  {
     name: 'waitRun suspends the run until an event wakes it',
     async run(storage) {
       await storage.createRun(makeRun())

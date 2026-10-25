@@ -7,8 +7,10 @@ import {
   RunControlError,
   StepFailedError,
 } from '../errors'
-import type { PersistedValue, StepAttempt } from '../types'
-import type { StepDefinition } from '../workflow'
+import { createHash } from 'node:crypto'
+import { canonicalizePersistedValue } from '../../storage/codec'
+import type { CachedStep, PersistedValue, StepAttempt } from '../types'
+import type { StepCacheDefinition, StepDefinition } from '../workflow'
 import { createAttemptSignal, delayWithSignal, runWithSignal, toError } from './signals'
 import type { ExecutionContext, UnitExecutor, UnitOutcome } from './types'
 
@@ -231,6 +233,18 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
         }
       }
 
+      // A step resuming a backoff has started running, so it finishes rather
+      // than switching to a cached result; its result is still cached after.
+      const cacheKey = stepDef.cache
+        ? cacheKeyOf(ctx.run.workflow, stepDef.name, stepDef.cache, ctx.run.input, prev, frozenSteps)
+        : undefined
+      if (cacheKey !== undefined && stepDef.cache && !retrying) {
+        const cached = await cachedOutput(ctx, cacheKey, stepDef.cache.ttlMs)
+        if (cached) {
+          return await reuseCached(ctx, stepDef.name, cached.output)
+        }
+      }
+
       // A retry keeps the time the step first began, so its duration covers
       // every attempt and backoff. `stepStart` fired on that first execution.
       const startedAt = retrying?.startedAt ?? Date.now()
@@ -310,6 +324,12 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
         history,
       })
 
+      // complete() ends the run, which a cached result replayed elsewhere
+      // would not, so only a plain completion is cached.
+      if (cacheKey !== undefined && stepDef.cache && outcome.kind === 'completed') {
+        await cacheOutput(ctx, cacheKey, stepDef.name, stepDef.cache.ttlMs, outcome.output)
+      }
+
       await ctx.emit({
         type: 'stepComplete',
         runId: ctx.run.id,
@@ -348,6 +368,81 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
       return { kind: 'failed', stepName: stepDef.name, error: err }
     }
   },
+}
+
+/**
+ * The key a step's result is cached under: a hash of the workflow, the step,
+ * its cache version, and its key value — `{ input, prev }` unless the step
+ * names its own. Hashed so any key value fits a fixed-size column.
+ */
+function cacheKeyOf(
+  workflow: string,
+  stepName: string,
+  cache: StepCacheDefinition,
+  input: PersistedValue,
+  prev: PersistedValue,
+  steps: Readonly<Record<string, PersistedValue>>,
+): string {
+  const value = cache.key ? cache.key({ input, prev, steps }) : { input, prev }
+  const identity = canonicalizePersistedValue([workflow, stepName, cache.version ?? null, value], 'Step cache key')
+  return createHash('sha256').update(identity).digest('hex')
+}
+
+/**
+ * The cached output under `key`, if it is still within its ttl and within
+ * the step's current one — so shortening a step's ttl takes effect at once.
+ * A failed read is reported and treated as a miss: the step can still run.
+ */
+async function cachedOutput(
+  ctx: ExecutionContext,
+  key: string,
+  ttlMs: number,
+): Promise<{ output: PersistedValue } | null> {
+  let entry: CachedStep | null | undefined
+  try {
+    entry = await ctx.storage.getCachedStep?.(key)
+  } catch (error) {
+    ctx.reportError(error)
+    return null
+  }
+  const now = Date.now()
+  return entry && entry.expiresAt > now && entry.createdAt > now - ttlMs ? { output: entry.output } : null
+}
+
+/** Complete a step with a cached output, without running its handler. */
+async function reuseCached(ctx: ExecutionContext, stepName: string, output: PersistedValue): Promise<UnitOutcome> {
+  await ctx.emit({ type: 'stepStart', runId: ctx.run.id, workflow: ctx.run.workflow, stepName })
+  await ctx.saveStep({ name: stepName, status: 'completed', output, attempts: 0, startedAt: Date.now(), history: [] })
+  await ctx.emit({
+    type: 'stepComplete',
+    runId: ctx.run.id,
+    workflow: ctx.run.workflow,
+    stepName,
+    output,
+    attempts: 0,
+    cached: true,
+  })
+  ctx.steps[stepName] = structuredClone(output)
+  return { kind: 'advance', output }
+}
+
+/**
+ * Cache a step's output for later runs. The step has already completed and
+ * been saved, so a failed write is reported rather than failing the run.
+ */
+async function cacheOutput(
+  ctx: ExecutionContext,
+  key: string,
+  stepName: string,
+  ttlMs: number,
+  output: PersistedValue,
+): Promise<void> {
+  const now = Date.now()
+  try {
+    await ctx.storage.putCachedStep?.({ key, workflow: ctx.run.workflow, stepName, output, createdAt: now, expiresAt: now + ttlMs })
+  } catch (error) {
+    ctx.reportError(error)
+  }
 }
 
 /**

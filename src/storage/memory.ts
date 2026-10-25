@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type {
+  CachedStep,
   ClaimedRun,
   ConsumeEventResult,
   CountRunsFilter,
@@ -39,6 +40,7 @@ export class MemoryStorage implements StorageAdapter {
   private steps: Map<string, StepResult[]> = new Map()
   private events: Map<string, StoredEvent[]> = new Map()
   private schedules: Map<string, WorkflowSchedule> = new Map()
+  private cache: Map<string, CachedStep> = new Map()
 
   async initialize(): Promise<void> {}
 
@@ -220,6 +222,26 @@ export class MemoryStorage implements StorageAdapter {
     }
     this.putStep({ ...step, output: taken.payload })
     return { status: 'consumed', payload: clonePersistedValue(taken.payload, 'Event payload') }
+  }
+
+  async getCachedStep(key: string): Promise<CachedStep | null> {
+    const entry = this.cache.get(key)
+    return entry ? { ...entry, output: clonePersistedValue(entry.output, 'Cached step output') } : null
+  }
+
+  async putCachedStep(entry: CachedStep): Promise<void> {
+    this.cache.set(entry.key, { ...entry, output: clonePersistedValue(entry.output, 'Cached step output') })
+  }
+
+  async deleteExpiredCachedSteps(now: number): Promise<number> {
+    let deleted = 0
+    for (const [key, entry] of this.cache) {
+      if (entry.expiresAt <= now) {
+        this.cache.delete(key)
+        deleted++
+      }
+    }
+    return deleted
   }
 
   async getRun(runId: string): Promise<WorkflowRun | null> {

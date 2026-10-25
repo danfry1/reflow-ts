@@ -94,6 +94,9 @@ export interface ExecutionContext {
    */
   consumeEvent(name: string): Promise<ConsumeEventResult>
 
+  /** Report an error that must not fail the run to the engine's `onError` hook. */
+  reportError(error: unknown): void
+
   /** A frozen deep clone of {@link ExecutionContext.steps}, safe to hand to a handler. */
   snapshotSteps(): Readonly<Record<string, PersistedValue>>
 }

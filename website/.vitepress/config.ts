@@ -73,6 +73,7 @@ export default defineConfig({
             { text: 'Workflows', link: '/guide/workflows' },
             { text: 'The Engine', link: '/guide/engine' },
             { text: 'Retry & Timeouts', link: '/guide/retry' },
+            { text: 'Caching Steps', link: '/guide/caching' },
             { text: 'Failure Handling', link: '/guide/failure-handling' },
             { text: 'Parallel Steps', link: '/guide/parallel' },
             { text: 'Early Completion', link: '/guide/early-completion' },

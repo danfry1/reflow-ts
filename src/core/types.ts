@@ -205,6 +205,22 @@ export interface ListRunsFilter {
 /** How many runs are in each status, from {@link StorageAdapter.countRuns}. */
 export type RunCounts = Record<RunStatus, number>
 
+/**
+ * A step's result kept for reuse by later runs, from
+ * {@link StorageAdapter.putCachedStep}. Outlives the run that produced it.
+ */
+export interface CachedStep {
+  /** The cache key: a hash of the workflow, step, version, and key value. */
+  key: string
+  workflow: string
+  stepName: string
+  output: PersistedValue
+  /** When the result was cached (epoch ms). */
+  createdAt: number
+  /** When it stops being reused (epoch ms). */
+  expiresAt: number
+}
+
 /** What {@link StorageAdapter.consumeEvent} did. */
 export type ConsumeEventResult =
   | { readonly status: 'consumed'; readonly payload: PersistedValue }
@@ -337,6 +353,18 @@ export interface StorageAdapter {
    * which loses the event if the process dies between the two.
    */
   consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult>
+  /**
+   * Optional, with {@link StorageAdapter.putCachedStep} and
+   * {@link StorageAdapter.deleteExpiredCachedSteps}: the cached result under
+   * `key`, or null. Returns an entry whether or not it has expired; the engine
+   * decides. An engine whose workflows cache a step refuses storage without
+   * all three.
+   */
+  getCachedStep?(key: string): Promise<CachedStep | null>
+  /** Optional. Store `entry`, replacing any entry under the same key. */
+  putCachedStep?(entry: CachedStep): Promise<void>
+  /** Optional. Delete entries that expired at or before `now`, returning how many. Backs `engine.prune()`. */
+  deleteExpiredCachedSteps?(now: number): Promise<number>
   /** Fetch a run by ID, or null if not found. */
   getRun(runId: string): Promise<WorkflowRun | null>
   /** List runs in reverse-chronological order (most recent first), optionally filtered. */
