@@ -43,6 +43,13 @@ import {
 import { deserializePersistedValue, serializePersistedValue } from './codec'
 import { emptyRunCounts, parseRunError, parseRunStatus, parseStepHistory, parseStepStatus } from './records'
 
+/**
+ * The database's current time in epoch milliseconds, as SQL. A running run's
+ * `updated_at` is its last lease renewal on this clock, so every machine
+ * judges leases by one clock rather than its own.
+ */
+const DATABASE_NOW_MS = `(extract(epoch FROM clock_timestamp()) * 1000)::bigint`
+
 /** How to reach the database. */
 export type PostgresStorageOptions = (
   | {
@@ -340,12 +347,18 @@ export class PostgresStorage implements StorageAdapter {
 
     return this.transaction(async (db) => {
       const now = Date.now()
+      // Leases are stamped and judged by the database's clock, so machines
+      // whose clocks disagree cannot take each other's live runs. The lease
+      // duration the engine applied to its own clock carries over to the
+      // database's.
+      const dbNow = await this.databaseNow(db)
+      const leaseStaleBefore = staleBefore === undefined ? undefined : dbNow - (now - staleBefore)
       // Workflows found at their limit are left out and the candidates read
       // again; each pass rules out one workflow, so this ends.
       const full: string[] = []
       let holdsLimitLock = false
       for (;;) {
-        const candidates = await this.lockCandidates(db, workflowNames, full, now, staleBefore)
+        const candidates = await this.lockCandidates(db, workflowNames, full, now, leaseStaleBefore)
         const chosen = candidates[0]
         if (!chosen) {
           return null
@@ -360,7 +373,7 @@ export class PostgresStorage implements StorageAdapter {
           // claims can each wait on a lock the other holds.
           const locked = await this.lockWorkflow(db, chosen.workflow, holdsLimitLock)
           holdsLimitLock = true
-          if (!locked || await this.liveRuns(db, chosen.workflow, staleBefore, limit) >= limit) {
+          if (!locked || await this.liveRuns(db, chosen.workflow, leaseStaleBefore, limit) >= limit) {
             full.push(chosen.workflow)
             continue
           }
@@ -371,10 +384,11 @@ export class PostgresStorage implements StorageAdapter {
           db,
           `UPDATE ${this.t('workflow_runs')}
            SET status = 'running', lease_id = $1, wake_at = NULL, waiting_for = NULL, updated_at = $2,
-               started_at = COALESCE(started_at, $2)
-           WHERE id = $3
+               started_at = COALESCE(started_at, $3)
+           WHERE id = $4
            RETURNING *`,
           leaseId,
+          dbNow,
           now,
           chosen.id,
         )
@@ -416,7 +430,9 @@ export class PostgresStorage implements StorageAdapter {
     ]
     const params: SqlParam[] = [workflowNames, full, now]
     if (staleBefore !== undefined) {
-      // A stale run became due when its lease expired.
+      // A stale run became due when its lease expired. `staleBefore` is on the
+      // database's clock, which leases are stamped with; the due time is
+      // shifted onto this machine's, like the other kinds'.
       branches.push(oldest('stale', 'updated_at + $4', `status = 'running' AND updated_at <= $5`, 'updated_at'))
       params.push(now - staleBefore, staleBefore)
     }
@@ -428,6 +444,15 @@ export class PostgresStorage implements StorageAdapter {
        ORDER BY due, created_at, id`,
       ...params,
     )
+  }
+
+  /** The database's clock, in epoch milliseconds. */
+  private async databaseNow(db: Queryable): Promise<number> {
+    const row = await this.one<{ now: number }>(db, `SELECT ${DATABASE_NOW_MS} AS now`)
+    if (!row) {
+      throw new InternalError('The database returned no time')
+    }
+    return row.now
   }
 
   /** Take the transaction-scoped lock that serialises counting this workflow's places. */
@@ -460,8 +485,7 @@ export class PostgresStorage implements StorageAdapter {
   async heartbeatRun(runId: string, leaseId: string): Promise<boolean> {
     return await this.changes(
       this.pool,
-      `UPDATE ${this.t('workflow_runs')} SET updated_at = $1 WHERE id = $2 AND status = 'running' AND lease_id = $3`,
-      Date.now(),
+      `UPDATE ${this.t('workflow_runs')} SET updated_at = ${DATABASE_NOW_MS} WHERE id = $1 AND status = 'running' AND lease_id = $2`,
       runId,
       leaseId,
     ) > 0

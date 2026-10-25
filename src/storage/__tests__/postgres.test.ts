@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import pg from 'pg'
 import { z } from 'zod'
 import { createEngine } from '../../core/engine'
@@ -276,5 +276,54 @@ describe.skipIf(url === undefined)('PostgresStorage', () => {
     expect([result.status, result.output]).toStrictEqual(['completed', { tracking: 'TRK' }])
     expect(attempts).toStrictEqual([`${run.id}:ship`, `${run.id}:ship`])
     expect(steps.map((step) => [step.name, step.status])).toStrictEqual([['charge', 'completed'], ['ship', 'completed']])
+  })
+
+  /** Claim as a process whose clock is `skewMs` off the database's, with the default 30s lease. */
+  async function claimWithClockOff(storage: PostgresStorage, skewMs: number) {
+    const realNow = Date.now.bind(Date)
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skewMs)
+    try {
+      return await storage.claimNextRun(['w'], Date.now() - 30_000)
+    } finally {
+      clock.mockRestore()
+    }
+  }
+
+  it('does not take a live run for a process whose clock runs ahead', async () => {
+    const storage = await fresh()
+    await storage.createRun(pendingRun('r', 'w', Date.now()))
+    expect((await storage.claimNextRun(['w']))?.id).toBe('r')
+
+    // A minute ahead, its own clock says the 30s lease ran out long ago.
+    expect(await claimWithClockOff(storage, 60_000)).toBe(null)
+  })
+
+  it('takes over a run whose lease expired by the database clock, for a process whose clock runs behind', async () => {
+    const storage = await fresh()
+    const schema = schemas.at(-1) ?? ''
+    await storage.createRun(pendingRun('r', 'w', Date.now()))
+    expect((await storage.claimNextRun(['w']))?.id).toBe('r')
+    // Its last renewal was a minute ago, by the database's clock.
+    await pool.query(`UPDATE ${schema}.workflow_runs SET updated_at = updated_at - 60000 WHERE id = 'r'`)
+
+    expect((await claimWithClockOff(storage, -60_000))?.id).toBe('r')
+  })
+
+  it('renews a lease on the database clock', async () => {
+    const storage = await fresh()
+    const schema = schemas.at(-1) ?? ''
+    await storage.createRun(pendingRun('r', 'w', Date.now()))
+    const claimed = await storage.claimNextRun(['w'])
+    await pool.query(`UPDATE ${schema}.workflow_runs SET updated_at = updated_at - 60000 WHERE id = 'r'`)
+
+    const realNow = Date.now.bind(Date)
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() - 60_000)
+    try {
+      expect(await storage.heartbeatRun('r', claimed?.leaseId ?? '')).toBe(true)
+    } finally {
+      clock.mockRestore()
+    }
+    // Renewed now by the database, not a minute ago by the worker's clock.
+    expect(await claimWithClockOff(storage, 0)).toBe(null)
   })
 })
