@@ -150,6 +150,18 @@ describe('testEngine', () => {
     })
   })
 
+  describe('conditional steps', () => {
+    it('reports a step whose when returned false as skipped', async () => {
+      const wf = createWorkflow({ name: 'maybe', input: z.object({ premium: z.boolean() }) })
+        .step('upgrade', { when: ({ input }) => input.premium, handler: async () => ({ tier: 'premium' }) })
+        .step('done', async () => ({ ok: true }))
+
+      const result = await testEngine({ workflows: [wf] }).run('maybe', { premium: false })
+
+      expect([result.status, result.steps.upgrade]).toStrictEqual(['completed', { status: 'skipped', output: null, error: null }])
+    })
+  })
+
   describe('parallel branches', () => {
     it('returns typed results for parallel branches', async () => {
       const wf = createWorkflow({

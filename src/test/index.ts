@@ -1,6 +1,6 @@
 import { createEngine } from '../core/engine'
 import { InternalError, TestRunIncompleteError } from '../core/errors'
-import type { PersistedValue } from '../core/types'
+import type { PersistedValue, StepResult } from '../core/types'
 import { MemoryStorage } from '../storage/memory'
 
 export { MemoryStorage }
@@ -15,11 +15,21 @@ export type StepOutput<T extends PersistedValue = PersistedValue> =
   | { status: 'completed'; output: T; error: null }
   | { status: 'failed'; output: null; error: string }
 
+/** A conditional step whose `when` returned `false`, so it did not run. */
+export interface SkippedStepOutput {
+  status: 'skipped'
+  output: null
+  error: null
+}
+
 /** The result of running a workflow to completion via `testEngine.run()`. */
 export interface RunResult<TSteps extends Record<string, PersistedValue> = Record<string, PersistedValue>> {
   status: 'completed' | 'failed'
-  /** Step results keyed by step name, with typed outputs. */
-  steps: { [K in keyof TSteps]: StepOutput<TSteps[K]> }
+  /**
+   * Step results keyed by step name, with typed outputs. A step with `when`,
+   * whose entry in `steps` is optional, may also be skipped.
+   */
+  steps: { [K in keyof TSteps]: {} extends Pick<TSteps, K> ? StepOutput<TSteps[K]> | SkippedStepOutput : StepOutput<TSteps[K]> }
 }
 
 /** A test-only engine that runs each workflow in one pass with in-memory storage. */
@@ -72,20 +82,10 @@ export function testEngine<const TWorkflows extends readonly AnyWorkflow[]>(conf
       }
 
       const stepResults = await storage.getStepResults(run.id)
-      const steps: Record<string, StepOutput> = {}
+      const steps: Record<string, StepOutput | SkippedStepOutput> = {}
 
       for (const step of stepResults) {
-        steps[step.name] = step.status === 'completed' || step.status === 'completed-early'
-          ? {
-              status: 'completed',
-              output: step.output,
-              error: null,
-            }
-          : {
-              status: 'failed',
-              output: null,
-              error: step.error ?? 'Unknown error',
-            }
+        steps[step.name] = stepOutputOf(step)
       }
 
       return {
@@ -93,5 +93,21 @@ export function testEngine<const TWorkflows extends readonly AnyWorkflow[]>(conf
         steps,
       } as never
     },
+  }
+}
+
+/** A finished run's step, as `testEngine().run()` reports it. */
+function stepOutputOf(step: StepResult): StepOutput | SkippedStepOutput {
+  switch (step.status) {
+    case 'completed':
+    case 'completed-early':
+      return { status: 'completed', output: step.output, error: null }
+    case 'skipped':
+      return { status: 'skipped', output: null, error: null }
+    case 'failed':
+      return { status: 'failed', output: null, error: step.error ?? 'Unknown error' }
+    default:
+      // A run that completed or failed leaves no step mid-way.
+      throw new InternalError(`Step "${step.name}" of a finished run is still "${step.status}"`)
   }
 }

@@ -15,7 +15,7 @@ result.steps.charge.status // 'completed' | 'failed'
 result.steps.charge.error  // string | null
 ```
 
-`run()` enqueues the workflow into an in-memory engine, runs a single `tick()`, and returns the outcome. Step results are keyed by step name with their outputs typed from the workflow definition.
+`run()` enqueues the workflow into an in-memory engine, runs a single `tick()`, and returns the outcome. Step results are keyed by step name with their outputs typed from the workflow definition. A step with [`when`](/api/workflow) that did not run reports `status: 'skipped'`.
 
 ## In a test suite
 
