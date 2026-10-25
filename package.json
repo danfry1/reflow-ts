@@ -74,7 +74,7 @@
     "lint:deps": "syncpack lint",
     "fix:deps": "syncpack fix",
     "dev:website": "vitepress dev website",
-    "build:website": "vitepress build website",
+    "build:website": "bun scripts/llms.ts && vitepress build website",
     "preview:website": "vitepress preview website",
     "prepublishOnly": "bun run lint:deps && bun run typecheck && bun run test && bun run build"
   },

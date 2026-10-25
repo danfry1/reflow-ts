@@ -37,7 +37,8 @@ export type EngineEventOf<T extends EngineEvent['type']> = Extract<EngineEvent, 
  *
  * Hooks may be synchronous or `async` — an async hook is awaited before the
  * engine proceeds, so it can apply backpressure or guarantee ordering. A hook
- * that throws (or rejects) never affects engine state; the error is swallowed.
+ * that throws (or rejects) never affects engine state; the error is reported to
+ * `onError` as a `HookError`.
  */
 export interface EngineHooks {
   onRunStart?: (event: EngineEventOf<'runStart'>) => void

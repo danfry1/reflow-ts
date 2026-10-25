@@ -33,7 +33,7 @@ Use `stepName` to decide which compensations to run — it tells you how far the
 
 ## `onFailure` is best-effort
 
-The handler runs **after** the run has already been marked `failed`. An error thrown inside `onFailure` is swallowed — it cannot un-fail the run or crash the engine. Make compensation logic idempotent and defensive.
+The handler runs **after** the run has already been marked `failed`. An error thrown inside `onFailure` is reported to `onError` as a `HookError` — it cannot un-fail the run or crash the engine. Make compensation logic idempotent and defensive.
 
 ## Relationship to hooks
 

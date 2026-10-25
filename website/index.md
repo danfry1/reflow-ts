@@ -46,7 +46,7 @@ npm install reflow-ts
 
 ```typescript
 import { createWorkflow, createEngine } from 'reflow-ts'
-import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+import { SQLiteStorage } from 'reflow-ts/sqlite-node-builtin'
 import { z } from 'zod'
 
 const order = createWorkflow({

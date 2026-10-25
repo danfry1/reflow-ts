@@ -22,7 +22,7 @@ export interface RunResult<TSteps extends Record<string, PersistedValue> = Recor
   steps: { [K in keyof TSteps]: StepOutput<TSteps[K]> }
 }
 
-/** A test-only engine that runs workflows synchronously with in-memory storage. */
+/** A test-only engine that runs each workflow in one pass with in-memory storage. */
 export interface TestEngine<
   TInputMap extends Record<string, PersistedValue> = Record<string, PersistedValue>,
   TStepsMap extends Record<string, Record<string, PersistedValue>> = Record<string, Record<string, PersistedValue>>,

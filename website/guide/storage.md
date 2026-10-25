@@ -35,10 +35,10 @@ import { SQLiteStorage } from 'reflow-ts/sqlite-node-builtin'
 const storage = new SQLiteStorage('./workflows.db')
 ```
 
-Requires **Node.js ≥ 22.5** (when `node:sqlite` landed). On Node 22.x and 23.x before 23.4 it's gated behind the `--experimental-sqlite` flag; from Node 23.4 it's on by default (still experimental, so Node prints an `ExperimentalWarning`). For Node below 22.5, use the `better-sqlite3` adapter above.
+Works without a flag from **Node.js 22.13 and 23.4**; Node 22.5–22.12 and 23.0–23.3 need `--experimental-sqlite`. Node still marks the module experimental, so it prints an `ExperimentalWarning` at startup. For Node below 22.5, use the `better-sqlite3` adapter above.
 
 ::: tip Which Node adapter?
-Use `sqlite-node-builtin` if you're on Node ≥ 22.5 and want to drop the `better-sqlite3` native dependency. Use `sqlite-node` for broad compatibility (Node ≥ 18.18) or to avoid the experimental module.
+Use `sqlite-node-builtin` if you're on Node ≥ 22.13 and want to drop the `better-sqlite3` native dependency. Use `sqlite-node` for broad compatibility (Node ≥ 18.18) or to avoid the experimental module.
 :::
 
 ### Read-only connections

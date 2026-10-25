@@ -36,7 +36,7 @@ The engine connects workflows to storage and runs them.
 
 ```typescript
 import { createEngine } from 'reflow-ts'
-import { SQLiteStorage } from 'reflow-ts/sqlite-node'
+import { SQLiteStorage } from 'reflow-ts/sqlite-node-builtin'
 
 const storage = new SQLiteStorage('./reflow.db')
 const engine = createEngine({ storage, workflows: [pipeline] })
