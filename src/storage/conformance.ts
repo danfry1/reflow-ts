@@ -806,6 +806,25 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
   {
+    name: 'consumeEvent replaces the waiting step row it is given rather than adding one',
+    appliesTo: (storage) => storage.consumeEvent !== undefined,
+    async run(storage) {
+      if (!storage.consumeEvent) return
+      // A wait resumed by its event: the engine passes the id of the row the
+      // step was saved under while it waited.
+      await storage.createRun(makeRun())
+      const claimed = await claim(storage)
+      await storage.saveStepResult(makeStep({ name: 'e', status: 'waiting', output: null, attempts: 0 }), claimed.leaseId)
+      await storage.deliverEvent('run_1', 'e', { n: 1 })
+      const { output: _unused, ...step } = makeStep({ name: 'e', attempts: 0 })
+
+      await storage.consumeEvent(step, claimed.leaseId)
+
+      const steps = await storage.getStepResults('run_1')
+      assertEqual(steps.map((saved) => [saved.id, saved.status, saved.output]), [['step_1', 'completed', { n: 1 }]], 'one row, now completed')
+    },
+  },
+  {
     name: 'consumeEvent changes nothing once the lease is lost',
     appliesTo: (storage) => storage.consumeEvent !== undefined,
     async run(storage) {

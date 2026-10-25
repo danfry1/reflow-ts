@@ -291,6 +291,10 @@ export interface StorageAdapter {
    * Claiming sets `startedAt` if it is still `null` (a reclaim keeps the
    * original) and clears `wakeAt` and `waitingFor`.
    *
+   * The engine passes `staleBefore` as its `Date.now()` less the lease. An
+   * adapter shared by many machines may instead apply that lease length to a
+   * clock of its own, as PostgresStorage does with the database's.
+   *
    * `limits` caps how many runs of a workflow may be running at once, across
    * every process sharing this storage. A workflow in it already at its limit
    * is skipped: count its `running` runs whose lease is live (updated after
@@ -322,7 +326,8 @@ export interface StorageAdapter {
    * Must, in the same transaction, check for an already-buffered event matching
    * `eventName`: if one exists the run is left `pending` (reclaimable) rather than
    * `waiting`, closing the race where an event is delivered between the caller's
-   * {@link StorageAdapter.takeEvent} check and this call. Only succeeds if the
+   * check for one ({@link StorageAdapter.consumeEvent}, or
+   * {@link StorageAdapter.takeEvent} without it) and this call. Only succeeds if the
    * caller still holds the lease.
    *
    * A run left `waiting` records `eventName` as `waitingFor` and the deadline
