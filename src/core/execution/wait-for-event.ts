@@ -30,12 +30,17 @@ export const waitForEventExecutor: UnitExecutor<WaitUnit> = {
 
     const waiting = existing?.status === 'waiting'
 
-    // Consume a buffered event if one has been delivered. The payload was
-    // validated against the schema in `sendEvent`, so it is used as-is here —
-    // re-validating could fail a non-idempotent transform.
-    const delivered = await ctx.storage.takeEvent(ctx.run.id, unit.name)
-    if (delivered) {
-      const payload = delivered.payload
+    // Consume a buffered event if one has been delivered, saving it as this
+    // step's result in the same write. The payload was validated against the
+    // schema in `sendEvent`, so it is used as-is here — re-validating could
+    // fail a non-idempotent transform.
+    const consumed = await ctx.consumeEvent(unit.name)
+    if (consumed.status === 'lease-lost') {
+      // The event, if any, is still buffered for whichever engine holds the run next.
+      throw new LeaseExpiredError(ctx.run.id)
+    }
+    if (consumed.status === 'consumed') {
+      const payload = consumed.payload
 
       if (!waiting) {
         await ctx.emit({
@@ -44,20 +49,6 @@ export const waitForEventExecutor: UnitExecutor<WaitUnit> = {
           workflow: ctx.run.workflow,
           stepName: unit.name,
         })
-      }
-
-      const saved = await ctx.trySaveStep({
-        name: unit.name,
-        status: 'completed',
-        output: payload,
-        attempts: 0,
-      })
-
-      if (!saved) {
-        // Lost the lease after consuming the event — put it back so whichever
-        // engine reclaims the run can consume it, then unwind.
-        await ctx.storage.deliverEvent(ctx.run.id, unit.name, payload)
-        throw new LeaseExpiredError(ctx.run.id)
       }
 
       await ctx.emit({

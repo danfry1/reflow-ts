@@ -21,6 +21,7 @@ import type { StorageAdapter } from '../core/types'
  * call.
  */
 export function translateStorageErrors(storage: StorageAdapter): StorageAdapter {
+  const consumeEvent = storage.consumeEvent?.bind(storage)
   return {
     initialize: () => guard('initialize', () => storage.initialize()),
     createRun: (run) => guard('createRun', () => storage.createRun(run)),
@@ -37,6 +38,7 @@ export function translateStorageErrors(storage: StorageAdapter): StorageAdapter 
       guard('deliverEvent', () => storage.deliverEvent(runId, eventName, payload)),
     takeEvent: (runId, eventName) =>
       guard('takeEvent', () => storage.takeEvent(runId, eventName)),
+    consumeEvent: consumeEvent && ((step, leaseId) => guard('consumeEvent', () => consumeEvent(step, leaseId))),
     getRun: (runId) => guard('getRun', () => storage.getRun(runId)),
     listRuns: (filter) => guard('listRuns', () => storage.listRuns(filter)),
     requeueRun: (runId) => guard('requeueRun', () => storage.requeueRun(runId)),

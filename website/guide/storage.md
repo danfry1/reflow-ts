@@ -114,6 +114,7 @@ Implement the [`StorageAdapter`](/api/storage) interface to back Reflow with any
 
 - `claimDueSchedule(workflowNames, now)` must claim a due [schedule](/guide/scheduling) **and advance its next occurrence in the same transaction**, so one occurrence cannot fire on two workers.
 - To support [per-workflow concurrency](/guide/concurrency#limiting-one-workflow), set `supportsConcurrencyLimits = true` and honour `claimNextRun`'s third argument, a map of workflow name to limit: skip a workflow whose live `running` runs already reach its limit, counted **in the same transaction as the claim**.
+- Implement `consumeEvent(step, leaseId)` so a [waiting run](/guide/wait-for-event) takes its event and records the step **in one transaction, under the lease**. Without it the engine takes the event and saves the step as two writes, and an event taken by a process that dies between them is lost.
 
 See the [Storage API reference](/api/storage) for the full interface and each method's contract.
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **An event can no longer be lost when a worker loses its run.** A waiting run took its event and then saved the step as two separate writes. If the worker had lost the run — it stalled past its lease and another worker took over — or its process died between the two, the event was gone with no step to show for it, and the run waited for an event that had already arrived. Storage now does both in one transaction, under the run's lease: a worker that no longer holds the run takes nothing, and the event stays for the worker that does. `StorageAdapter.consumeEvent` is the new, optional method that does this; the built-in adapters implement it, and the conformance suite tests it. A custom adapter without it keeps the previous behaviour.
+
 ## 0.9.0 — 2026-10-24
 
 Room to grow, and durability stated exactly. Workflows written against a SQLite

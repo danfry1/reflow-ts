@@ -48,6 +48,7 @@ export function delegatingAdapter(
     waitRun: (runId, leaseId, name, wakeAt) => delegate.waitRun(runId, leaseId, name, wakeAt),
     deliverEvent: (runId, name, payload) => delegate.deliverEvent(runId, name, payload),
     takeEvent: (runId, name) => delegate.takeEvent(runId, name),
+    consumeEvent: delegate.consumeEvent?.bind(delegate),
     getRun: (runId) => delegate.getRun(runId),
     listRuns: (filter) => delegate.listRuns(filter),
     requeueRun: (runId) => delegate.requeueRun(runId),

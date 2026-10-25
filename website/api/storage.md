@@ -55,16 +55,20 @@ Implement this interface to back Reflow with any database. See [Storage](/guide/
 interface StorageAdapter {
   initialize(): Promise<void>
   createRun(run: WorkflowRun): Promise<CreateRunResult>
-  claimNextRun(workflowNames: readonly string[], staleBefore?: number): Promise<ClaimedRun | null>
+  claimNextRun(workflowNames: readonly string[], staleBefore?: number, limits?: ReadonlyMap<string, number>): Promise<ClaimedRun | null>
+  readonly supportsConcurrencyLimits?: boolean
   heartbeatRun(runId: string, leaseId: string): Promise<boolean>
   sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean>
   waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
   deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
   takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
+  consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult>
   getRun(runId: string): Promise<WorkflowRun | null>
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
   requeueRun(runId: string): Promise<boolean>
   getStepResults(runId: string): Promise<StepResult[]>
+  getStepResultsForRuns?(runIds: readonly string[]): Promise<Map<string, StepResult[]>>
+  runActivity?(filter: RunActivityFilter): Promise<RunActivity>
   saveStepResult(result: StepResult, leaseId?: string): Promise<boolean>
   completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean>
   failRun(runId: string, leaseId: string, error: RunError): Promise<boolean>
@@ -83,12 +87,14 @@ interface StorageAdapter {
 |---|---|
 | `initialize` | Create tables/indexes. Called once by `engine.start()`. |
 | `createRun` | Persist a new run. Must handle idempotency-key conflicts, returning `{ run, created }`. |
+| `supportsConcurrencyLimits` | Set `true` when `claimNextRun` honours `limits`: skip a workflow whose live `running` runs reach its limit, counted in the same transaction as the claim. An engine whose workflows set `concurrency` refuses an adapter without it. |
 | `claimNextRun` | **Atomically** claim the next pending run (a stale one older than `staleBefore`, or a `sleeping`/`waiting` run past its wake time), returning a unique `leaseId`. Must claim the run that has been claimable **longest** — pending since its `updatedAt`, sleeping/waiting since its wake time, stale since its lease expired — so new work cannot starve woken or crashed runs. Sets `startedAt` on a run's first claim only, and clears `wakeAt` / `waitingFor`. |
 | `heartbeatRun` | Renew the lease. Return `false` if the lease was lost. |
 | `sleepRun` | Suspend a held run to `sleeping` until `wakeAt`, releasing the lease. Backs [`.sleep()`](/api/workflow). |
 | `waitRun` | Suspend a held run to `waiting` (until an event or `wakeAt`), releasing the lease and recording `eventName` as `waitingFor`. Must stay reclaimable if a matching event is already buffered. Backs [`.waitForEvent()`](/api/workflow). |
 | `deliverEvent` | Durably buffer an event and wake the run if it is `waiting`. Return `false` if the run does not exist. Backs `engine.sendEvent()`. |
 | `takeEvent` | Atomically consume the oldest buffered event for `(runId, eventName)`, or return `null`. |
+| `consumeEvent` | Optional. In one transaction, and only while `leaseId` is held: consume the oldest buffered event named `step.name` for `step.runId` and save `step` with the event's payload as its output. Returns `{ status: 'consumed', payload }`, `{ status: 'none' }`, or `{ status: 'lease-lost' }`, changing nothing in the last two cases. Without it, an event taken by a process that dies before saving the step is lost. |
 | `getRun` / `getStepResults` | Read a run / its step results. |
 | `listRuns` | List runs most-recent-first, filtered by `status` / `workflow` and paged with `limit` / `before`. Backs `engine.listRuns()`. |
 | `requeueRun` | Reset a `failed` / `cancelled` run to `pending`, clear `finishedAt` / `output` / `error`, and discard its `failed` step results. Return `false` if the run is not in a resumable state. Backs `engine.resume()`. |

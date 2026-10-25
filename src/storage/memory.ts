@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type {
   ClaimedRun,
+  ConsumeEventResult,
   CountRunsFilter,
   CreateRunResult,
   DeleteRunsFilter,
@@ -207,6 +208,20 @@ export class MemoryStorage implements StorageAdapter {
     return { payload: clonePersistedValue(taken.payload, 'Event payload') }
   }
 
+  async consumeEvent(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult> {
+    if (!this.heldRun(step.runId, leaseId)) {
+      return { status: 'lease-lost' }
+    }
+    const list = this.events.get(step.runId) ?? []
+    const index = list.findIndex((event) => event.eventName === step.name)
+    const [taken] = index < 0 ? [] : list.splice(index, 1)
+    if (taken === undefined) {
+      return { status: 'none' }
+    }
+    this.putStep({ ...step, output: taken.payload })
+    return { status: 'consumed', payload: clonePersistedValue(taken.payload, 'Event payload') }
+  }
+
   async getRun(runId: string): Promise<WorkflowRun | null> {
     const run = this.runs.get(runId)
     return run ? cloneWorkflowRun(run) : null
@@ -279,6 +294,12 @@ export class MemoryStorage implements StorageAdapter {
       }
     }
 
+    this.putStep(result)
+    return true
+  }
+
+  /** Store a step result, replacing the one with the same id. */
+  private putStep(result: StepResult): void {
     const existing = this.steps.get(result.runId) ?? []
     const idx = existing.findIndex((step) => step.id === result.id)
     const cloned = {
@@ -294,7 +315,6 @@ export class MemoryStorage implements StorageAdapter {
     }
 
     this.steps.set(result.runId, existing)
-    return true
   }
 
   async completeRun(runId: string, leaseId: string, output: PersistedValue): Promise<boolean> {

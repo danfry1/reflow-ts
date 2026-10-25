@@ -690,6 +690,7 @@ interface StorageAdapter {
   waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
   deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
   takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
+  consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult>
   getRun(runId: string): Promise<WorkflowRun | null>
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
   requeueRun(runId: string): Promise<boolean>

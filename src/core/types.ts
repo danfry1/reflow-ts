@@ -205,6 +205,12 @@ export interface ListRunsFilter {
 /** How many runs are in each status, from {@link StorageAdapter.countRuns}. */
 export type RunCounts = Record<RunStatus, number>
 
+/** What {@link StorageAdapter.consumeEvent} did. */
+export type ConsumeEventResult =
+  | { readonly status: 'consumed'; readonly payload: PersistedValue }
+  | { readonly status: 'none' }
+  | { readonly status: 'lease-lost' }
+
 /** Filter for {@link StorageAdapter.runActivity}. */
 export interface RunActivityFilter {
   /** Only count runs of this workflow. */
@@ -319,6 +325,18 @@ export interface StorageAdapter {
    * removing it. Returns the payload wrapper, or null when no such event exists.
    */
   takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
+  /**
+   * Optional. Consume the oldest buffered event named `step.name` for
+   * `step.runId` and save `step`, with the event's payload as its output, in
+   * one transaction, only while `leaseId` is still held.
+   *
+   * Either both happen or neither does: when the lease has been lost, or no
+   * event is buffered, nothing changes, and the event stays for whichever
+   * engine holds the run next. Without this method the engine falls back to
+   * {@link StorageAdapter.takeEvent} then {@link StorageAdapter.saveStepResult},
+   * which loses the event if the process dies between the two.
+   */
+  consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult>
   /** Fetch a run by ID, or null if not found. */
   getRun(runId: string): Promise<WorkflowRun | null>
   /** List runs in reverse-chronological order (most recent first), optionally filtered. */
