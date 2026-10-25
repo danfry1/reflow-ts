@@ -746,6 +746,7 @@ result.status              // 'completed' | 'failed'
 result.steps.charge.output // { chargeId: string } — fully typed
 result.steps.charge.status // 'completed' | 'failed'
 result.steps.charge.error  // string | null
+// a step with `when` that did not run: { status: 'skipped', output: null, error: null }
 ```
 
 Use it in your test suite:

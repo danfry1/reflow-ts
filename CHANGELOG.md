@@ -11,6 +11,7 @@
 ### Fixed
 
 - **An event can no longer be lost when a worker loses its run.** A waiting run took its event and then saved the step as two separate writes. If the worker had lost the run — it stalled past its lease and another worker took over — or its process died between the two, the event was gone with no step to show for it, and the run waited for an event that had already arrived. Storage now does both in one transaction, under the run's lease: a worker that no longer holds the run takes nothing, and the event stays for the worker that does. `StorageAdapter.consumeEvent` is the new, optional method that does this; the built-in adapters implement it, and the conformance suite tests it. A custom adapter without it keeps the previous behaviour.
+- **`testEngine` reports a step skipped by `when` as `skipped`.** It reported it as `failed`, with the error "Unknown error", although the run completed. Only conditional steps are typed as possibly skipped, as `SkippedStepOutput`.
 - **Postgres leases are timed by the database's clock.** A run's lease was renewed with, and judged stale by, each worker's own clock, so a machine whose clock ran ahead of another's by more than the lease less the heartbeat interval (20 seconds with the defaults) took over that machine's live runs and ran their steps twice. Leases are now stamped and compared with the Postgres server's time, so worker clocks no longer affect which runs are live. Nothing to change: the storage contract is the same, and the engine's lease settings carry over.
 
 ## 0.9.0 — 2026-10-24

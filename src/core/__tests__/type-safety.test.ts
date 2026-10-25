@@ -1,7 +1,7 @@
 import { describe, it, expect, expectTypeOf } from 'vitest'
 import { z } from 'zod'
 import { createWorkflow, createEngine } from '../../index'
-import { testEngine } from '../../test/index'
+import { testEngine, type SkippedStepOutput } from '../../test/index'
 import { MemoryStorage } from '../../storage/memory'
 import type {
   EngineEvent,
@@ -146,6 +146,21 @@ describe('type safety', () => {
     // Valid calls compile
     expectTypeOf(te.run).toBeCallableWith('math', { x: 5 })
     expectTypeOf(te.run).toBeCallableWith('order', { orderId: 'x', amount: 1 })
+  })
+
+  it('testEngine types only a conditional step as possibly skipped', async () => {
+    const wf = createWorkflow({ name: 'maybe', input: z.object({ premium: z.boolean() }) })
+      .step('upgrade', { when: ({ input }) => input.premium, handler: async () => ({ tier: 'premium' }) })
+      .step('done', async () => ({ ok: true }))
+    const result = await testEngine({ workflows: [wf] }).run('maybe', { premium: true })
+
+    expectTypeOf(result.steps.done.status).toEqualTypeOf<'completed' | 'failed'>()
+    expectTypeOf(result.steps.upgrade).toEqualTypeOf<
+      | { status: 'completed'; output: { tier: string } | undefined; error: null }
+      | { status: 'failed'; output: null; error: string }
+      | SkippedStepOutput
+      | undefined
+    >()
   })
 
   it('testEngine returns typed step results', async () => {
