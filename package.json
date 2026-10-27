@@ -103,7 +103,7 @@
     "@arethetypeswrong/cli": "0.18.5",
     "@types/better-sqlite3": "9.6.0",
     "@types/pg": "8.23.1",
-    "@vitest/coverage-v8": "4.1.11",
+    "@vitest/coverage-v8": "5.0.4",
     "better-sqlite3": "13.0.3",
     "happy-dom": "21.0.1",
     "pg": "8.23.1",
