@@ -1,12 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — 2026-10-27
 
-Durable functions. A workflow can now be written as one async function, with
-`step.run`, `step.sleep`, and `step.waitForEvent` as its durable operations
-and plain TypeScript between them: branches, loops over data, steps run
-together, failures caught and recovered from. It runs on the same engine and
-storage as chained workflows, which are unchanged.
+Durable functions, in beta. A workflow can now be written as one async
+function, with `step.run`, `step.sleep`, and `step.waitForEvent` as its
+durable operations and plain TypeScript between them: branches, loops over
+data, steps run together, failures caught and recovered from. It runs on the
+same engine and storage as chained workflows, which are unchanged. Its API
+may still change in a minor release while it settles.
 
 **Upgrading:** nothing to change in workflow code. SQLite databases move to schema version 6 and Postgres schemas to version 3 on `initialize()`, each adding a nullable `kind` column to step rows. Open a database from before with `npx reflow-ts dashboard` and it asks for `--migrate`. On Postgres, a role allowed only to read and write rows cannot run the migration: run `initialize()` once as the schema's owner first. During a rolling deploy, workers still on 0.10 that are already running carry on against the migrated database, but refuse it once they restart, so finish the rollout rather than rolling back. A custom storage adapter should store and return `StepResult.kind`, which the conformance suite now checks; one that does not still works, without the check it enables. Some types change, which may need a line of code: `AnyWorkflow` now includes workflows written as functions, so code reading `executionUnits` or chaining steps on one narrows on `kind === 'chain'` (or uses `ChainWorkflow`); `ReflowErrorCode` gains `'RUN_SUSPENDED'`, which an exhaustive `switch` needs a case for; a step resolving to `undefined` is now typed `undefined` rather than `never`; and `InferSteps` of something that is not a workflow is `Record<string, PersistedValue>` rather than `never`.
 
