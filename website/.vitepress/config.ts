@@ -20,6 +20,8 @@ export default defineConfig({
         'node:crypto': fileURLToPath(new URL('./theme/playground/node-crypto.ts', import.meta.url)),
         'node:stream/promises': fileURLToPath(new URL('./theme/playground/node-stream.ts', import.meta.url)),
         'node:stream': fileURLToPath(new URL('./theme/playground/node-stream.ts', import.meta.url)),
+        'node:timers': fileURLToPath(new URL('./theme/playground/node-timers.ts', import.meta.url)),
+        'node:async_hooks': fileURLToPath(new URL('./theme/playground/node-async-hooks.ts', import.meta.url)),
       },
     },
   },
@@ -71,6 +73,7 @@ export default defineConfig({
           text: 'Core Concepts',
           items: [
             { text: 'Workflows', link: '/guide/workflows' },
+            { text: 'Workflows as Functions (beta)', link: '/guide/functions' },
             { text: 'The Engine', link: '/guide/engine' },
             { text: 'Retry & Timeouts', link: '/guide/retry' },
             { text: 'Caching Steps', link: '/guide/caching' },

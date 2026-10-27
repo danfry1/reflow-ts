@@ -59,16 +59,18 @@ interface StorageAdapter {
   readonly supportsConcurrencyLimits?: boolean
   heartbeatRun(runId: string, leaseId: string): Promise<boolean>
   sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean>
-  waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
+  waitRun(runId: string, leaseId: string, eventName: string | readonly string[], wakeAt: number | null): Promise<boolean>
   deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
   takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
-  consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult>
+  consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string, eventName?: string): Promise<ConsumeEventResult>
+  readonly supportsEventNames?: boolean
   getCachedStep?(key: string): Promise<CachedStep | null>
   putCachedStep?(entry: CachedStep): Promise<void>
   deleteExpiredCachedSteps?(now: number): Promise<number>
   getRun(runId: string): Promise<WorkflowRun | null>
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
-  requeueRun(runId: string): Promise<boolean>
+  requeueRun(runId: string, options?: RequeueOptions): Promise<boolean>
+  readonly supportsKeepFailed?: boolean
   getStepResults(runId: string): Promise<StepResult[]>
   getStepResultsForRuns?(runIds: readonly string[]): Promise<Map<string, StepResult[]>>
   runActivity?(filter: RunActivityFilter): Promise<RunActivity>
@@ -94,14 +96,16 @@ interface StorageAdapter {
 | `claimNextRun` | **Atomically** claim the next pending run (a stale one older than `staleBefore`, or a `sleeping`/`waiting` run past its wake time), returning a unique `leaseId`. Must claim the run that has been claimable **longest** — pending since its `updatedAt`, sleeping/waiting since its wake time, stale since its lease expired — so new work cannot starve woken or crashed runs. Sets `startedAt` on a run's first claim only, and clears `wakeAt` / `waitingFor`. |
 | `heartbeatRun` | Renew the lease. Return `false` if the lease was lost. |
 | `sleepRun` | Suspend a held run to `sleeping` until `wakeAt`, releasing the lease. Backs [`.sleep()`](/api/workflow). |
-| `waitRun` | Suspend a held run to `waiting` (until an event or `wakeAt`), releasing the lease and recording `eventName` as `waitingFor`. Must stay reclaimable if a matching event is already buffered. Backs [`.waitForEvent()`](/api/workflow). |
+| `waitRun` | Suspend a held run to `waiting` (until an event or `wakeAt`), releasing the lease and recording `eventName` as `waitingFor`. Must stay reclaimable if a matching event is already buffered. With `supportsEventNames`, `eventName` may be a list: any of them matches. Backs [`.waitForEvent()`](/api/workflow). |
 | `deliverEvent` | Durably buffer an event and wake the run if it is `waiting`. Return `false` if the run does not exist. Backs `engine.sendEvent()`. |
 | `takeEvent` | Atomically consume the oldest buffered event for `(runId, eventName)`, or return `null`. |
-| `consumeEvent` | Optional. In one transaction, and only while `leaseId` is held: consume the oldest buffered event named `step.name` for `step.runId` and save `step` with the event's payload as its output. Returns `{ status: 'consumed', payload }`, `{ status: 'none' }`, or `{ status: 'lease-lost' }`, changing nothing in the last two cases. Without it, an event taken by a process that dies before saving the step is lost. |
+| `consumeEvent` | Optional. In one transaction, and only while `leaseId` is held: consume the oldest buffered event named `eventName` (or, without it, `step.name`) for `step.runId` and save `step` with the event's payload as its output. Returns `{ status: 'consumed', payload }`, `{ status: 'none' }`, or `{ status: 'lease-lost' }`, changing nothing in the last two cases. Without it, an event taken by a process that dies before saving the step is lost. |
 | `getCachedStep` / `putCachedStep` / `deleteExpiredCachedSteps` | Optional, together. Read, store (replacing by `key`), and delete expired [cached step results](/guide/caching): `{ key, workflow, stepName, output, createdAt, expiresAt }`. `getCachedStep` returns an entry whether or not it has expired. An engine with a cached step refuses an adapter without all three. |
 | `getRun` / `getStepResults` | Read a run / its step results. |
 | `listRuns` | List runs most-recent-first, filtered by `status` / `workflow` and paged with `limit` / `before`. Backs `engine.listRuns()`. |
-| `requeueRun` | Reset a `failed` / `cancelled` run to `pending`, clear `finishedAt` / `output` / `error`, and discard its `failed` step results. Return `false` if the run is not in a resumable state. Backs `engine.resume()`. |
+| `requeueRun` | Reset a `failed` / `cancelled` run to `pending`, clear `finishedAt` / `output` / `error`, and discard its `failed` and `retrying` step results, except the `failed` ones named in `options.keepFailed`. Return `false` if the run is not in a resumable state. Backs `engine.resume()`. |
+| `supportsKeepFailed` | Optional. Set to `true` when `requeueRun` honours `keepFailed`: a [workflow written as a function](/guide/functions#when-a-step-fails) uses it to keep failures it caught when a run is resumed. Without it they are discarded and run again. |
+| `supportsEventNames` | Optional. Set to `true` when `consumeEvent` honours `eventName` (consume that event for a step named apart from it) and `waitRun` accepts a list of names (wait for any; the buffered check covers all; `waitingFor` lists them joined by `', '`). A workflow written as a function needs it to name a wait apart from its event atomically, and to have several waits pending at once. |
 | `saveStepResult` | Persist a step result. With a `leaseId`, must fail (return `false`) if the lease is no longer held. |
 | `completeRun` | Mark a held run `completed`, recording `output` and `finishedAt` and releasing the lease. Return `false`, changing nothing, if the lease is no longer held. |
 | `failRun` | Mark a held run `failed`, recording `error` (`{ stepName, message, code }`) and `finishedAt`. Same lease rule as `completeRun`. |

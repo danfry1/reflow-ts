@@ -40,9 +40,10 @@ import {
   type StorageAdapter,
   type WorkflowRun,
   type WorkflowSchedule,
+  type RequeueOptions,
 } from '../core/types'
 import { deserializePersistedValue, serializePersistedValue } from './codec'
-import { emptyRunCounts, parseRunError, parseRunStatus, parseStepHistory, parseStepStatus } from './records'
+import { emptyRunCounts, parseRunError, parseRunStatus, parseStepHistory, parseStepKind, parseStepStatus, waitingForLabel } from './records'
 
 /**
  * The database's current time in epoch milliseconds, as SQL. A running run's
@@ -167,6 +168,8 @@ const MIGRATIONS: ReadonlyArray<(schema: string) => string> = [
     );
     CREATE INDEX step_cache_expires ON ${s}.workflow_step_cache (expires_at);
   `,
+  // Rows saved before keep a null kind, which a replay does not check.
+  (s) => `ALTER TABLE ${s}.workflow_steps ADD COLUMN kind TEXT;`,
 ]
 
 /** The schema version this build of Reflow writes. */
@@ -218,6 +221,7 @@ interface WorkflowStepRow {
   updated_at: number
   started_at: number | null
   history: string | null
+  kind: string | null
 }
 
 interface WorkflowScheduleRow {
@@ -239,6 +243,8 @@ interface Candidate extends WorkflowRunRow {
 /** Stored in PostgreSQL. See the module documentation. */
 export class PostgresStorage implements StorageAdapter {
   readonly supportsConcurrencyLimits = true
+  readonly supportsKeepFailed = true
+  readonly supportsEventNames = true
   private readonly pool: Pool
   private readonly ownsPool: boolean
   private readonly schema: string
@@ -516,7 +522,8 @@ export class PostgresStorage implements StorageAdapter {
     ) > 0
   }
 
-  async waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean> {
+  async waitRun(runId: string, leaseId: string, eventName: string | readonly string[], wakeAt: number | null): Promise<boolean> {
+    const names: readonly string[] = typeof eventName === 'string' ? [eventName] : eventName
     return this.transaction(async (db) => {
       // Locking the run orders this against a concurrent deliverEvent, which
       // locks it too: the event is either already buffered here, or arrives
@@ -533,9 +540,9 @@ export class PostgresStorage implements StorageAdapter {
 
       const buffered = await this.one<{ id: string }>(
         db,
-        `SELECT id FROM ${this.t('workflow_events')} WHERE run_id = $1 AND event_name = $2 LIMIT 1`,
+        `SELECT id FROM ${this.t('workflow_events')} WHERE run_id = $1 AND event_name = ANY($2::text[]) LIMIT 1`,
         runId,
-        eventName,
+        [...names],
       )
       if (buffered) {
         await this.exec(
@@ -549,7 +556,7 @@ export class PostgresStorage implements StorageAdapter {
           db,
           `UPDATE ${this.t('workflow_runs')} SET status = 'waiting', lease_id = NULL, wake_at = $1, waiting_for = $2, updated_at = $3 WHERE id = $4`,
           wakeAt,
-          eventName,
+          waitingForLabel(names),
           Date.now(),
           runId,
         )
@@ -641,7 +648,7 @@ export class PostgresStorage implements StorageAdapter {
     return rows.map(mapRun)
   }
 
-  async requeueRun(runId: string): Promise<boolean> {
+  async requeueRun(runId: string, options?: RequeueOptions): Promise<boolean> {
     return this.transaction(async (db) => {
       const changed = await this.changes(
         db,
@@ -656,7 +663,14 @@ export class PostgresStorage implements StorageAdapter {
       }
       // A failed step runs again from scratch, and so does one that was
       // waiting out a backoff when the run was cancelled.
-      await this.exec(db, `DELETE FROM ${this.t('workflow_steps')} WHERE run_id = $1 AND status IN ('failed', 'retrying')`, runId)
+      // Failed steps a function caught are kept, to replay as failures.
+      await this.exec(
+        db,
+        `DELETE FROM ${this.t('workflow_steps')}
+         WHERE run_id = $1 AND (status = 'retrying' OR (status = 'failed' AND NOT (name = ANY($2::text[]))))`,
+        runId,
+        [...(options?.keepFailed ?? [])],
+      )
       return true
     })
   }
@@ -737,7 +751,7 @@ export class PostgresStorage implements StorageAdapter {
     })
   }
 
-  async consumeEvent(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult> {
+  async consumeEvent(step: Omit<StepResult, 'output'>, leaseId: string, eventName = step.name): Promise<ConsumeEventResult> {
     return this.transaction(async (db): Promise<ConsumeEventResult> => {
       // The same shared lock as saveStepResult: a claim taking the run over
       // waits until the event is consumed, or finds it still buffered.
@@ -762,7 +776,7 @@ export class PostgresStorage implements StorageAdapter {
          )
          RETURNING payload`,
         step.runId,
-        step.name,
+        eventName,
       )
       if (!event) {
         return { status: 'none' }
@@ -822,12 +836,13 @@ export class PostgresStorage implements StorageAdapter {
   private async writeStep(db: Queryable, result: StepResult): Promise<void> {
     await this.exec(
       db,
-      `INSERT INTO ${this.t('workflow_steps')} (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at, history)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `INSERT INTO ${this.t('workflow_steps')} (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at, history, kind)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (id) DO UPDATE SET
          run_id = excluded.run_id, name = excluded.name, status = excluded.status, output = excluded.output,
          error = excluded.error, attempts = excluded.attempts, created_at = excluded.created_at,
-         updated_at = excluded.updated_at, started_at = excluded.started_at, history = excluded.history`,
+         updated_at = excluded.updated_at, started_at = excluded.started_at, history = excluded.history,
+         kind = excluded.kind`,
       result.id,
       result.runId,
       result.name,
@@ -839,6 +854,7 @@ export class PostgresStorage implements StorageAdapter {
       result.updatedAt,
       result.startedAt,
       JSON.stringify(result.history),
+      result.kind ?? null,
     )
   }
 
@@ -1119,6 +1135,7 @@ function mapStep(row: WorkflowStepRow): StepResult {
     updatedAt: row.updated_at,
     startedAt: row.started_at,
     history: row.history === null ? [] : parseStepHistory(row.history),
+    kind: parseStepKind(row.kind),
   }
 }
 

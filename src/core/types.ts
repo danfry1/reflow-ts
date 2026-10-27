@@ -4,6 +4,12 @@ export const RUN_STATUSES = ['pending', 'running', 'sleeping', 'waiting', 'compl
 /** Lifecycle state of a workflow run. */
 export type RunStatus = (typeof RUN_STATUSES)[number]
 
+/** What kind of operation a step row records: a step, a sleep, or a wait for an event. */
+export const STEP_KINDS = ['step', 'sleep', 'wait'] as const
+
+/** One of {@link STEP_KINDS}. */
+export type StepKind = (typeof STEP_KINDS)[number]
+
 /** Every lifecycle state of a single step within a run. */
 export const STEP_STATUSES = [
   'pending',
@@ -68,7 +74,10 @@ export interface WorkflowRun {
   error: RunError | null
   /** When a `sleeping` or `waiting` run is due to wake (a wait's timeout); `null` otherwise. */
   wakeAt: number | null
-  /** The event a `waiting` run is waiting for; `null` otherwise. */
+  /**
+   * What a `waiting` run is waiting for: an event's name, or several joined
+   * by `', '` — the first ten, then a count of the rest; `null` otherwise.
+   */
   waitingFor: string | null
 }
 
@@ -106,6 +115,12 @@ export interface StepResult {
    * the process dies before it does.
    */
   history: StepAttempt[]
+  /**
+   * What kind of operation the row records, so a replay can tell a step from a
+   * sleep or a wait that has the same name. `null` (or unset) for rows saved
+   * before 0.11, or by storage that does not keep it.
+   */
+  kind?: StepKind | null
 }
 
 /** One attempt at running a step's handler. */
@@ -128,6 +143,12 @@ export interface RetryConfig {
   initialDelayMs?: number
   /** Timeout per attempt in milliseconds. Overridden by step-level `timeoutMs`. */
   timeoutMs?: number
+}
+
+/** Options for {@link StorageAdapter.requeueRun}. */
+export interface RequeueOptions {
+  /** Names of `failed` steps to keep. */
+  readonly keepFailed?: readonly string[]
 }
 
 /** A workflow run together with its step results, returned by `engine.getRunStatus()`. */
@@ -332,8 +353,13 @@ export interface StorageAdapter {
    *
    * A run left `waiting` records `eventName` as `waitingFor` and the deadline
    * as `wakeAt`.
+   *
+   * `eventName` is a list of names only for an adapter that sets
+   * {@link StorageAdapter.supportsEventNames}: the run waits for any of them,
+   * the buffered check covers all of them, and `waitingFor` lists them,
+   * separated by `', '`, the first ten and then a count of the rest.
    */
-  waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
+  waitRun(runId: string, leaseId: string, eventName: string | readonly string[], wakeAt: number | null): Promise<boolean>
   /**
    * Durably record an event for a run and wake it if it is currently `waiting`.
    * The event is buffered (it may arrive before the run reaches the wait) and
@@ -356,8 +382,19 @@ export interface StorageAdapter {
    * engine holds the run next. Without this method the engine falls back to
    * {@link StorageAdapter.takeEvent} then {@link StorageAdapter.saveStepResult},
    * which loses the event if the process dies between the two.
+   *
+   * `eventName`, when given, is the event to consume in place of `step.name`:
+   * a wait named apart from the event it waits for. It is only given to an
+   * adapter that sets {@link StorageAdapter.supportsEventNames}.
    */
-  consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult>
+  consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string, eventName?: string): Promise<ConsumeEventResult>
+  /**
+   * Whether `consumeEvent` honours `eventName`, and `waitRun` accepts a list
+   * of names. A workflow written as a function needs both to name a wait apart
+   * from its event, or to wait for several events at once; without them the
+   * engine consumes by step name and allows one pending wait at a time.
+   */
+  readonly supportsEventNames?: boolean
   /**
    * Optional, with {@link StorageAdapter.putCachedStep} and
    * {@link StorageAdapter.deleteExpiredCachedSteps}: the cached result under
@@ -386,8 +423,16 @@ export interface StorageAdapter {
    * run does not exist or is not in a resumable state.
    *
    * Clears `finishedAt`, `output`, and `error`; `startedAt` is kept.
+   *
+   * `options.keepFailed` names `failed` steps to keep rather than discard: a
+   * workflow written as a function caught their failure and carried on, so
+   * they replay as failures instead of running again. Only adapters that set
+   * {@link StorageAdapter.supportsKeepFailed} honour it; one that does not
+   * discards them too, so a resumed run runs them again.
    */
-  requeueRun(runId: string): Promise<boolean>
+  requeueRun(runId: string, options?: RequeueOptions): Promise<boolean>
+  /** Whether `requeueRun` honours `options.keepFailed`. */
+  readonly supportsKeepFailed?: boolean
   /** Fetch all step results for a run, ordered by creation time. */
   getStepResults(runId: string): Promise<StepResult[]>
   /**

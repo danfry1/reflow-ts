@@ -44,6 +44,7 @@ export type ReflowErrorCode =
   | 'EARLY_COMPLETE'
   | 'RUN_CANCELLED'
   | 'LEASE_EXPIRED'
+  | 'RUN_SUSPENDED'
 
 /** The JSON shape produced by {@link ReflowError.toJSON}. */
 export interface SerializedReflowError {
@@ -420,7 +421,7 @@ export class TestRunIncompleteError extends ReflowError {
     super(
       'TEST_RUN_INCOMPLETE',
       `Run "${runId}" is "${status}" after tick() rather than completed or failed. ` +
-        'Workflows that suspend (.sleep() / .waitForEvent()) need more than the single tick ' +
+        'Workflows that suspend (.sleep() / .waitForEvent(), or step.sleep() / step.waitForEvent() in a function) need more than the single tick ' +
         'testEngine performs — drive them with createEngine instead.',
     )
     this.name = 'TestRunIncompleteError'
@@ -443,11 +444,10 @@ export class InternalError extends ReflowError {
 }
 
 /**
- * Internal base class for errors that represent control-flow signals
- * (cancellation, lease loss) rather than real failures. These do NOT
- * reach `onRunFailed`.
- *
- * @internal Not exported from the public API.
+ * Base class for errors that represent control-flow signals — cancellation,
+ * lease loss, engine stop, suspension — rather than real failures. These do
+ * NOT reach `onRunFailed`. Workflow code that catches errors should rethrow
+ * them; see {@link isRunControlError}.
  */
 export class RunControlError extends ReflowError {
   constructor(message: string, code: ReflowErrorCode = 'RUN_CONTROL') {
@@ -488,6 +488,24 @@ export class LeaseExpiredError extends RunControlError {
   }
 }
 
+/**
+ * Rejects the durable operations of a workflow written as a function once its
+ * run has been suspended, so the function unwinds instead of carrying on. The
+ * run resumes later by running the function again from the top.
+ *
+ * Recognise it, and the other control-flow errors, with {@link isRunControlError}.
+ */
+export class RunSuspendedError extends RunControlError {
+  constructor(public readonly runId: string) {
+    super(`Run "${runId}" is suspended`, 'RUN_SUSPENDED')
+    this.name = 'RunSuspendedError'
+  }
+
+  protected override context() {
+    return { runId: this.runId }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -501,6 +519,26 @@ function describeCause(cause: unknown): string | null {
     return null
   }
   return String(cause)
+}
+
+/**
+ * Whether `error` is the engine stopping a run rather than a failure: the run
+ * was cancelled, its lease was lost, the engine is stopping, or a workflow
+ * written as a function is being suspended. A `catch` in workflow code should
+ * rethrow these, and not report them as errors.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await step.run('charge', () => payments.charge(input.orderId))
+ * } catch (error) {
+ *   if (isRunControlError(error)) throw error
+ *   await step.run('alert', () => alerts.send(String(error)))
+ * }
+ * ```
+ */
+export function isRunControlError(error: unknown): error is RunControlError {
+  return error instanceof RunControlError
 }
 
 /**

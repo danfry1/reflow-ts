@@ -396,7 +396,7 @@ describe('SqliteStorageBase migrations', () => {
     const storage = new SQLiteStorage(DB_PATH)
     await storage.initialize()
 
-    expect((await storage.getStepResults('done'))[0]).toMatchObject({ name: 'charge', attempts: 2, history: [] })
+    expect((await storage.getStepResults('done'))[0]).toMatchObject({ name: 'charge', attempts: 2, history: [], kind: null })
     storage.close()
   })
 

@@ -1,5 +1,5 @@
 import type { EngineEvent } from '../events'
-import type { ClaimedRun, ConsumeEventResult, PersistedValue, StepAttempt, StepResult, StepStatus, StorageAdapter } from '../types'
+import type { ClaimedRun, ConsumeEventResult, PersistedValue, StepAttempt, StepKind, StepResult, StepStatus, StorageAdapter } from '../types'
 import type { AnyWorkflow, ExecutionUnit } from '../workflow'
 
 /**
@@ -30,6 +30,13 @@ export interface StepRecord {
   readonly startedAt?: number
   /** Every attempt at the step's handler so far. Omit to keep what is already recorded. */
   readonly history?: readonly StepAttempt[]
+  /**
+   * The row's `updatedAt`. Omit for now. A workflow written as a function
+   * sets it, strictly increasing, to record the order its operations finished in.
+   */
+  readonly updatedAt?: number
+  /** What kind of operation the row records. Omit to keep what is already recorded. */
+  readonly kind?: StepKind
 }
 
 /**
@@ -92,7 +99,14 @@ export interface ExecutionContext {
    * completed result, together and under the run's lease, so an event is
    * never consumed by a worker that can no longer record it.
    */
-  consumeEvent(name: string): Promise<ConsumeEventResult>
+  consumeEvent(name: string, updatedAt?: number, eventName?: string): Promise<ConsumeEventResult>
+
+  /**
+   * Call `listener` with the name of each event delivered to this run by this
+   * engine while it executes, so a wait blocked in process can take it at
+   * once. Returns a function that removes the listener.
+   */
+  onEvent(listener: (eventName: string) => void): () => void
 
   /** Report an error that must not fail the run to the engine's `onError` hook. */
   reportError(error: unknown): void

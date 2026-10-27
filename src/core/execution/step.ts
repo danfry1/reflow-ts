@@ -109,8 +109,9 @@ export async function runStepHandler(
 
       const err = toError(error)
 
-      // Control-flow aborts are not failures and must not be retried.
-      if (err instanceof RunControlError) {
+      // Control-flow aborts are not failures and must not be retried. One the
+      // handler threw of its own accord, with nothing aborted, is a failure.
+      if (err instanceof RunControlError && attemptSignal.signal.aborted) {
         throw err
       }
 
@@ -220,7 +221,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
         if (!shouldRun) {
           // Persist the skip before announcing it, so a crash between the two
           // replays as a skip rather than re-evaluating the predicate.
-          await ctx.saveStep({ name: stepDef.name, status: 'skipped', output: null, attempts: 0 })
+          await ctx.saveStep({ kind: 'step', name: stepDef.name, status: 'skipped', output: null, attempts: 0 })
 
           await ctx.emit({
             type: 'stepSkipped',
@@ -241,7 +242,8 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
       if (cacheKey !== undefined && stepDef.cache && !retrying) {
         const cached = await cachedOutput(ctx, cacheKey, stepDef.cache.ttlMs)
         if (cached) {
-          return await reuseCached(ctx, stepDef.name, cached.output)
+          await reuseCached(ctx, stepDef.name, cached.output)
+          return { kind: 'advance', output: cached.output }
         }
       }
 
@@ -303,6 +305,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
         }
 
         await ctx.saveStep({
+          kind: 'step',
           name: stepDef.name,
           status: 'failed',
           output: null,
@@ -316,6 +319,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
       }
 
       await ctx.saveStep({
+        kind: 'step',
         name: stepDef.name,
         status: outcome.kind === 'early-complete' ? 'completed-early' : 'completed',
         output: outcome.output,
@@ -376,7 +380,7 @@ export const stepExecutor: UnitExecutor<{ kind: 'step'; definition: StepDefiniti
  * step names its own, everything the handler is given that can differ between
  * runs. Hashed so any key value fits a fixed-size column.
  */
-function cacheKeyOf(
+export function cacheKeyOf(
   workflow: string,
   stepName: string,
   cache: StepCacheDefinition,
@@ -413,7 +417,7 @@ function withoutUndefinedFields(value: PersistedValue): PersistedValue {
  * the step's current one — so shortening a step's ttl takes effect at once.
  * A failed read is reported and treated as a miss: the step can still run.
  */
-async function cachedOutput(
+export async function cachedOutput(
   ctx: ExecutionContext,
   key: string,
   ttlMs: number,
@@ -430,9 +434,9 @@ async function cachedOutput(
 }
 
 /** Complete a step with a cached output, without running its handler. */
-async function reuseCached(ctx: ExecutionContext, stepName: string, output: PersistedValue): Promise<UnitOutcome> {
+export async function reuseCached(ctx: ExecutionContext, stepName: string, output: PersistedValue): Promise<void> {
   await ctx.emit({ type: 'stepStart', runId: ctx.run.id, workflow: ctx.run.workflow, stepName })
-  await ctx.saveStep({ name: stepName, status: 'completed', output, attempts: 0, startedAt: Date.now(), history: [] })
+  await ctx.saveStep({ kind: 'step', name: stepName, status: 'completed', output, attempts: 0, startedAt: Date.now(), history: [] })
   await ctx.emit({
     type: 'stepComplete',
     runId: ctx.run.id,
@@ -443,14 +447,13 @@ async function reuseCached(ctx: ExecutionContext, stepName: string, output: Pers
     cached: true,
   })
   ctx.steps[stepName] = structuredClone(output)
-  return { kind: 'advance', output }
 }
 
 /**
  * Cache a step's output for later runs. The step has already completed and
  * been saved, so a failed write is reported rather than failing the run.
  */
-async function cacheOutput(
+export async function cacheOutput(
   ctx: ExecutionContext,
   key: string,
   stepName: string,
@@ -482,7 +485,7 @@ async function suspendForRetry(
   startedAt: number,
   history: readonly StepAttempt[],
 ): Promise<UnitOutcome> {
-  await ctx.saveStep({ name: stepName, status: 'retrying', output: retryAt, error, attempts, startedAt, history })
+  await ctx.saveStep({ kind: 'step', name: stepName, status: 'retrying', output: retryAt, error, attempts, startedAt, history })
 
   if (!(await ctx.storage.sleepRun(ctx.run.id, ctx.run.leaseId, retryAt))) {
     throw new LeaseExpiredError(ctx.run.id)

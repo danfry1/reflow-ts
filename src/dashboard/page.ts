@@ -438,7 +438,7 @@ const SCRIPT = String.raw`
   // One line on why a run is where it is — the question the list answers.
   function why(run) {
     var retrying = (run.steps || []).filter(function (step) { return step.status === 'retrying'; })[0];
-    if (run.status === 'failed' && run.error) return 'Failed at ' + run.error.stepName + ': ' + run.error.message;
+    if (run.status === 'failed' && run.error) return 'Failed ' + where(run.error.stepName) + ': ' + run.error.message;
     if (run.status === 'sleeping' && retrying && run.wakeAt) return 'Retrying ' + retrying.name + ' ' + ago(run.wakeAt) + ', after ' + plural(retrying.attempts, 'failed attempt');
     if (run.status === 'waiting') return 'Waiting for ' + (run.waitingFor || 'an event') + (run.wakeAt ? ', times out ' + ago(run.wakeAt) : '');
     if (run.status === 'sleeping' && run.wakeAt) return 'Resumes ' + ago(run.wakeAt);
@@ -901,7 +901,7 @@ const SCRIPT = String.raw`
         }
       }),
       state.stepFilter ? h('p', { class: 'scope' }, [
-        'Failed at ' + state.stepFilter.join(' or ') + ' ',
+        'Failed ' + (state.stepFilter.every(Boolean) ? 'at ' + state.stepFilter.join(' or ') : state.stepFilter.map(where).join(' or ')) + ' ',
         h('button', { class: 'linkish', onclick: function () { state.stepFilter = null; state.status = null; reloadList(); }, text: 'Show all' })
       ]) : null,
       runRows(r, r.view !== 'workflow')
@@ -966,7 +966,7 @@ const SCRIPT = String.raw`
         h('span', { class: 'count', text: String(group.count) }),
         h('span', { class: 'msg' }, [
           h('span', { class: 'what', text: group.message || 'Failed without a message' }),
-          h('span', { class: 'where', text: 'at ' + group.stepName + (group.attempts > 1 ? ', after ' + plural(group.attempts, 'attempt') : '') + (group.code ? ' (' + group.code + ')' : '') })
+          h('span', { class: 'where', text: where(group.stepName) + (group.attempts > 1 ? ', after ' + plural(group.attempts, 'attempt') : '') + (group.code ? ' (' + group.code + ')' : '') })
         ]),
         h('span', { class: 'last' }, ['last ', agoEl(group.lastAt)])
       ])]);
@@ -1005,6 +1005,12 @@ const SCRIPT = String.raw`
         h('span', null, [lamp('failed'), h('span', { class: 'n', text: String(total(activity.failed)) }), ' failed'])
       ])
     ]);
+  }
+
+  // Where a run failed: at a step, or — for a workflow written as a function,
+  // whose own code threw — in the function, which names no step.
+  function where(stepName) {
+    return stepName ? 'at ' + stepName : 'in the workflow function';
   }
 
   function filterFailedAt(stepNames) {
@@ -1130,7 +1136,7 @@ const SCRIPT = String.raw`
     var head = STATUS_LABEL[run.status];
     var reason = '';
     if (run.status === 'failed' && run.error) {
-      head = 'Failed at ' + run.error.stepName + (failedStep && failedStep.attempts > 1 ? ' after ' + plural(failedStep.attempts, 'attempt') : '');
+      head = 'Failed ' + where(run.error.stepName) + (failedStep && failedStep.attempts > 1 ? ' after ' + plural(failedStep.attempts, 'attempt') : '');
       reason = run.error.message + (run.error.code ? ' (' + run.error.code + ')' : '');
     } else if (run.status === 'sleeping' && retrying && run.wakeAt) {
       head = 'Retrying ' + retrying.name + ' ' + ago(run.wakeAt);

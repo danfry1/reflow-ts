@@ -10,12 +10,13 @@ const te = testEngine({ workflows: [orderWorkflow] })
 const result = await te.run('order-fulfillment', { orderId: 'test', amount: 100 })
 
 result.status              // 'completed' | 'failed'
+result.output              // what the run produced, undefined if it failed
 result.steps.charge.output // { chargeId: string } — fully typed
 result.steps.charge.status // 'completed' | 'failed'
 result.steps.charge.error  // string | null
 ```
 
-`run()` enqueues the workflow into an in-memory engine, runs a single `tick()`, and returns the outcome. Step results are keyed by step name with their outputs typed from the workflow definition. A step with [`when`](/api/workflow) that did not run reports `status: 'skipped'`.
+`run()` enqueues the workflow into an in-memory engine, runs a single `tick()`, and returns the outcome. Step results are keyed by step name with their outputs typed from the workflow definition. For a [workflow written as a function](/guide/functions), `output` is typed from what the function returns. A step with [`when`](/api/workflow) that did not run reports `status: 'skipped'`.
 
 ## In a test suite
 

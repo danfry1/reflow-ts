@@ -23,12 +23,32 @@ export {
   InternalError,
   RunCancelledError,
   LeaseExpiredError,
+  isRunControlError,
   assertNever,
   toError,
 } from './core/errors'
-export type { ValidationIssue, ReflowErrorCode, SerializedReflowError } from './core/errors'
+export type { ValidationIssue, ReflowErrorCode, SerializedReflowError, RunControlError, RunSuspendedError } from './core/errors'
 export type {
   Workflow,
+  ChainWorkflow,
+  WorkflowDefinition,
+  WorkflowConfig,
+  FunctionWorkflow,
+  FunctionWorkflowConfig,
+  WorkflowContext,
+  WorkflowSteps,
+  StepRunContext,
+  StepHandler,
+  Persistable,
+  Saveable,
+  FunctionStepConfig,
+  FunctionRetryConfig,
+  FunctionStepCache,
+  WaitForEventOptions,
+  WaitForEventResult,
+  InferOutput,
+  InferEvents,
+  WorkflowOutputMap,
   AnyWorkflow,
   ExecutionUnit,
   StepContext,
@@ -60,7 +80,7 @@ export type {
   StreamOptions,
   ResultStream,
 } from './core/engine'
-export { RUN_STATUSES, STEP_STATUSES } from './core/types'
+export { RUN_STATUSES, STEP_KINDS, STEP_STATUSES } from './core/types'
 export type {
   ClaimedRun,
   CachedStep,
@@ -84,7 +104,9 @@ export type {
   RunError,
   RunStatus,
   StepStatus,
+  StepKind,
   TerminalRunStatus,
   RetryConfig,
+  RequeueOptions,
   RunInfo,
 } from './core/types'

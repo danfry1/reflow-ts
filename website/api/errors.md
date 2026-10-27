@@ -35,8 +35,9 @@ if (error instanceof ReflowError) {
 | `WaitTimeoutError` | `WAIT_TIMEOUT` | A `waitForEvent` step's `timeoutMs` elapses before the event arrives | `eventName`, `timeoutMs` |
 | `RunCancelledError` | `RUN_CANCELLED` | A run is cancelled via `engine.cancel()` | `runId` |
 | `LeaseExpiredError` | `LEASE_EXPIRED` | A worker loses its lease on a run | `runId` |
+| `RunSuspendedError` | `RUN_SUSPENDED` | A [workflow written as a function](/guide/functions) is suspended to sleep or wait, and its pending operations reject so it stops | `runId` |
 | `StorageError` | `STORAGE` | A storage backend operation failed; the driver's error is on `cause` | `operation`, `cause` |
-| `StepFailedError` | `STEP_FAILED` | A step exhausts its retries with no error of its own (run aborted first) | `stepName`, `attempts` |
+| `StepFailedError` | `STEP_FAILED` | A step exhausts its retries with no error of its own (run aborted first). In a [workflow written as a function](/guide/functions#when-a-step-fails), what `step.run()` rejects with once every attempt has failed, the handler's error as its `cause` | `stepName`, `attempts` |
 | `HookError` | `HOOK` | A lifecycle hook, stream consumer, or `onFailure` handler threw. Delivered to `onError`, never thrown into a run | `source`, `cause` |
 | `ThrownValueError` | `THROWN_VALUE` | User code threw a non-`Error` value (`throw 'boom'`) | `value`, `cause` |
 | `TestRunIncompleteError` | `TEST_RUN_INCOMPLETE` | `testEngine.run()` left a run non-terminal (usually a suspending workflow) | `runId`, `status` |
@@ -64,4 +65,4 @@ An array of `{ message: string; path?: ... }` describing each schema violation, 
 
 ## Control-flow errors
 
-`RunCancelledError` (`RUN_CANCELLED`) and `LeaseExpiredError` (`LEASE_EXPIRED`) are control-flow signals, not failures — they do **not** reach `onRunFailed` or `onFailure`, and they leave a run reclaimable rather than marking it `failed`. `StepTimeoutError`, by contrast, is a real failure and reaches the failure paths.
+`RunCancelledError` (`RUN_CANCELLED`), `LeaseExpiredError` (`LEASE_EXPIRED`), and `RunSuspendedError` (`RUN_SUSPENDED`) are control-flow signals, not failures. `isRunControlError(error)` is true for all of them. A [workflow written as a function](/guide/functions) never sees them: its pending operations are left unsettled instead. They do **not** reach `onRunFailed` or `onFailure`, and they leave a run reclaimable rather than marking it `failed`. `StepTimeoutError`, by contrast, is a real failure and reaches the failure paths.

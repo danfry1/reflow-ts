@@ -7,6 +7,7 @@ export { MemoryStorage }
 import type {
   AnyWorkflow,
   WorkflowInputMap,
+  WorkflowOutputMap,
   WorkflowStepsMap,
 } from '../core/workflow'
 
@@ -23,8 +24,13 @@ export interface SkippedStepOutput {
 }
 
 /** The result of running a workflow to completion via `testEngine.run()`. */
-export interface RunResult<TSteps extends Record<string, PersistedValue> = Record<string, PersistedValue>> {
+export interface RunResult<
+  TSteps extends Record<string, PersistedValue> = Record<string, PersistedValue>,
+  TOutput = PersistedValue,
+> {
   status: 'completed' | 'failed'
+  /** What the run produced: set once it has completed, `undefined` when it failed. */
+  output?: TOutput
   /**
    * Step results keyed by step name, with typed outputs. A step with `when`,
    * whose entry in `steps` is optional, may also be skipped.
@@ -36,12 +42,16 @@ export interface RunResult<TSteps extends Record<string, PersistedValue> = Recor
 export interface TestEngine<
   TInputMap extends Record<string, PersistedValue> = Record<string, PersistedValue>,
   TStepsMap extends Record<string, Record<string, PersistedValue>> = Record<string, Record<string, PersistedValue>>,
+  TOutputMap extends Record<string, unknown> = Record<string, PersistedValue>,
 > {
   run<TName extends string & keyof TInputMap>(
     workflowName: TName,
     input: TInputMap[TName],
   ): Promise<
-    RunResult<TName extends keyof TStepsMap ? TStepsMap[TName] : Record<string, PersistedValue>>
+    RunResult<
+      TName extends keyof TStepsMap ? TStepsMap[TName] : Record<string, PersistedValue>,
+      TName extends keyof TOutputMap ? TOutputMap[TName] : PersistedValue
+    >
   >
 }
 
@@ -58,7 +68,7 @@ export interface TestEngine<
  */
 export function testEngine<const TWorkflows extends readonly AnyWorkflow[]>(config: {
   workflows: TWorkflows
-}): TestEngine<WorkflowInputMap<TWorkflows>, WorkflowStepsMap<TWorkflows>> {
+}): TestEngine<WorkflowInputMap<TWorkflows>, WorkflowStepsMap<TWorkflows>, WorkflowOutputMap<TWorkflows>> {
   return {
     async run(workflowName, input) {
       const storage = new MemoryStorage()
@@ -90,6 +100,7 @@ export function testEngine<const TWorkflows extends readonly AnyWorkflow[]>(conf
 
       return {
         status: runInfo.status,
+        output: runInfo.status === 'completed' ? runInfo.output : undefined,
         steps,
       } as never
     },

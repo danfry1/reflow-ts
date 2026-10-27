@@ -199,6 +199,14 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 6,
+    description: 'step kinds',
+    up(db) {
+      // Rows saved before keep a null kind, which a replay does not check.
+      db.exec(`ALTER TABLE workflow_steps ADD COLUMN kind TEXT`)
+    },
+  },
 ]
 
 /** The schema version this build of Reflow writes. */

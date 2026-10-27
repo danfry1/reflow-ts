@@ -17,9 +17,10 @@ import type {
   WorkflowRun,
   WorkflowSchedule,
   ScheduleRecurrence,
+  RequeueOptions,
 } from '../../core/types'
 import { RUN_STATUSES } from '../../core/types'
-import { emptyRunCounts, parseRunError, parseRunStatus, parseStepHistory, parseStepStatus } from '../records'
+import { emptyRunCounts, parseRunError, parseRunStatus, parseStepHistory, parseStepKind, parseStepStatus, waitingForLabel } from '../records'
 import { pendingMigrations, SCHEMA_VERSION } from './schema'
 import { deserializePersistedValue, serializePersistedValue } from '../codec'
 import { nextOccurrence } from '../../core/schedule-timing'
@@ -55,6 +56,7 @@ interface WorkflowStepRow {
   updated_at: number
   started_at: number | null
   history: string | null
+  kind: string | null
 }
 
 interface WorkflowScheduleRow {
@@ -89,6 +91,8 @@ export interface SQLiteStorageOptions {
  */
 export class SqliteStorageBase implements StorageAdapter {
   readonly supportsConcurrencyLimits = true
+  readonly supportsKeepFailed = true
+  readonly supportsEventNames = true
   private readonly driver: SqliteDriver
 
   constructor(driver: SqliteDriver, options: SQLiteStorageOptions = {}) {
@@ -390,7 +394,8 @@ export class SqliteStorageBase implements StorageAdapter {
     return changes > 0
   }
 
-  async waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean> {
+  async waitRun(runId: string, leaseId: string, eventName: string | readonly string[], wakeAt: number | null): Promise<boolean> {
+    const names: readonly string[] = typeof eventName === 'string' ? [eventName] : eventName
     return this.transaction(() => {
       const held = this.get<{ _: number }>(
         `SELECT 1 AS _ FROM workflow_runs WHERE id = ? AND status = 'running' AND lease_id = ?`,
@@ -404,9 +409,10 @@ export class SqliteStorageBase implements StorageAdapter {
       // If a matching event is already buffered, stay reclaimable instead of
       // waiting — closes the deliver-during-suspend race.
       const buffered = this.get<{ _: number }>(
-        `SELECT 1 AS _ FROM workflow_events WHERE run_id = ? AND event_name = ? LIMIT 1`,
+        // One JSON parameter, not one per name: SQLite caps a statement's parameters.
+        `SELECT 1 AS _ FROM workflow_events WHERE run_id = ? AND event_name IN (SELECT value FROM json_each(?)) LIMIT 1`,
         runId,
-        eventName,
+        JSON.stringify(names),
       )
 
       if (buffered) {
@@ -419,7 +425,7 @@ export class SqliteStorageBase implements StorageAdapter {
         this.run(
           `UPDATE workflow_runs SET status = 'waiting', lease_id = NULL, wake_at = ?, waiting_for = ?, updated_at = ? WHERE id = ?`,
           wakeAt,
-          eventName,
+          waitingForLabel(names),
           Date.now(),
           runId,
         )
@@ -547,7 +553,7 @@ export class SqliteStorageBase implements StorageAdapter {
     return page(['status = ?'], [status])
   }
 
-  async requeueRun(runId: string): Promise<boolean> {
+  async requeueRun(runId: string, options?: RequeueOptions): Promise<boolean> {
     return this.transaction(() => {
       const changes = this.run(
         `UPDATE workflow_runs
@@ -564,7 +570,13 @@ export class SqliteStorageBase implements StorageAdapter {
 
       // A failed step runs again from scratch, and so does one that was waiting
       // out a backoff when the run was cancelled: its attempts start over.
-      this.run(`DELETE FROM workflow_steps WHERE run_id = ? AND status IN ('failed', 'retrying')`, runId)
+      // Failed steps a function caught are kept, to replay as failures.
+      // One JSON parameter, not one per name: SQLite caps a statement's parameters.
+      this.run(
+        `DELETE FROM workflow_steps WHERE run_id = ? AND (status = 'retrying' OR (status = 'failed' AND name NOT IN (SELECT value FROM json_each(?))))`,
+        runId,
+        JSON.stringify(options?.keepFailed ?? []),
+      )
 
       return true
     })
@@ -645,7 +657,7 @@ export class SqliteStorageBase implements StorageAdapter {
     })
   }
 
-  async consumeEvent(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult> {
+  async consumeEvent(step: Omit<StepResult, 'output'>, leaseId: string, eventName = step.name): Promise<ConsumeEventResult> {
     return this.transaction((): ConsumeEventResult => {
       const held = this.get<{ _: number }>(
         `SELECT 1 AS _ FROM workflow_runs WHERE id = ? AND status = 'running' AND lease_id = ?`,
@@ -658,7 +670,7 @@ export class SqliteStorageBase implements StorageAdapter {
       const event = this.get<{ id: string; payload: string | null }>(
         `SELECT id, payload FROM workflow_events WHERE run_id = ? AND event_name = ? ORDER BY created_at ASC, rowid ASC LIMIT 1`,
         step.runId,
-        step.name,
+        eventName,
       )
       if (!event) {
         return { status: 'none' }
@@ -710,8 +722,8 @@ export class SqliteStorageBase implements StorageAdapter {
   /** Insert or replace a step's row. Call inside a transaction. */
   private writeStep(result: StepResult): void {
     this.run(
-      `INSERT OR REPLACE INTO workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at, history)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at, history, kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       result.id,
       result.runId,
       result.name,
@@ -723,6 +735,7 @@ export class SqliteStorageBase implements StorageAdapter {
       result.updatedAt,
       result.startedAt,
       JSON.stringify(result.history),
+      result.kind ?? null,
     )
   }
 
@@ -1013,6 +1026,7 @@ function mapStepRow(row: WorkflowStepRow): StepResult {
     updatedAt: row.updated_at,
     startedAt: row.started_at,
     history: row.history === null ? [] : parseStepHistory(row.history),
+    kind: parseStepKind(row.kind),
   }
 }
 

@@ -1414,8 +1414,10 @@ describe('Engine', () => {
       await engine.start(40)
       const run = await engine.enqueue('reclaimed', {})
 
+      // The new execution's first heartbeat comes an interval after it starts.
       await vi.waitFor(() => {
         expect(signals).toHaveLength(2)
+        expect([...heartbeats.keys()].some((lease) => lease !== firstLease)).toBe(true)
       })
       const secondLease = expectPresent([...heartbeats.keys()].find((lease) => lease !== firstLease))
       const beatsSoFar = heartbeats.get(secondLease) ?? 0

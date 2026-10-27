@@ -6,7 +6,7 @@ import { createEngine } from '../../core/engine'
 import { ConfigError } from '../../core/errors'
 import { createWorkflow } from '../../core/workflow'
 import { storageConformanceCases } from '../conformance'
-import { PostgresStorage } from '../postgres'
+import { PostgresStorage, POSTGRES_SCHEMA_VERSION } from '../postgres'
 
 /**
  * Runs against a real PostgreSQL named by REFLOW_TEST_POSTGRES_URL, and is
@@ -51,7 +51,27 @@ describe.skipIf(url === undefined)('PostgresStorage', () => {
     await Promise.all([1, 2, 3, 4, 5].map(() => new PostgresStorage({ pool, schema }).initialize()))
     await new PostgresStorage({ pool, schema }).initialize()
     const { rows } = await pool.query<{ version: number }>(`SELECT version FROM ${schema}.reflow_schema`)
-    expect(rows).toStrictEqual([{ version: 2 }])
+    expect(rows).toStrictEqual([{ version: POSTGRES_SCHEMA_VERSION }])
+  })
+
+  it('upgrades a schema from before step kinds, reading its rows with none', async () => {
+    const storage = await fresh()
+    const schema = schemas.at(-1) ?? ''
+    await pool.query(`ALTER TABLE ${schema}.workflow_steps DROP COLUMN kind`)
+    await pool.query(`UPDATE ${schema}.reflow_schema SET version = 2`)
+    await pool.query(
+      `INSERT INTO ${schema}.workflow_runs (id, workflow, input, status, created_at, updated_at) VALUES ('old', 'w', '{}', 'completed', 1, 1)`,
+    )
+    await pool.query(
+      `INSERT INTO ${schema}.workflow_steps (id, run_id, name, status, output, error, attempts, created_at, updated_at, started_at, history)
+       VALUES ('s', 'old', 'charge', 'completed', '{}', NULL, 1, 1, 2, 1, '[]')`,
+    )
+
+    await new PostgresStorage({ pool, schema }).initialize()
+
+    const { rows } = await pool.query<{ version: number }>(`SELECT version FROM ${schema}.reflow_schema`)
+    expect(rows).toStrictEqual([{ version: POSTGRES_SCHEMA_VERSION }])
+    expect((await storage.getStepResults('old'))[0]).toMatchObject({ name: 'charge', kind: null })
   })
 
   it('refuses a database written by a newer version', async () => {
@@ -59,7 +79,7 @@ describe.skipIf(url === undefined)('PostgresStorage', () => {
     const schema = schemas.at(-1) ?? ''
     await pool.query(`UPDATE ${schema}.reflow_schema SET version = 99`)
     await expect(storage.initialize()).rejects.toThrow(
-      new ConfigError('Database schema version 99 is newer than this version of reflow-ts supports (2). Upgrade reflow-ts to open it.'),
+      new ConfigError(`Database schema version 99 is newer than this version of reflow-ts supports (${POSTGRES_SCHEMA_VERSION}). Upgrade reflow-ts to open it.`),
     )
   })
 

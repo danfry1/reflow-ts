@@ -200,6 +200,17 @@ describe('createDashboard', () => {
       ])
     })
 
+    it('lists a workflow written as a function without an outline, as its steps are known only once runs reach them', async () => {
+      const fn = createWorkflow({ name: 'as-function', input: z.object({}) }, async ({ step }) => {
+        await step.run('only', async () => 1)
+      })
+
+      const body = await (await dashboard({ workflows: [wf, fn] })(get('/api/workflows'))).json()
+
+      expect(body.workflows.map((workflow: { name: string; steps: unknown }) => [workflow.name, workflow.steps !== null]))
+        .toStrictEqual([['order', true], ['as-function', false]])
+    })
+
     it('lists the workflows seen in recent runs when given no definitions', async () => {
       await engine.enqueue('order', { id: 'o1' })
       await engine.enqueue('approval', {})
