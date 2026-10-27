@@ -35,8 +35,11 @@ interface Operation {
   readonly name: string
   readonly kind: 'step' | 'sleep' | 'wait'
   state: OperationState
-  /** The function has awaited, or otherwise used, what the operation returned. */
-  used: boolean
+  /**
+   * How many results had been handed to the function when it last awaited,
+   * or chained on, what this operation returned; `null` if it never has.
+   */
+  usedAt: number | null
   /** Finished, and waiting its turn to be handed to the function. */
   releasing: boolean
 }
@@ -72,11 +75,19 @@ const MAX_TIMER_MS = 2_147_483_647
 
 /**
  * How long nothing may start or finish before a run whose operations are all
- * blocked is suspended. Covers a branch awaiting something other than a step
- * between two steps — a log flush, a quick read — so it is not cut off by a
- * sibling's sleep.
+ * blocked is suspended, so a branch awaiting something other than an
+ * operation — a log flush, a quick read — is not cut off.
+ *
+ * `graceMs` applies when the function plausibly waits on what is blocked: it
+ * awaited one of those operations after the last result it was handed.
+ * `ambiguousGraceMs` applies when it took all of them up before then. It may
+ * be waiting in a `Promise.all` that one result did not complete, or it may
+ * have moved on past a race they lost and be busy with other work; promises
+ * cannot tell the two apart, so it waits longer before deciding it is idle.
+ *
+ * Mutable for tests, which shorten them; not part of the public API.
  */
-const SUSPEND_GRACE_MS = 25
+export const suspendTiming = { graceMs: 25, ambiguousGraceMs: 1_000 }
 
 /**
  * How often a wait blocked in process, beside other work, checks storage for
@@ -104,21 +115,31 @@ const NO_STEPS: Readonly<Record<string, PersistedValue>> = Object.freeze({})
 const insideStep = new AsyncLocalStorage<{ readonly execution: object; readonly step: string }>()
 
 /**
- * What a durable operation returns: a promise that notes when the function
- * first awaits it or chains on it, so one the function never waits for — a
- * `void step.sleep(...)` — cannot hold up the run.
+ * What a durable operation returns: a promise that notes each time the
+ * function awaits it or chains on it, so one the function never waits for — a
+ * `void step.sleep(...)` — cannot hold up the run, and one it has moved on
+ * from is told apart from one it is waiting on now.
  */
 class OperationPromise<T> extends Promise<T> {
   static override get [Symbol.species](): PromiseConstructor {
     return Promise
   }
 
-  #onUse: (() => void) | undefined
+  #onUse: () => void = noop
 
-  /** A promise settling as `inner` does, calling `onUse` the first time it is awaited or chained on. */
-  static tracking<T>(inner: Promise<T>, onUse: () => void): OperationPromise<T> {
+  /**
+   * A promise settling as `inner` does, calling `onUse` each time it is
+   * awaited or chained on. A rejection reaches it only while `forward` says
+   * so: once the run has stopped, the operation never settles, so the
+   * function is left where it is rather than unwound — a promise it derived
+   * and is not awaiting would otherwise reject unhandled, and take the
+   * process down.
+   */
+  static tracking<T>(inner: Promise<T>, onUse: () => void, forward: () => boolean): OperationPromise<T> {
     const promise = new OperationPromise<T>((resolve, reject) => {
-      inner.then(resolve, reject)
+      inner.then(resolve, (error: unknown) => {
+        if (forward()) reject(error)
+      })
     })
     // Handled here without counting as a use, so one the function ignores
     // cannot surface as an unhandled rejection.
@@ -131,9 +152,7 @@ class OperationPromise<T> extends Promise<T> {
     onFulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
     onRejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): Promise<TResult1 | TResult2> {
-    const onUse = this.#onUse
-    this.#onUse = undefined
-    onUse?.()
+    this.#onUse()
     return super.then(onFulfilled, onRejected)
   }
 }
@@ -215,6 +234,11 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
   // Operations started or finished, so a suspend check can tell the run has been quiet.
   let activity = 0
   let activitySeen = -1
+  // How long the run has been quiet, by the checks that found nothing changed.
+  let quietFor = 0
+  // Results handed to the function so far, to tell an operation it awaits
+  // now from one it took up before the latest result.
+  let handovers = 0
   let parking: Promise<void> | null = null
   // Operations the function never waited for, cut off once it settled.
   const abandoned = new Set<Operation>()
@@ -328,6 +352,7 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
         const lowest = lowestUnresolved()
         if (lowest !== undefined && lowest < next.at) break
         awaitingRelease.pop()
+        handovers++
         next.release()
         await turns(RELEASE_SPACING)
       }
@@ -416,7 +441,7 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
     checkQueued = true
     const check = (): void => {
       checkQueued = false
-      const attempt = suspendIfBlocked()
+      const attempt = suspendIfBlocked(delay)
       if (stopping) parking = attempt
       attempt.catch((error: unknown) => {
         stopping = true
@@ -433,17 +458,19 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
 
   /**
    * Suspend the run durably if nothing in it can make progress: every
-   * operation is blocked, each can be resumed from storage, and nothing has
-   * started or finished for {@link SUSPEND_GRACE_MS}. It sleeps until the
-   * earliest wake time among them, or waits for the pending events with
-   * that time as its deadline.
+   * operation is blocked, each can be resumed from storage, the function is
+   * waiting on at least one of them, and nothing has started or finished for
+   * the {@link suspendTiming} grace. It sleeps until the earliest wake time
+   * among them, or waits for the pending events with that time as its
+   * deadline. `waited` is how long ago this check was scheduled.
    */
-  const suspendIfBlocked = async (): Promise<void> => {
+  const suspendIfBlocked = async (waited: number): Promise<void> => {
     if (stopping || settled || operations.size === 0) return
     let wakeAt: number | null = null
     const events = new Set<string>()
     let allBlocked = true
     let waitedOn = false
+    let awaitedSinceHandover = false
     for (const operation of operations) {
       const state = operation.state
       if (state.kind !== 'blocked') {
@@ -454,13 +481,20 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
         continue
       }
       if (!state.durable) return
-      if (operation.used) waitedOn = true
+      if (operation.usedAt !== null) waitedOn = true
+      if (operation.usedAt === handovers) awaitedSinceHandover = true
       if (state.wakeAt !== null && (wakeAt === null || state.wakeAt < wakeAt)) wakeAt = state.wakeAt
       if (state.event !== null) events.add(state.event)
     }
-    if (activity !== activitySeen) {
+    if (activity === activitySeen) {
+      quietFor += waited
+    } else {
       activitySeen = activity
-      queueCheck(SUSPEND_GRACE_MS)
+      quietFor = 0
+    }
+    const grace = !allBlocked || awaitedSinceHandover ? suspendTiming.graceMs : suspendTiming.ambiguousGraceMs
+    if (quietFor < grace) {
+      queueCheck(grace - quietFor)
       return
     }
     // Quiet with results waiting their turn: the places still held are for
@@ -515,7 +549,7 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
     }
     names.add(name)
     kinds.set(name, kind)
-    const operation: Operation = { name, kind, state: RUNNING, used: false, releasing: false }
+    const operation: Operation = { name, kind, state: RUNNING, usedAt: null, releasing: false }
     operations.add(operation)
     activity++
     return operation
@@ -611,13 +645,13 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
     work: (operation: Operation, existing: StepResult | undefined) => Promise<T>,
   ): Promise<T> => {
     let operation: Operation | undefined
-    let used = false
+    let usedAt: number | null = null
     const promise = (async () => {
       try {
         let settledWith: Settled<T>
         try {
           operation = begin(name, kind)
-          operation.used = used
+          operation.usedAt = usedAt
           const existing = ctx.replay.get(name)
           // A row records its kind, so a name now used for another kind of
           // operation — after a deploy — is caught rather than handed the
@@ -654,11 +688,15 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
     promise.then(() => unfinished.delete(promise), () => unfinished.delete(promise))
     // A function may leave an operation unawaited, or stop awaiting it once
     // the run is suspended; neither surfaces as an unhandled rejection.
-    return OperationPromise.tracking(promise, () => {
-      used = true
-      if (operation) operation.used = true
-      queueCheck()
-    })
+    return OperationPromise.tracking(
+      promise,
+      () => {
+        usedAt = handovers
+        if (operation) operation.usedAt = handovers
+        queueCheck()
+      },
+      () => !stopping && !settled,
+    )
   }
 
   /** Throw the run's control-flow abort, if that is why an attempt failed. */

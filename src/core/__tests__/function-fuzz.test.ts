@@ -18,11 +18,12 @@
  * `REFLOW_FUZZ_RUNS` sets how many seeds to try (default 150), and
  * `REFLOW_FUZZ_SEED` runs one seed, to look into a failure.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createEngine, createWorkflow, StepFailedError, type StorageAdapter, type WorkflowSteps } from '../../index'
 import { MemoryStorage } from '../../storage/memory'
 import { SQLiteStorage } from '../../storage/sqlite-node'
+import { suspendTiming } from '../execution/function'
 
 const HOUR = 3_600_000
 
@@ -265,6 +266,9 @@ async function fuzz(seed: number, makeStorage: () => StorageAdapter, coverage: O
     }
   }
 
+  // How each engine ended, for a failure message: a death depends on timing,
+  // so re-running a seed may not crash at the same call.
+  const history: string[] = []
   for (let round = 0; round < 80; round++) {
     observer.generation++
     // Most engines live; some die at a random point; the last rounds never die,
@@ -302,6 +306,7 @@ async function fuzz(seed: number, makeStorage: () => StorageAdapter, coverage: O
     ])
     if (outcome === 'stuck') return [`seed ${seed}: an engine did not finish a tick: ${JSON.stringify(ops)}`]
     // Let what a dead engine still had running reach the storage call that hangs.
+    history.push(outcome === 'died' ? `died at ${JSON.stringify(death)}` : outcome)
     if (outcome === 'died') {
       coverage.deaths++
       await delay(20)
@@ -315,7 +320,7 @@ async function fuzz(seed: number, makeStorage: () => StorageAdapter, coverage: O
   }
 
   const finished = await storage.getRun(run.id)
-  const problems = observer.violations.map((violation) => `seed ${seed}: ${violation}`)
+  const problems = observer.violations.map((violation) => `seed ${seed}: ${violation} (engines: ${history.join(', ')})`)
   if (finished?.status !== 'completed') {
     problems.push(`seed ${seed}: run ended ${finished?.status ?? 'missing'} ${JSON.stringify(finished?.error)}: ${JSON.stringify(ops)}`)
   }
@@ -331,6 +336,16 @@ const only = process.env['REFLOW_FUZZ_SEED']
 const seeds = only === undefined ? Array.from({ length: runs }, (_, index) => index + 1) : [Number(only)]
 
 describe('workflows written as a function, fuzzed', () => {
+  // Shorter quiet windows keep many seeds quick; what they protect is
+  // covered by its own tests, and the order of events is what is fuzzed here.
+  const timing = { ...suspendTiming }
+  beforeAll(() => {
+    suspendTiming.ambiguousGraceMs = 40
+  })
+  afterAll(() => {
+    Object.assign(suspendTiming, timing)
+  })
+
   afterEach(() => {
     vi.useRealTimers()
   })
@@ -356,6 +371,7 @@ describe('workflows written as a function, fuzzed', () => {
   it('replays consistently through crashes, on SQLite (a sample of seeds)', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const problems: string[] = []
+    // Every fifth seed: `REFLOW_FUZZ_SEED` set to one that is not runs none here.
     for (const seed of seeds.filter((seed) => seed % 5 === 0)) problems.push(...await fuzz(seed, () => new SQLiteStorage(':memory:'), coverage()))
     expect(problems).toStrictEqual([])
   }, 600_000)

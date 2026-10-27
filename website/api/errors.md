@@ -65,4 +65,4 @@ An array of `{ message: string; path?: ... }` describing each schema violation, 
 
 ## Control-flow errors
 
-`RunCancelledError` (`RUN_CANCELLED`), `LeaseExpiredError` (`LEASE_EXPIRED`), and `RunSuspendedError` (`RUN_SUSPENDED`) are control-flow signals, not failures. `isRunControlError(error)` is true for all of them; code that catches errors inside a workflow should rethrow them — they do **not** reach `onRunFailed` or `onFailure`, and they leave a run reclaimable rather than marking it `failed`. `StepTimeoutError`, by contrast, is a real failure and reaches the failure paths.
+`RunCancelledError` (`RUN_CANCELLED`), `LeaseExpiredError` (`LEASE_EXPIRED`), and `RunSuspendedError` (`RUN_SUSPENDED`) are control-flow signals, not failures. `isRunControlError(error)` is true for all of them. A [workflow written as a function](/guide/functions) never sees them: its pending operations are left unsettled instead. They do **not** reach `onRunFailed` or `onFailure`, and they leave a run reclaimable rather than marking it `failed`. `StepTimeoutError`, by contrast, is a real failure and reaches the failure paths.

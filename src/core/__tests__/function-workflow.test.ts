@@ -1173,7 +1173,8 @@ describe('workflows written as a function, under adversarial conditions', () => 
     await ticking
 
     expect((await storage.getRun(run.id))?.output).toBe('event')
-    expect(arrivedAfter).toBeLessThan(500)
+    // Under the 1s event poll and the 1s sibling: only an in-process wake gets here.
+    expect(arrivedAfter).toBeLessThan(900)
   })
 
   it('lets a branch await other work between steps beside a sleep without being cut off', async () => {
@@ -1252,7 +1253,7 @@ describe('workflows written as a function, under adversarial conditions', () => 
     await ticking
 
     expect(await storage.getRun(run.id)).toMatchObject({ status: 'completed', output: 'up' })
-  })
+  }, 15_000)
 
   it('does not let stop() return before a suspend under way has been written', async () => {
     let releaseSleep: () => void = () => {}
@@ -1783,6 +1784,14 @@ describe('types of step results that can be saved', () => {
     })
   })
 
+  it('accepts a result that is sometimes nothing', () => {
+    const notify = async (): Promise<void> => {}
+    createWorkflow({ name: 'maybe-nothing', input: z.object({ flag: z.boolean() }) }, async ({ input, step }) => {
+      expectTypeOf(await step.run('b', async () => (input.flag ? notify() : 1))).toEqualTypeOf<number | undefined>()
+      return Promise.race([step.sleep('wait', '1m'), step.run('c', async () => 2)])
+    })
+  })
+
   it('types a run output typed as an interface', () => {
     const wf = createWorkflow({ name: 'iface-out', input: z.object({}) }, async ({ step }) => step.run('c', () => stripe.charge()))
     expectTypeOf<InferOutput<typeof wf>>().toEqualTypeOf<Charge>()
@@ -1851,14 +1860,19 @@ describe('workflows written as a function, PR review', () => {
   it('replays a race the same way when the winner is started later, after other work', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const winners: string[] = []
+    // `a` finishes after `b` by construction, not by a margin a slow machine could close.
+    let bFinished: () => void = () => {}
+    const afterB = new Promise<void>((resolve) => { bFinished = resolve })
     const wf = createWorkflow({ name: 'late-start', input: z.object({}) }, async ({ step }) => {
       const a = step.run('a', async () => {
-        await delay(100)
+        await afterB
+        await delay(10)
         return 'a'
       })
       await delay(10)
       const b = step.run('b', async () => {
         await delay(10)
+        bFinished()
         return 'b'
       })
       const winner = await Promise.race([a, b])
@@ -1929,5 +1943,72 @@ describe('the operation limit of a workflow written as a function', () => {
     expect((await storage.getRun(over.id))?.error).toMatchObject({ stepName: 'item-3', code: 'CONFIG' })
     expect((await storage.getRun(within.id))?.output).toBe(4)
     expect(() => loop('bad', 0)).toThrow(ConfigError)
+  })
+})
+
+describe('workflows written as a function, final review', () => {
+  let storage: MemoryStorage
+
+  beforeEach(async () => {
+    storage = new MemoryStorage()
+    await storage.initialize()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+  it('leaves no promise the function derived rejecting unhandled when the run suspends, is cancelled, or stops', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      let engine: ReturnType<typeof createEngine> | undefined
+      const helpers = createWorkflow({ name: 'helpers', input: z.object({ mode: z.string() }) }, async ({ input, step, runId }) => {
+        const get = async (id: string) => await step.run(`user-${id}`, {
+          retry: { maxAttempts: 3, initialDelay: '1h' },
+          handler: async () => {
+            if (input.mode === 'cancel') await engine?.cancel(runId)
+            throw new Error('flaky')
+          },
+        })
+        void step.sleep('aside', '1h').finally(() => {})
+        const first = get('1')
+        const second = get('2')
+        return [await first, await second]
+      })
+      engine = createEngine({ storage, workflows: [helpers] })
+      await engine.start(NO_POLL)
+      const suspended = await engine.enqueue('helpers', { mode: 'suspend' })
+      const cancelled = await engine.enqueue('helpers', { mode: 'cancel' })
+      await vi.waitFor(async () => {
+        expect((await storage.getRun(suspended.id))?.status).toBe('sleeping')
+        expect((await storage.getRun(cancelled.id))?.status).toBe('cancelled')
+      })
+      await engine.stop()
+      await delay(50)
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+
+    expect(unhandled).toStrictEqual([])
+  })
+
+  it('carries on past a race whose loser is still pending, through other work outside a step', async () => {
+    const wf = createWorkflow({ name: 'race-then-work', input: z.object({}), events: { cancel: z.object({}) } }, async ({ step }) => {
+      const result = await Promise.race([
+        step.run('work', async () => 'done'),
+        step.waitForEvent('cancel').then(() => 'cancelled'),
+      ])
+      await delay(100)
+      return await step.run('next', async () => `${result} then next`)
+    })
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('race-then-work', {})
+    await engine.tick()
+
+    expect(await storage.getRun(run.id)).toMatchObject({ status: 'completed', output: 'done then next' })
   })
 })

@@ -398,6 +398,9 @@ export type Persistable<T, TDepth extends readonly unknown[] = []> =
   // often does, so they are taken on trust and checked when saved.
   unknown extends T ? true
   : [T] extends [void] ? true
+  // From here `T` distributes over a union, so `void | number` — a handler
+  // that sometimes returns nothing — is checked member by member.
+  : T extends void ? true
   : T extends PersistedValue ? true
   : T extends Date ? true
   : T extends (...args: never) => unknown ? false

@@ -1,7 +1,7 @@
 # Workflows as Functions <Badge type="warning" text="beta" />
 
 ::: warning Beta
-Workflows written as a function are new in 0.11. They are tested as thoroughly as chained workflows and safe to run, but their API may still change in a minor release while it settles. Chained workflows are unaffected.
+Workflows written as a function are new in 0.11, and their API may still change in a minor release while it settles. Chained workflows are unaffected.
 :::
 
 A workflow can also be written as one async function. Its durable operations are calls on `step`, and everything between them is ordinary TypeScript: `if` for a branch, `for` for a loop, `Promise.all` to run steps together, `try`/`catch` to handle a failure.
@@ -146,19 +146,8 @@ Resuming a failed run with [`engine.resume()`](/api/engine) runs the step whose 
 
 That way a `catch` meant for a declined card cannot mistake a database outage for one and take the wrong branch, with the charge made and not recorded.
 
-::: warning Rethrow what you don't recognise
-When a run is cancelled, its lease is lost, or it is suspended to sleep or wait, the operations still pending reject so the function stops. `isRunControlError(error)` is true for these. A `catch` should rethrow them rather than report them, and a `finally` block runs each time the run suspends, so keep side effects out of it:
-
-```typescript
-try {
-  await step.run('charge', () => payments.charge(input.orderId))
-} catch (error) {
-  if (isRunControlError(error)) throw error
-  await step.run('alert', () => alerts.send(String(error)))
-}
-```
-
-Swallowing one cannot keep a stopped run going: every later operation rejects too, and what the function returns is ignored.
+::: info When a run stops part-way
+When a run is suspended to sleep or wait, cancelled, or loses its lease, the operations still pending never settle: the function is left where it is, not unwound, and the next execution starts it again from the top. So a `catch` never sees the run stopping, and a `finally` around pending operations does not run then — keep side effects in steps, not in `finally`.
 :::
 
 ## `step.sleep(name, duration)` and `step.sleepUntil(name, time)`
@@ -203,7 +192,7 @@ const [user, plan] = await Promise.all([
 ])
 ```
 
-The run suspends only once **every** operation in flight is blocked — waiting on a sleep, an event, or a retry's backoff — and nothing has started or finished for a moment. Until then a blocked operation waits in the process, so a short sleep beside a long-running step wakes on time, and one step's backoff never cuts a sibling off. A branch that awaits something other than a step for more than that moment, beside a long sleep, may be suspended with the run; it carries on, from its last finished step, when the run resumes.
+The run suspends only once **every** operation in flight is blocked — waiting on a sleep, an event, or a retry's backoff — and nothing has started or finished for a moment. Until then a blocked operation waits in the process, so a short sleep beside a long-running step wakes on time, and one step's backoff never cuts a sibling off. That moment is 25ms when the function is plainly waiting on what is blocked, and a second when every blocked operation was taken up before the latest result arrived — a race's loser, still pending after the function moved on, looks the same as one half of a `Promise.all`. Code that awaits something other than an operation for longer than that, beside a blocked one, may be suspended with the run, and carries on from its last finished step when the run resumes; put such work in `step.run`.
 
 An operation the function never waits for — a `void step.sleep(...)` — does not hold the run: it is not counted when deciding whether to suspend, and if it is still going when the function returns, it is recorded as skipped. Await every operation whose result matters.
 
@@ -235,6 +224,7 @@ The rules from [Changing Workflows](/guide/changing-workflows) apply, with names
 | **Rename a step** | Runs it again under the new name, as for a chained step. |
 | **Change what a step returns** | Code after it receives the old shape from runs that finished it before the deploy. |
 | **Remove a wait's timeout** | A run whose wait already timed out still gets `null` there, whatever the types now say. |
+| **Turn a chained workflow into a function under the same name** | Replays the chained run's saved steps by name, unchecked, as rows saved before 0.11 record no kind; and workers not yet updated go on running it as a chain. Give the function a new name. |
 
 For anything riskier, register the new code under a new workflow name and keep the old one until its runs finish.
 

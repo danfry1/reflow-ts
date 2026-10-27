@@ -937,7 +937,7 @@ Creates a workflow written as a function. Takes the same `name`, `input`, `label
 | `step.sleepUntil(name, time)` | `undefined` | Durable pause until a `Date` or epoch time |
 | `step.waitForEvent(name, { event?, timeout? })` | The payload, or `null` on timeout | Waits for a declared event — `event`, when the wait is named apart from it to wait for the same event again, or else `name`. Several may be pending at once |
 
-Operations started together (`Promise.all`) run concurrently; the run suspends only once every operation in flight is sleeping, waiting, or backing off. On resume, saved results are handed back in the order the operations first finished, so `Promise.race` between them picks the same winner. What the function returns is typed (`InferOutput<typeof workflow>`, and `output` from `testEngine().run()`). In a `catch`, rethrow anything `isRunControlError(error)` is true for: those are the run being cancelled or suspended, not failures.
+Operations started together (`Promise.all`) run concurrently; the run suspends only once every operation in flight is sleeping, waiting, or backing off. On resume, saved results are handed back in the order the operations first finished, so `Promise.race` between them picks the same winner. What the function returns is typed (`InferOutput<typeof workflow>`, and `output` from `testEngine().run()`). When a run stops part-way — suspended, cancelled, or its lease lost — the operations still pending never settle, so a `catch` never sees it, and a `finally` around them does not run.
 
 ### `workflow.step(name, handler | config)`
 

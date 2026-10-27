@@ -4,13 +4,13 @@ export const RUN_STATUSES = ['pending', 'running', 'sleeping', 'waiting', 'compl
 /** Lifecycle state of a workflow run. */
 export type RunStatus = (typeof RUN_STATUSES)[number]
 
-/** Every lifecycle state of a single step within a run. */
 /** What kind of operation a step row records: a step, a sleep, or a wait for an event. */
 export const STEP_KINDS = ['step', 'sleep', 'wait'] as const
 
 /** One of {@link STEP_KINDS}. */
 export type StepKind = (typeof STEP_KINDS)[number]
 
+/** Every lifecycle state of a single step within a run. */
 export const STEP_STATUSES = [
   'pending',
   'running',
@@ -74,7 +74,10 @@ export interface WorkflowRun {
   error: RunError | null
   /** When a `sleeping` or `waiting` run is due to wake (a wait's timeout); `null` otherwise. */
   wakeAt: number | null
-  /** The event a `waiting` run is waiting for; `null` otherwise. */
+  /**
+   * What a `waiting` run is waiting for: an event's name, or several joined
+   * by `', '` — the first ten, then a count of the rest; `null` otherwise.
+   */
   waitingFor: string | null
 }
 
