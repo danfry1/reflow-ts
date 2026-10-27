@@ -95,12 +95,12 @@
 .landing .home-play > p { max-width: 680px; margin: 0 0 20px; color: var(--vp-c-text-2); }
 
 /* The code, with a note beside it on what each step is guaranteed. */
-.landing .home-code { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 28px; align-items: start; margin-top: 20px; }
+.landing .home-code { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 3fr); gap: 28px; align-items: start; margin-top: 20px; }
 .landing .home-code div[class*='language-'] { margin: 0; }
 .landing .home-notes { margin: 0; padding: 0; list-style: none; counter-reset: note; }
 .landing .home-notes li { margin: 0 0 18px; padding-top: 12px; border-top: 1px solid var(--vp-c-divider); color: var(--vp-c-text-2); line-height: 1.6; }
 .landing .home-notes strong { display: block; color: var(--vp-c-text-1); font-family: var(--vp-font-family-mono); font-size: 0.92rem; font-weight: 600; }
-@media (max-width: 900px) { .landing .home-code { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 1120px) { .landing .home-code { grid-template-columns: minmax(0, 1fr); } }
 .landing .home-section > h2 {
   margin: 0 0 12px;
   padding: 0;
