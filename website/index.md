@@ -51,25 +51,39 @@ import { z } from 'zod'
 
 const order = createWorkflow({
   name: 'order',
-  input: z.object({ orderId: z.string(), amount: z.number() }),
+  input: z.object({
+    orderId: z.string(),
+    amount: z.number(),
+  }),
   label: (input) => input.orderId,
 })
   .step('charge', async ({ input, idempotencyKey }) => {
-    const charge = await stripe.paymentIntents.create({ amount: input.amount, currency: 'usd' }, { idempotencyKey })
+    const charge = await stripe.paymentIntents.create(
+      { amount: input.amount, currency: 'usd' },
+      { idempotencyKey },
+    )
     return { chargeId: charge.id }
   })
   .step('ship', {
     retry: { maxAttempts: 5, backoff: 'exponential' },
-    handler: async ({ prev }) => ({ tracking: await warehouse.ship(prev.chargeId) }),
+    handler: async ({ prev }) => ({
+      tracking: await warehouse.ship(prev.chargeId),
+    }),
   })
   .sleep('wait-a-day', '1d')
   .step('ask-for-review', async ({ input, prev }) => {
-    await email.send(input.orderId, `How was it? ${prev.tracking}`)
+    await email.askForReview(input.orderId, prev.tracking)
   })
 
-const engine = createEngine({ storage: new SQLiteStorage('./app.db'), workflows: [order] })
+const engine = createEngine({
+  storage: new SQLiteStorage('./app.db'),
+  workflows: [order],
+})
 await engine.start()
-await engine.enqueue('order', { orderId: 'ORD-1001', amount: 5000 })
+await engine.enqueue('order', {
+  orderId: 'ORD-1001',
+  amount: 5000,
+})
 ```
 
 <ol class="home-notes">
