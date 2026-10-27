@@ -20,7 +20,7 @@ import type {
   WorkflowSchedule,
   RequeueOptions,
 } from '../core/types'
-import { emptyRunCounts } from './records'
+import { emptyRunCounts, waitingForLabel } from './records'
 import { assertNever, InternalError } from '../core/errors'
 import { nextOccurrence, sameRecurrence } from '../core/schedule-timing'
 import { clonePersistedValue } from './codec'
@@ -174,7 +174,7 @@ export class MemoryStorage implements StorageAdapter {
     run.status = buffered ? 'pending' : 'waiting'
     run.leaseId = null
     run.wakeAt = buffered ? null : wakeAt
-    run.waitingFor = buffered ? null : names.join(', ')
+    run.waitingFor = buffered ? null : waitingForLabel(names)
     run.updatedAt = Date.now()
     return true
   }

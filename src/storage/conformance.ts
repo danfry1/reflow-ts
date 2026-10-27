@@ -887,6 +887,28 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
   {
+    name: 'waitRun and requeueRun take more event and step names than a statement can hold parameters for',
+    appliesTo: (storage) => storage.supportsEventNames === true && storage.supportsKeepFailed === true,
+    async run(storage) {
+      if (storage.supportsEventNames !== true || storage.supportsKeepFailed !== true) return
+      // Above SQLite's limit of 32,766 parameters in one statement.
+      const names = Array.from({ length: 33_000 }, (_, index) => `e${index}`)
+      await storage.createRun(makeRun())
+      const claimed = await claim(storage)
+      await storage.deliverEvent('run_1', 'e32999', {})
+
+      assert(await storage.waitRun('run_1', claimed.leaseId, names, null), 'wait must succeed')
+      assertEqual((await storage.getRun('run_1'))?.status, 'pending', 'the buffered event, last in the list, is found')
+
+      const again = await claim(storage)
+      await storage.saveStepResult(makeStep({ id: 'kept', name: 'e5', status: 'failed', output: null }), again.leaseId)
+      await storage.saveStepResult(makeStep({ id: 'gone', name: 'fatal', status: 'failed', output: null }), again.leaseId)
+      await storage.failRun('run_1', again.leaseId, { stepName: 'fatal', message: 'boom', code: null })
+      assert(await storage.requeueRun('run_1', { keepFailed: names }), 'a failed run must requeue')
+      assertEqual((await storage.getStepResults('run_1')).map((step) => step.name), ['e5'], 'kept among many names')
+    },
+  },
+  {
     name: 'consumeEvent replaces the waiting step row it is given rather than adding one',
     appliesTo: (storage) => storage.consumeEvent !== undefined,
     async run(storage) {

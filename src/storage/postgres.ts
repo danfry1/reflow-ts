@@ -43,7 +43,7 @@ import {
   type RequeueOptions,
 } from '../core/types'
 import { deserializePersistedValue, serializePersistedValue } from './codec'
-import { emptyRunCounts, parseRunError, parseRunStatus, parseStepHistory, parseStepKind, parseStepStatus } from './records'
+import { emptyRunCounts, parseRunError, parseRunStatus, parseStepHistory, parseStepKind, parseStepStatus, waitingForLabel } from './records'
 
 /**
  * The database's current time in epoch milliseconds, as SQL. A running run's
@@ -556,7 +556,7 @@ export class PostgresStorage implements StorageAdapter {
           db,
           `UPDATE ${this.t('workflow_runs')} SET status = 'waiting', lease_id = NULL, wake_at = $1, waiting_for = $2, updated_at = $3 WHERE id = $4`,
           wakeAt,
-          names.join(', '),
+          waitingForLabel(names),
           Date.now(),
           runId,
         )

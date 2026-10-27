@@ -379,14 +379,21 @@ export type StepRunHandler = (ctx: StepRunContext) => Promise<unknown>
  * booleans, `null`, `undefined`, and `Date` — and not functions, `Map`s,
  * `Set`s, promises, `bigint`s, or symbols, anywhere inside.
  */
-export type Persistable<T> =
-  [T] extends [void] ? true
+export type Persistable<T, TDepth extends readonly unknown[] = []> =
+  // `unknown` and `any` say nothing either way, as an SDK's free-form field
+  // often does, so they are taken on trust and checked when saved.
+  unknown extends T ? true
+  : [T] extends [void] ? true
   : T extends PersistedValue ? true
   : T extends Date ? true
   : T extends (...args: never) => unknown ? false
-  : T extends ReadonlyArray<infer E> ? Persistable<E>
   : T extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown> | PromiseLike<unknown> | bigint | symbol ? false
-  : T extends object ? (false extends { [K in keyof T]-?: Persistable<T[K]> }[keyof T] ? false : true)
+  // A type that refers to itself — a tree, a linked list, a syntax tree —
+  // is checked a few levels deep and trusted below, rather than recursing
+  // until the compiler gives up.
+  : TDepth['length'] extends 8 ? true
+  : T extends ReadonlyArray<infer E> ? Persistable<E, [...TDepth, unknown]>
+  : T extends object ? (false extends { [K in keyof T]-?: Persistable<T[K], [...TDepth, unknown]> }[keyof T] ? false : true)
   : false
 
 /**

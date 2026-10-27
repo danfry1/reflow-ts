@@ -354,7 +354,7 @@ export interface StorageAdapter {
    * `eventName` is a list of names only for an adapter that sets
    * {@link StorageAdapter.supportsEventNames}: the run waits for any of them,
    * the buffered check covers all of them, and `waitingFor` lists them,
-   * separated by `', '`.
+   * separated by `', '`, the first ten and then a count of the rest.
    */
   waitRun(runId: string, leaseId: string, eventName: string | readonly string[], wakeAt: number | null): Promise<boolean>
   /**

@@ -111,7 +111,7 @@ Durations are written the same way everywhere in this API — `timeout`, `initia
 
 Without a `key`, a cached step is keyed on the workflow input, every result handed to the function before the step was called, and every failure or timed-out wait it had seen by then: everything its code could depend on. When steps run concurrently, which of their results came first can differ between runs, and so can that key — a miss, never a wrong hit. Give a cached step that runs beside others its own `key`.
 
-A step's result is anything that can be saved: plain objects — interfaces included, so what an SDK returns is fine as it is — arrays, strings, numbers, booleans, `null`, `undefined`, and `Date`. Functions, `Map`s, `Set`s, promises, `bigint`s, and symbols cannot be, anywhere inside the result, and returning one is a type error at the handler; so is a function workflow returning one. (The chained `.step()` is stricter: a value typed as an interface needs copying, as `{ ...charge }`.)
+A step's result is anything that can be saved: plain objects — interfaces included, recursive ones and fields typed `unknown` too, so what an SDK returns is fine as it is — arrays, strings, numbers, booleans, `null`, `undefined`, and `Date`. Functions, `Map`s, `Set`s, promises, `bigint`s, and symbols cannot be, anywhere inside the result, and returning one is a type error at the handler; so is a function workflow returning one. (The chained `.step()` is stricter: a value typed as an interface needs copying, as `{ ...charge }`.)
 
 ### When a step fails
 
@@ -198,6 +198,8 @@ const [user, plan] = await Promise.all([
 ```
 
 The run suspends only once **every** operation in flight is blocked — waiting on a sleep, an event, or a retry's backoff — and nothing has started or finished for a moment. Until then a blocked operation waits in the process, so a short sleep beside a long-running step wakes on time, and one step's backoff never cuts a sibling off. A branch that awaits something other than a step for more than that moment, beside a long sleep, may be suspended with the run; it carries on, from its last finished step, when the run resumes.
+
+An operation the function never waits for — a `void step.sleep(...)` — does not hold the run: it is not counted when deciding whether to suspend, and if it is still going when the function returns, it is recorded as skipped. Await every operation whose result matters.
 
 When the function fails, steps still running are aborted through their `signal`. They are not recorded as failed, so resuming the run runs them again.
 

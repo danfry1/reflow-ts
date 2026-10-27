@@ -35,6 +35,10 @@ interface Operation {
   readonly name: string
   readonly kind: 'step' | 'sleep' | 'wait'
   state: OperationState
+  /** The function has awaited, or otherwise used, what the operation returned. */
+  used: boolean
+  /** Finished, and waiting its turn to be handed to the function. */
+  releasing: boolean
 }
 
 /**
@@ -92,8 +96,47 @@ const RUNNING: OperationState = { kind: 'running' }
 
 const NO_STEPS: Readonly<Record<string, PersistedValue>> = Object.freeze({})
 
-/** Set while a step handler runs, so an operation started inside one is refused. */
-const insideStep = new AsyncLocalStorage<string>()
+/**
+ * Set while a step handler runs, so an operation it starts is refused. Carries
+ * the execution it belongs to: work a handler starts — an engine claiming
+ * another run, say — carries the value along, and must not be refused there.
+ */
+const insideStep = new AsyncLocalStorage<{ readonly execution: object; readonly step: string }>()
+
+/**
+ * What a durable operation returns: a promise that notes when the function
+ * first awaits it or chains on it, so one the function never waits for — a
+ * `void step.sleep(...)` — cannot hold up the run.
+ */
+class OperationPromise<T> extends Promise<T> {
+  static override get [Symbol.species](): PromiseConstructor {
+    return Promise
+  }
+
+  #onUse: (() => void) | undefined
+
+  /** A promise settling as `inner` does, calling `onUse` the first time it is awaited or chained on. */
+  static tracking<T>(inner: Promise<T>, onUse: () => void): OperationPromise<T> {
+    const promise = new OperationPromise<T>((resolve, reject) => {
+      inner.then(resolve, reject)
+    })
+    // Handled here without counting as a use, so one the function ignores
+    // cannot surface as an unhandled rejection.
+    Promise.prototype.then.call(promise, undefined, noop)
+    promise.#onUse = onUse
+    return promise
+  }
+
+  override then<TResult1 = T, TResult2 = never>(
+    onFulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+    onRejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2> {
+    const onUse = this.#onUse
+    this.#onUse = undefined
+    onUse?.()
+    return super.then(onFulfilled, onRejected)
+  }
+}
 
 /**
  * Run a workflow written as a function, reducing it to a {@link UnitOutcome}.
@@ -125,6 +168,8 @@ const insideStep = new AsyncLocalStorage<string>()
  */
 export async function executeFunction(ctx: ExecutionContext, body: FunctionBody): Promise<UnitOutcome> {
   const runSignal = ctx.signals.run.signal
+  // This execution's identity, for telling its own step handlers apart.
+  const self = {}
   const multipleWaits = ctx.storage.supportsEventNames === true
   const operations = new Set<Operation>()
   const unfinished = new Set<Promise<unknown>>()
@@ -159,6 +204,9 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
   }, { once: true })
   // Set once this execution is ending in failure: steps cut off by it save nothing.
   let ending = false
+  // The function's own error, once it threw: steps cut off reject with it, and
+  // must not be blamed for it.
+  let cutOffBy: Error | undefined
 
   let stopping = false
   let stop: Stop | null = null
@@ -190,6 +238,27 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
   const unresolvedHeap = new MinHeap<number>((a, b) => a < b)
   // The stamp each operation's last save holds, until it is released.
   const holding = new Map<string, number>()
+  /** Hold stamp `at` for operation `name`. */
+  const hold = (name: string, at: number): void => {
+    holding.set(name, at)
+    unresolved.add(at)
+    unresolvedHeap.push(at)
+  }
+  // Operations an earlier execution finished hold their place in the order
+  // until the function reaches them again — so one it reaches late, after
+  // other work, still comes before those that finished after it — or until
+  // the run goes quiet without reaching them, as after a deploy removed them.
+  const replayHeld = new Set<string>()
+  for (const row of ctx.replay.values()) {
+    if (row.status === 'completed' || row.status === 'failed' || row.status === 'skipped') {
+      hold(row.name, row.updatedAt)
+      replayHeld.add(row.name)
+    }
+  }
+  /** Stop holding places for finished operations the function has not reached. */
+  const dropReplayHolds = (): void => {
+    for (const name of [...replayHeld]) letGo(name)
+  }
   // The stamp of the last save each operation made: the order it finished in.
   const finishedAt = new Map<string, number>()
   const awaitingRelease = new MinHeap<{ readonly at: number; readonly release: () => void }>((a, b) => a.at < b.at)
@@ -201,14 +270,13 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
     const at = lastStamp = Math.max(Date.now(), lastStamp + 1)
     finishedAt.set(name, at)
     letGo(name)
-    holding.set(name, at)
-    unresolved.add(at)
-    unresolvedHeap.push(at)
+    hold(name, at)
     return await save(at)
   }
 
   /** Release the stamp operation `name` holds, so later results may pass it. */
   const letGo = (name: string): void => {
+    replayHeld.delete(name)
     const at = holding.get(name)
     if (at === undefined) return
     holding.delete(name)
@@ -374,9 +442,19 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
     if (stopping || settled || operations.size === 0) return
     let wakeAt: number | null = null
     const events = new Set<string>()
+    let allBlocked = true
+    let waitedOn = false
     for (const operation of operations) {
       const state = operation.state
-      if (state.kind !== 'blocked' || !state.durable) return
+      if (state.kind !== 'blocked') {
+        // Doing work: nothing to do yet. Waiting its turn: the run may be
+        // quiet, with a place held for an operation it will not reach.
+        if (!operation.releasing) return
+        allBlocked = false
+        continue
+      }
+      if (!state.durable) return
+      if (operation.used) waitedOn = true
       if (state.wakeAt !== null && (wakeAt === null || state.wakeAt < wakeAt)) wakeAt = state.wakeAt
       if (state.event !== null) events.add(state.event)
     }
@@ -385,6 +463,15 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
       queueCheck(SUSPEND_GRACE_MS)
       return
     }
+    // Quiet with results waiting their turn: the places still held are for
+    // operations the function is not going to reach.
+    if (!allBlocked) {
+      dropReplayHolds()
+      return
+    }
+    // Only operations the function never waited for are blocked: it is busy
+    // with something else, and suspending would cut that off.
+    if (!waitedOn) return
 
     // Decided: from here no operation may start or wake in process.
     stopping = true
@@ -413,8 +500,8 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
   const begin = (name: string, kind: Operation['kind']): Operation => {
     if (stopping) throw stopError()
     const outer = insideStep.getStore()
-    if (outer !== undefined) {
-      throw new ConfigError(`Step "${outer}" in workflow "${body.name}" starts "${name}" from inside its handler; call step operations from the workflow function only`)
+    if (outer?.execution === self) {
+      throw new ConfigError(`Step "${outer.step}" in workflow "${body.name}" starts "${name}" from inside its handler; call step operations from the workflow function only`)
     }
     if (typeof name !== 'string' || name.length === 0) {
       throw new ConfigError(`Every step in workflow "${body.name}" needs a non-empty name`)
@@ -422,7 +509,7 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
     if (names.has(name)) throw new DuplicateStepError(body.name, name)
     names.add(name)
     kinds.set(name, kind)
-    const operation: Operation = { name, kind, state: RUNNING }
+    const operation: Operation = { name, kind, state: RUNNING, used: false, releasing: false }
     operations.add(operation)
     activity++
     return operation
@@ -489,6 +576,8 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
    * A step's own failure goes to the function. Anything else fails the run.
    */
   const settleError = (error: Error, name: string): Error => {
+    // The function's own error, which cut this operation off: already its to report.
+    if (error === cutOffBy) throw error
     if (error instanceof RunControlError) {
       engineStops.add(error)
       if (!(error instanceof RunSuspendedError)) finish({ kind: 'halt' })
@@ -515,12 +604,14 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
     kind: Operation['kind'],
     work: (operation: Operation, existing: StepResult | undefined) => Promise<T>,
   ): Promise<T> => {
+    let operation: Operation | undefined
+    let used = false
     const promise = (async () => {
-      let operation: Operation | undefined
       try {
         let settledWith: Settled<T>
         try {
           operation = begin(name, kind)
+          operation.used = used
           const existing = ctx.replay.get(name)
           // A row records its kind, so a name now used for another kind of
           // operation — after a deploy — is caught rather than handed the
@@ -536,14 +627,17 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
           settledWith = { ok: false, error: settleError(toError(error), name) }
         }
         const at = operation ? finishedAt.get(name) ?? ctx.replay.get(name)?.updatedAt : undefined
-        letGo(name)
+        if (operation) {
+          letGo(name)
+          operation.releasing = true
+        }
         if (at !== undefined) await inOrder(at)
         if (!settledWith.ok) throw settledWith.error
         if (kind !== 'sleep') ctx.steps[name] = structuredClone(settledWith.value as PersistedValue)
         return settledWith.value
       } finally {
-        letGo(name)
         if (operation) {
+          letGo(name)
           operations.delete(operation)
           activity++
           queueCheck()
@@ -551,10 +645,14 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
       }
     })()
     unfinished.add(promise)
-    // A function may leave an operation unawaited, or stop awaiting it once
-    // the run is suspended; neither may surface as an unhandled rejection.
     promise.then(() => unfinished.delete(promise), () => unfinished.delete(promise))
-    return promise
+    // A function may leave an operation unawaited, or stop awaiting it once
+    // the run is suspended; neither surfaces as an unhandled rejection.
+    return OperationPromise.tracking(promise, () => {
+      used = true
+      if (operation) operation.used = true
+      queueCheck()
+    })
   }
 
   /** Throw the run's control-flow abort, if that is why an attempt failed. */
@@ -614,7 +712,7 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
         // The types checked the handler resolves to data that can be saved,
         // and saving it checks again, so the narrowing here cannot let
         // anything else through.
-        handler: (handlerCtx) => insideStep.run(name, () => config.handler({
+        handler: (handlerCtx) => insideStep.run({ execution: self, step: name }, () => config.handler({
           signal: handlerCtx.signal,
           runId: handlerCtx.runId,
           attempt: handlerCtx.attempt,
@@ -902,6 +1000,8 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
     }
 
     settled = true
+    // Nothing more will be reached: results waiting behind a held place go.
+    dropReplayHolds()
     // The run stopped while the function was finishing, or the function
     // caught the rejection that stopping it threw: the stop stands.
     if (stopping) {
@@ -914,7 +1014,10 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
 
     if (first.kind === 'threw') {
       const error = first.error
+      // Named before the steps it cuts off reject with it.
+      const stepName = originOf(error)
       ending = true
+      cutOffBy = error
       if (!operationAbort.signal.aborted) operationAbort.abort(error)
       await drain()
       if (stop) return stop
@@ -922,7 +1025,6 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
       // function threw itself is a failure like any other.
       if (error instanceof RunControlError && engineStops.has(error)) return { kind: 'halt' }
 
-      const stepName = originOf(error)
       // A step's failure is reported by what its handler threw, as a chained
       // workflow's is; the StepFailedError is only the function's view of it.
       const reported = error instanceof StepFailedError && stepFailures.has(error) && error.cause instanceof Error

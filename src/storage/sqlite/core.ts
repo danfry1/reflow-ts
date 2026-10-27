@@ -20,7 +20,7 @@ import type {
   RequeueOptions,
 } from '../../core/types'
 import { RUN_STATUSES } from '../../core/types'
-import { emptyRunCounts, parseRunError, parseRunStatus, parseStepHistory, parseStepKind, parseStepStatus } from '../records'
+import { emptyRunCounts, parseRunError, parseRunStatus, parseStepHistory, parseStepKind, parseStepStatus, waitingForLabel } from '../records'
 import { pendingMigrations, SCHEMA_VERSION } from './schema'
 import { deserializePersistedValue, serializePersistedValue } from '../codec'
 import { nextOccurrence } from '../../core/schedule-timing'
@@ -409,9 +409,10 @@ export class SqliteStorageBase implements StorageAdapter {
       // If a matching event is already buffered, stay reclaimable instead of
       // waiting — closes the deliver-during-suspend race.
       const buffered = this.get<{ _: number }>(
-        `SELECT 1 AS _ FROM workflow_events WHERE run_id = ? AND event_name IN (${names.map(() => '?').join(', ')}) LIMIT 1`,
+        // One JSON parameter, not one per name: SQLite caps a statement's parameters.
+        `SELECT 1 AS _ FROM workflow_events WHERE run_id = ? AND event_name IN (SELECT value FROM json_each(?)) LIMIT 1`,
         runId,
-        ...names,
+        JSON.stringify(names),
       )
 
       if (buffered) {
@@ -424,7 +425,7 @@ export class SqliteStorageBase implements StorageAdapter {
         this.run(
           `UPDATE workflow_runs SET status = 'waiting', lease_id = NULL, wake_at = ?, waiting_for = ?, updated_at = ? WHERE id = ?`,
           wakeAt,
-          names.join(', '),
+          waitingForLabel(names),
           Date.now(),
           runId,
         )
@@ -570,13 +571,11 @@ export class SqliteStorageBase implements StorageAdapter {
       // A failed step runs again from scratch, and so does one that was waiting
       // out a backoff when the run was cancelled: its attempts start over.
       // Failed steps a function caught are kept, to replay as failures.
-      const keep = options?.keepFailed ?? []
+      // One JSON parameter, not one per name: SQLite caps a statement's parameters.
       this.run(
-        `DELETE FROM workflow_steps WHERE run_id = ? AND (status = 'retrying' OR (status = 'failed'${
-          keep.length > 0 ? ` AND name NOT IN (${keep.map(() => '?').join(', ')})` : ''
-        }))`,
+        `DELETE FROM workflow_steps WHERE run_id = ? AND (status = 'retrying' OR (status = 'failed' AND name NOT IN (SELECT value FROM json_each(?))))`,
         runId,
-        ...keep,
+        JSON.stringify(options?.keepFailed ?? []),
       )
 
       return true

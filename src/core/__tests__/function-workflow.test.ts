@@ -1752,8 +1752,160 @@ describe('types of step results that can be saved', () => {
     createWorkflow({ name: 'bad-output-type', input: z.object({}) }, async () => ({ later: Promise.resolve(1) }))
   })
 
+  it('accepts recursive interfaces and fields typed unknown, and still finds a Map deep inside', () => {
+    interface TreeNode {
+      value: number
+      children: TreeNode[]
+      parent?: TreeNode
+    }
+    interface LinkedList<T> {
+      head: T
+      tail: LinkedList<T> | null
+    }
+    interface ToolUse {
+      id: string
+      input: unknown
+    }
+    interface Deep {
+      a: { b: { c: { index: Map<string, number> } } }
+    }
+    const tree = async (): Promise<TreeNode> => ({ value: 1, children: [] })
+    const list = async (): Promise<LinkedList<string>> => ({ head: 'a', tail: null })
+    const tool = async (): Promise<ToolUse> => ({ id: 't', input: {} })
+    const deep = async (): Promise<Deep> => ({ a: { b: { c: { index: new Map() } } } })
+    createWorkflow({ name: 'shapes', input: z.object({}) }, async ({ step }) => {
+      expectTypeOf(await step.run('tree', tree)).toEqualTypeOf<TreeNode>()
+      expectTypeOf(await step.run('list', list)).toEqualTypeOf<LinkedList<string>>()
+      expectTypeOf(await step.run('tool', tool)).toEqualTypeOf<ToolUse>()
+      expectTypeOf(await step.run('unknown', async (): Promise<unknown> => 1)).toEqualTypeOf<unknown>()
+      // @ts-expect-error -- a Map three levels down still cannot be saved
+      await step.run('deep', deep)
+    })
+  })
+
   it('types a run output typed as an interface', () => {
     const wf = createWorkflow({ name: 'iface-out', input: z.object({}) }, async ({ step }) => step.run('c', () => stripe.charge()))
     expectTypeOf<InferOutput<typeof wf>>().toEqualTypeOf<Charge>()
+  })
+})
+
+describe('workflows written as a function, PR review', () => {
+  let storage: MemoryStorage
+
+  beforeEach(async () => {
+    storage = new MemoryStorage()
+    await storage.initialize()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+  it('lets a step handler send an event another run is waiting for', async () => {
+    let engine: ReturnType<typeof createEngine> | undefined
+    let waiterId = ''
+    const waiter = createWorkflow({ name: 'waiter', input: z.object({}), events: { go: z.object({}) } }, async ({ step }) => {
+      await step.waitForEvent('go')
+      return await step.run('after', async () => 'woken')
+    })
+    const sender = createWorkflow({ name: 'sender', input: z.object({}) }, async ({ step }) => {
+      await step.run('send', async () => {
+        await engine?.sendEvent(waiterId, 'go', {})
+        await engine?.enqueue('child', {})
+      })
+    })
+    const child = createWorkflow({ name: 'child', input: z.object({}) }, async ({ step }) => step.run('only', async () => 'child ran'))
+    engine = createEngine({ storage, workflows: [waiter, sender, child], concurrency: 4 })
+    waiterId = (await engine.enqueue('waiter', {})).id
+    await engine.tick()
+    await engine.enqueue('sender', {})
+    await engine.start(NO_POLL)
+    await vi.waitFor(async () => {
+      const runs = await storage.listRuns({})
+      expect(runs.map((run) => run.status).sort()).toStrictEqual(['completed', 'completed', 'completed'])
+    })
+    await engine.stop()
+
+    expect((await storage.getRun(waiterId))?.output).toBe('woken')
+  })
+
+  it('blames the function, not a step it cut off, when its own code throws', async () => {
+    const wf = createWorkflow({ name: 'own-error', input: z.object({}) }, async ({ step }) => {
+      await Promise.all([
+        step.run('slow', () => delay(200)),
+        (async () => {
+          await delay(10)
+          throw new Error('boom')
+        })(),
+      ])
+    })
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('own-error', {})
+    await engine.tick()
+
+    expect((await storage.getRun(run.id))?.error).toStrictEqual({ stepName: '', message: 'boom', code: null })
+  })
+
+  it('replays a race the same way when the winner is started later, after other work', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const winners: string[] = []
+    const wf = createWorkflow({ name: 'late-start', input: z.object({}) }, async ({ step }) => {
+      const a = step.run('a', async () => {
+        await delay(100)
+        return 'a'
+      })
+      await delay(10)
+      const b = step.run('b', async () => {
+        await delay(10)
+        return 'b'
+      })
+      const winner = await Promise.race([a, b])
+      winners.push(winner)
+      await step.sleep('later', '1h')
+      return winner
+    })
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('late-start', {})
+    await engine.tick()
+    vi.setSystemTime(Date.now() + HOUR)
+    await engine.tick()
+
+    expect(winners).toStrictEqual(['b', 'b'])
+    expect((await storage.getRun(run.id))?.output).toBe('b')
+  })
+
+  it('completes when the only blocked operation is one the function never waited for', async () => {
+    const wf = createWorkflow({ name: 'ignored-sleep', input: z.object({}) }, async ({ step }) => {
+      void step.sleep('nap', '1h')
+      await delay(60)
+      return 'done'
+    })
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('ignored-sleep', {})
+    await engine.tick()
+
+    expect(await storage.getRun(run.id)).toMatchObject({ status: 'completed', output: 'done' })
+    expect((await storage.getStepResults(run.id)).map((step) => `${step.name}:${step.status}`)).toStrictEqual(['nap:skipped'])
+  })
+
+  it('finishes a replay whose code no longer reaches a finished operation', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    let deployed = false
+    const wf = createWorkflow({ name: 'removed', input: z.object({}) }, async ({ step }) => {
+      const early = deployed ? 'gone' : await step.run('early', async () => 'early')
+      const late = step.run('late', async () => 'late')
+      await step.sleep('nap', '1h')
+      return [early, await late]
+    })
+    const engine = createEngine({ storage, workflows: [wf] })
+    const run = await engine.enqueue('removed', {})
+    await engine.tick()
+    deployed = true
+    vi.setSystemTime(Date.now() + HOUR)
+    await engine.tick()
+
+    expect(await storage.getRun(run.id)).toMatchObject({ status: 'completed', output: ['gone', 'late'] })
   })
 })
