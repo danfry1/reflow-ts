@@ -18,6 +18,7 @@ import type {
   TerminalRunStatus,
   WorkflowRun,
   WorkflowSchedule,
+  RequeueOptions,
 } from '../core/types'
 import { emptyRunCounts } from './records'
 import { assertNever, InternalError } from '../core/errors'
@@ -36,8 +37,11 @@ interface StoredEvent {
 
 export class MemoryStorage implements StorageAdapter {
   readonly supportsConcurrencyLimits = true
+  readonly supportsKeepFailed = true
+  readonly supportsEventNames = true
   private runs: Map<string, StoredRun> = new Map()
-  private steps: Map<string, StepResult[]> = new Map()
+  // Each run's steps by id, in the order they were first saved.
+  private steps: Map<string, Map<string, StepResult>> = new Map()
   private events: Map<string, StoredEvent[]> = new Map()
   private schedules: Map<string, WorkflowSchedule> = new Map()
   private cache: Map<string, CachedStep> = new Map()
@@ -157,7 +161,7 @@ export class MemoryStorage implements StorageAdapter {
     return true
   }
 
-  async waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean> {
+  async waitRun(runId: string, leaseId: string, eventName: string | readonly string[], wakeAt: number | null): Promise<boolean> {
     const run = this.runs.get(runId)
     if (!run || run.status !== 'running' || run.leaseId !== leaseId) {
       return false
@@ -165,11 +169,12 @@ export class MemoryStorage implements StorageAdapter {
 
     // If a matching event is already buffered, stay reclaimable instead of
     // waiting — closes the deliver-during-suspend race.
-    const buffered = (this.events.get(runId) ?? []).some((event) => event.eventName === eventName)
+    const names: readonly string[] = typeof eventName === 'string' ? [eventName] : eventName
+    const buffered = (this.events.get(runId) ?? []).some((event) => names.includes(event.eventName))
     run.status = buffered ? 'pending' : 'waiting'
     run.leaseId = null
     run.wakeAt = buffered ? null : wakeAt
-    run.waitingFor = buffered ? null : eventName
+    run.waitingFor = buffered ? null : names.join(', ')
     run.updatedAt = Date.now()
     return true
   }
@@ -210,12 +215,12 @@ export class MemoryStorage implements StorageAdapter {
     return { payload: clonePersistedValue(taken.payload, 'Event payload') }
   }
 
-  async consumeEvent(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult> {
+  async consumeEvent(step: Omit<StepResult, 'output'>, leaseId: string, eventName = step.name): Promise<ConsumeEventResult> {
     if (!this.heldRun(step.runId, leaseId)) {
       return { status: 'lease-lost' }
     }
     const list = this.events.get(step.runId) ?? []
-    const index = list.findIndex((event) => event.eventName === step.name)
+    const index = list.findIndex((event) => event.eventName === eventName)
     const [taken] = index < 0 ? [] : list.splice(index, 1)
     if (taken === undefined) {
       return { status: 'none' }
@@ -278,7 +283,7 @@ export class MemoryStorage implements StorageAdapter {
       .map(cloneWorkflowRun)
   }
 
-  async requeueRun(runId: string): Promise<boolean> {
+  async requeueRun(runId: string, options?: RequeueOptions): Promise<boolean> {
     const run = this.runs.get(runId)
     if (!run || (run.status !== 'failed' && run.status !== 'cancelled')) {
       return false
@@ -293,7 +298,10 @@ export class MemoryStorage implements StorageAdapter {
 
     const steps = this.steps.get(runId)
     if (steps) {
-      this.steps.set(runId, steps.filter((step) => step.status !== 'failed' && step.status !== 'retrying'))
+      const keep = new Set(options?.keepFailed)
+      for (const [id, step] of steps) {
+        if (step.status === 'failed' ? !keep.has(step.name) : step.status === 'retrying') steps.delete(id)
+      }
     }
 
     return true
@@ -302,7 +310,7 @@ export class MemoryStorage implements StorageAdapter {
   async getStepResults(runId: string): Promise<StepResult[]> {
     // Ordered by creation time, as the contract says; insertion order only
     // matches it when steps are first saved in the order they began.
-    return [...(this.steps.get(runId) ?? [])].sort((a, b) => a.createdAt - b.createdAt).map((step) => ({
+    return [...(this.steps.get(runId)?.values() ?? [])].sort((a, b) => a.createdAt - b.createdAt).map((step) => ({
       ...step,
       output: clonePersistedValue(step.output, 'Step output'),
       history: step.history.map((attempt) => ({ ...attempt })),
@@ -323,20 +331,12 @@ export class MemoryStorage implements StorageAdapter {
 
   /** Store a step result, replacing the one with the same id. */
   private putStep(result: StepResult): void {
-    const existing = this.steps.get(result.runId) ?? []
-    const idx = existing.findIndex((step) => step.id === result.id)
-    const cloned = {
+    const existing = this.steps.get(result.runId) ?? new Map<string, StepResult>()
+    existing.set(result.id, {
       ...result,
       output: clonePersistedValue(result.output, 'Step output'),
       history: result.history.map((attempt) => ({ ...attempt })),
-    }
-
-    if (idx >= 0) {
-      existing[idx] = cloned
-    } else {
-      existing.push(cloned)
-    }
-
+    })
     this.steps.set(result.runId, existing)
   }
 

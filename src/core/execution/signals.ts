@@ -2,6 +2,38 @@ import { StepTimeoutError, toError } from '../errors'
 
 export { toError }
 
+/** Each signal's callbacks for {@link onAbort}, behind one real listener. */
+const abortCallbacks = new WeakMap<AbortSignal, Set<() => void>>()
+
+/**
+ * Call `callback` once `signal` aborts; returns a function that removes it.
+ *
+ * Every callback for a signal shares one `abort` listener and is kept in a
+ * set, so adding and removing one costs the same however many are waiting —
+ * `addEventListener` scans a signal's listeners on each add, which made
+ * thousands of concurrent steps on one run's signal cost time growing with
+ * the square of their number. Callbacks run in the order they were added,
+ * as listeners would. A signal already aborted calls nothing, so callers
+ * check `signal.aborted` first.
+ */
+export function onAbort(signal: AbortSignal, callback: () => void): () => void {
+  let callbacks = abortCallbacks.get(signal)
+  if (!callbacks) {
+    const created = new Set<() => void>()
+    callbacks = created
+    abortCallbacks.set(signal, created)
+    signal.addEventListener('abort', () => {
+      for (const waiting of [...created]) waiting()
+      created.clear()
+    }, { once: true })
+  }
+  const registered = callbacks
+  registered.add(callback)
+  return () => {
+    registered.delete(callback)
+  }
+}
+
 /**
  * Race a promise against an abort signal.
  *
@@ -18,16 +50,10 @@ export function runWithSignal<T>(
   }
 
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
+    const cleanup = onAbort(signal, () => {
       cleanup()
       reject(toError(signal.reason))
-    }
-
-    const cleanup = () => {
-      signal.removeEventListener('abort', onAbort)
-    }
-
-    signal.addEventListener('abort', onAbort, { once: true })
+    })
 
     Promise.resolve()
       .then(promiseFactory)
@@ -68,9 +94,7 @@ export function createAttemptSignal(
   if (runSignal.aborted) {
     forwardAbort(runSignal.reason)
   } else {
-    const onRunAbort = () => forwardAbort(runSignal.reason)
-    runSignal.addEventListener('abort', onRunAbort, { once: true })
-    cleanups.push(() => runSignal.removeEventListener('abort', onRunAbort))
+    cleanups.push(onAbort(runSignal, () => forwardAbort(runSignal.reason)))
   }
 
   if (timeoutMs) {
@@ -102,16 +126,14 @@ export function delayWithSignal(ms: number, signal: AbortSignal): Promise<void> 
       resolve()
     }, ms)
 
-    const onAbort = () => {
+    const stopListening = onAbort(signal, () => {
       cleanup()
       reject(toError(signal.reason))
-    }
+    })
 
     const cleanup = () => {
       clearTimeout(timer)
-      signal.removeEventListener('abort', onAbort)
+      stopListening()
     }
-
-    signal.addEventListener('abort', onAbort, { once: true })
   })
 }

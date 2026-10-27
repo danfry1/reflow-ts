@@ -94,7 +94,8 @@ export interface DashboardOptions {
 /** The part of a workflow the dashboard reads: its name and its steps. */
 export interface DescribedWorkflow {
   readonly name: string
-  readonly executionUnits: readonly ExecutionUnit[]
+  /** A chained workflow's steps. A workflow written as a function has none: its steps are known only as runs reach them. */
+  readonly executionUnits?: readonly ExecutionUnit[]
   /** The workflow's run label — see `createWorkflow({ label })`. */
   label?(input: PersistedValue): string
 }
@@ -605,8 +606,12 @@ function isThenable(value: unknown): boolean {
   return typeof value === 'object' && value !== null && 'then' in value && typeof value.then === 'function'
 }
 
-/** A workflow's units as names and kinds, without handlers or schemas. */
-function outlineOf(workflow: DescribedWorkflow): OutlineUnit[] {
+/**
+ * A workflow's units as names and kinds, without handlers or schemas. Null for
+ * a workflow written as a function: its steps are listed as runs reach them.
+ */
+function outlineOf(workflow: DescribedWorkflow): OutlineUnit[] | null {
+  if (!workflow.executionUnits) return null
   return workflow.executionUnits.map((unit): OutlineUnit => {
     switch (unit.kind) {
       case 'step':

@@ -173,6 +173,36 @@ const withMetrics = base.step('metric', async () => { /* ... */ })
 // base, withLogging, and withMetrics are all independent
 ```
 
+### Workflows as Functions
+
+The same workflow can be written as one async function. Each `step` call is durable, and the code between them is plain TypeScript, so branches, loops over data, running steps together, and recovering from a failure need nothing new:
+
+```typescript
+const fulfilOrder = createWorkflow({
+  name: 'fulfil-order',
+  input: z.object({ orderId: z.string(), items: z.array(z.string()) }),
+  events: { shipped: z.object({ tracking: z.string() }) },
+}, async ({ input, step }) => {
+  const payment = await step.run('charge', ({ idempotencyKey }) => charge(input.orderId, idempotencyKey))
+
+  // One step per item, all at once, however many items there are
+  await Promise.all(input.items.map((item) => step.run(`print-${item}`, () => printer.order(item))))
+
+  const shipped = await step.waitForEvent('shipped', { timeout: '10d' }) // null if it times out
+  if (!shipped) return await step.run('chase', () => support.chase(input.orderId))
+
+  try {
+    await step.run('invoice', () => accounting.invoice(input.orderId))
+  } catch (error) {
+    if (!(error instanceof StepFailedError)) throw error
+    await step.run('refund', () => refund(payment.id))
+  }
+  return { tracking: shipped.tracking }
+})
+```
+
+When a run resumes, after a sleep, a wait, a backoff, or a crash, the function runs again from the top. Each step that already finished returns its saved result without running, so only code between steps runs again. Keep requests, writes, and anything time- or random-dependent inside `step.run()`. Steps are matched by name, so give each one a name of its own, such as `` `print-${item}` `` in a loop. Retries, timeouts, caching, hooks, the dashboard, and storage all work as they do for chained steps. See [Workflows as Functions](https://reflow.danfry.dev/guide/functions).
+
 ### Engine
 
 The engine connects workflows to storage and handles execution.
@@ -698,16 +728,18 @@ interface StorageAdapter {
   readonly supportsConcurrencyLimits?: boolean
   heartbeatRun(runId: string, leaseId: string): Promise<boolean>
   sleepRun(runId: string, leaseId: string, wakeAt: number): Promise<boolean>
-  waitRun(runId: string, leaseId: string, eventName: string, wakeAt: number | null): Promise<boolean>
+  waitRun(runId: string, leaseId: string, eventName: string | readonly string[], wakeAt: number | null): Promise<boolean>
   deliverEvent(runId: string, eventName: string, payload: PersistedValue): Promise<boolean>
   takeEvent(runId: string, eventName: string): Promise<{ payload: PersistedValue } | null>
-  consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string): Promise<ConsumeEventResult>
+  consumeEvent?(step: Omit<StepResult, 'output'>, leaseId: string, eventName?: string): Promise<ConsumeEventResult>
+  readonly supportsEventNames?: boolean
   getCachedStep?(key: string): Promise<CachedStep | null>
   putCachedStep?(entry: CachedStep): Promise<void>
   deleteExpiredCachedSteps?(now: number): Promise<number>
   getRun(runId: string): Promise<WorkflowRun | null>
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
-  requeueRun(runId: string): Promise<boolean>
+  requeueRun(runId: string, options?: RequeueOptions): Promise<boolean>
+  readonly supportsKeepFailed?: boolean
   getStepResults(runId: string): Promise<StepResult[]>
   getStepResultsForRuns?(runIds: readonly string[]): Promise<Map<string, StepResult[]>>
   runActivity?(filter: RunActivityFilter): Promise<RunActivity>
@@ -860,10 +892,11 @@ hooks: {
 | `RunCancelledError` | `RUN_CANCELLED` | Run cancelled via `engine.cancel()` | `runId` |
 | `RunNotFoundError` | `RUN_NOT_FOUND` | `waitForRun()` with an unknown run id | `runId` |
 | `LeaseExpiredError` | `LEASE_EXPIRED` | Worker lost its lease on a run | `runId` |
+| `RunSuspendedError` | `RUN_SUSPENDED` | A workflow written as a function is suspended to sleep or wait; its pending operations reject with it | `runId` |
 | `WaitTimeoutError` | `WAIT_TIMEOUT` | A `waitForEvent` step's `timeoutMs` elapsed | `eventName`, `timeoutMs` |
 | `ParallelCompleteError` | `PARALLEL_COMPLETE` | `complete()` called inside a parallel branch | `stepName` |
 | `StorageError` | `STORAGE` | A storage backend operation failed; driver error on `cause` | `operation`, `cause` |
-| `StepFailedError` | `STEP_FAILED` | A step exhausted its retries with no error of its own | `stepName`, `attempts` |
+| `StepFailedError` | `STEP_FAILED` | A step exhausted its retries with no error of its own. In a workflow written as a function, what `step.run()` rejects with once every attempt has failed, the handler's error as its `cause` | `stepName`, `attempts` |
 | `HookError` | `HOOK` | A hook, stream consumer, or `onFailure` threw. Delivered to `onError`, never into a run | `source`, `cause` |
 | `ThrownValueError` | `THROWN_VALUE` | User code threw a non-`Error` value | `value`, `cause` |
 | `TestRunIncompleteError` | `TEST_RUN_INCOMPLETE` | `testEngine().run()` on a workflow that sleeps or waits | `runId`, `status` |
@@ -873,7 +906,7 @@ hooks: {
 
 ### `createWorkflow(config)`
 
-Creates a new workflow builder.
+Creates a new workflow builder. Pass a function as a second argument to write the workflow as a function instead (below).
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -883,6 +916,25 @@ Creates a new workflow builder.
 | `config.label` | `(input) => string` | Optional. Names a run in the dashboard, such as an order number |
 
 Returns a `Workflow` with `.step()`, `.parallel()`, `.sleep()`, `.waitForEvent()`, `.onFailure()`, and `.parseInput()` methods.
+
+### `createWorkflow(config, handler)`
+
+Creates a workflow written as a function. Takes the same `name`, `input`, `label`, and `concurrency`, plus:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `config.events` | `Record<string, StandardSchemaV1>` | Optional. Events `step.waitForEvent()` may wait for, with the schema `sendEvent` validates each payload against |
+| `config.onFailure` | `({ error, stepName, input }) => Promise<void>` | Optional. Called once a run has failed; `stepName` is empty when the function's own code threw |
+| `handler` | `({ input, step, runId }) => Promise<T>` | The workflow. Its return value is the run's output |
+
+| Operation | Resolves to | Description |
+|---|---|---|
+| `step.run(name, handler \| config)` | The handler's result | A durable step. `config` takes `handler`, `retry` (`{ maxAttempts, backoff?, initialDelay? }`), `timeout`, `cache` (with `key: () => value`); durations are milliseconds or strings such as `'30s'`. The handler gets `{ signal, runId, attempt, idempotencyKey }`. Rejects with `StepFailedError` (its `cause` is the handler's error) once every attempt has failed, and replays that rejection on resume. Any other error — storage, an unsaveable output, a misconfigured call — fails the run however the function catches it |
+| `step.sleep(name, duration)` | `undefined` | Durable pause, in milliseconds or `'30s'` / `'7d'` |
+| `step.sleepUntil(name, time)` | `undefined` | Durable pause until a `Date` or epoch time |
+| `step.waitForEvent(name, { event?, timeout? })` | The payload, or `null` on timeout | Waits for a declared event — `event`, when the wait is named apart from it to wait for the same event again, or else `name`. Several may be pending at once |
+
+Operations started together (`Promise.all`) run concurrently; the run suspends only once every operation in flight is sleeping, waiting, or backing off. On resume, saved results are handed back in the order the operations first finished, so `Promise.race` between them picks the same winner. What the function returns is typed (`InferOutput<typeof workflow>`, and `output` from `testEngine().run()`). In a `catch`, rethrow anything `isRunControlError(error)` is true for: those are the run being cancelled or suspended, not failures.
 
 ### `workflow.step(name, handler | config)`
 

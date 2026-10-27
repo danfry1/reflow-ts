@@ -2,6 +2,8 @@
 
 A workflow is a named sequence of steps with a validated input schema. Any [Standard Schema](https://github.com/standard-schema/standard-schema)-compatible library works (Zod, Valibot, ArkType, …).
 
+This page covers workflows built by chaining steps. A workflow can also be written as one async function, with branches, loops, and `try`/`catch` between its steps: see [Workflows as Functions](/guide/functions).
+
 ```typescript
 import { createWorkflow } from 'reflow-ts'
 import { z } from 'zod'

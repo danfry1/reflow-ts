@@ -131,6 +131,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
         // report the failure — the caller's run-status update fails the same
         // lease check and no-ops.
         await ctx.trySaveStep({
+          kind: 'step',
           name: firstFailure.branchName,
           status: 'failed',
           output: null,
@@ -148,6 +149,7 @@ export const parallelExecutor: UnitExecutor<{ kind: 'parallel'; branches: readon
         const branch = result.value
 
         await ctx.saveStep({
+          kind: 'step',
           name: branch.name,
           status: 'completed',
           output: branch.output,

@@ -1,11 +1,13 @@
 import { InternalError } from '../core/errors'
 import {
   RUN_STATUSES,
+  STEP_KINDS,
   STEP_STATUSES,
   type RunCounts,
   type RunError,
   type RunStatus,
   type StepAttempt,
+  type StepKind,
   type StepStatus,
 } from '../core/types'
 
@@ -25,6 +27,15 @@ export function parseRunStatus(value: string): RunStatus {
 export function parseStepStatus(value: string): StepStatus {
   if (!isOneOf(STEP_STATUSES, value)) {
     throw new InternalError(`Stored step has unknown status "${value}"`)
+  }
+  return value
+}
+
+/** Parse a step's stored kind; `null` for a row saved before kinds were kept. */
+export function parseStepKind(value: string | null): StepKind | null {
+  if (value === null) return null
+  if (!isOneOf(STEP_KINDS, value)) {
+    throw new InternalError(`Stored step has unknown kind "${value}"`)
   }
   return value
 }

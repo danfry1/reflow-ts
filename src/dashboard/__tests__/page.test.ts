@@ -131,6 +131,22 @@ describe('dashboard page', () => {
     expect(texts('.failure .what')).toStrictEqual(['Card declined'])
   })
 
+  it('shows a run whose workflow function threw outside any step as failed in the function', async () => {
+    const importer = createWorkflow({ name: 'importer', input: z.object({}) }, async ({ step }) => {
+      await step.run('read', async () => ({}))
+      throw new Error('Bad header')
+    })
+    const engine = createEngine({ storage, workflows: [importer] })
+    await engine.enqueue('importer', {})
+    await engine.tick()
+    await open('#/workflows/importer', { workflows: [importer] })
+    expect(texts('.failure .where')).toStrictEqual(['in the workflow function'])
+
+    click('.pane-list .row', '')
+    await settle()
+    expect(doc().querySelector('.state')?.textContent).toBe('Failed in the workflow function: Bad header')
+  })
+
   it('opens a run beside the list, with each attempt and the reason it failed', async () => {
     await seed()
     await open('#/workflows/order')

@@ -41,14 +41,18 @@ export function translateStorageErrors(storage: StorageAdapter): StorageAdapter 
       guard('deliverEvent', () => storage.deliverEvent(runId, eventName, payload)),
     takeEvent: (runId, eventName) =>
       guard('takeEvent', () => storage.takeEvent(runId, eventName)),
-    consumeEvent: consumeEvent && ((step, leaseId) => guard('consumeEvent', () => consumeEvent(step, leaseId))),
+    consumeEvent: consumeEvent && ((step, leaseId, eventName) =>
+      guard('consumeEvent', () => eventName === undefined ? consumeEvent(step, leaseId) : consumeEvent(step, leaseId, eventName))),
+    supportsEventNames: storage.supportsEventNames,
     getCachedStep: getCachedStep && ((key) => guard('getCachedStep', () => getCachedStep(key))),
     putCachedStep: putCachedStep && ((entry) => guard('putCachedStep', () => putCachedStep(entry))),
     deleteExpiredCachedSteps: deleteExpiredCachedSteps &&
       ((now, limit) => guard('deleteExpiredCachedSteps', () => deleteExpiredCachedSteps(now, limit))),
     getRun: (runId) => guard('getRun', () => storage.getRun(runId)),
     listRuns: (filter) => guard('listRuns', () => storage.listRuns(filter)),
-    requeueRun: (runId) => guard('requeueRun', () => storage.requeueRun(runId)),
+    requeueRun: (runId, options) =>
+      guard('requeueRun', () => options === undefined ? storage.requeueRun(runId) : storage.requeueRun(runId, options)),
+    supportsKeepFailed: storage.supportsKeepFailed,
     getStepResults: (runId) => guard('getStepResults', () => storage.getStepResults(runId)),
     saveStepResult: (result, leaseId) =>
       guard('saveStepResult', () => storage.saveStepResult(result, leaseId)),

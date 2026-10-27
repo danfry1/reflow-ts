@@ -13,6 +13,7 @@ import {
   errorMessage,
   HookError,
   IdempotencyConflictError,
+  InternalError,
   LeaseExpiredError,
   RunCancelledError,
   RunControlError,
@@ -24,10 +25,11 @@ import { parseCron } from './cron'
 import { parseDuration } from './duration'
 import { firstOccurrence } from './schedule-timing'
 import { cloneEngineEvent, type EngineEvent, type EngineHooks } from './events'
+import { executeFunction } from './execution/function'
 import { parallelExecutor } from './execution/parallel'
 import { sleepExecutor } from './execution/sleep'
 import { stepExecutor } from './execution/step'
-import { toError } from './execution/signals'
+import { onAbort, toError } from './execution/signals'
 import type { ExecutionContext, RunSignals, StepRecord, UnitOutcome } from './execution/types'
 import { waitForEventExecutor } from './execution/wait-for-event'
 import type {
@@ -35,6 +37,7 @@ import type {
   ConsumeEventResult,
   CountRunsFilter,
   ListRunsFilter,
+  RequeueOptions,
   RunCounts,
   RunStatus,
   TerminalRunStatus,
@@ -301,6 +304,8 @@ interface ClaimBatch {
 interface ActiveRunState {
   leaseId: string
   signals: RunSignals
+  /** Told the name of each event `sendEvent` delivers to the run while it executes here. */
+  eventListeners: Set<(eventName: string) => void>
   heartbeatTimer: ReturnType<typeof setInterval> | null
   heartbeatInFlight: boolean
 }
@@ -400,7 +405,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   const claimLimits = limits.size > 0 ? limits : undefined
 
   const cachingWorkflow = [...registry.values()].find((wf) =>
-    wf.executionUnits.some((unit) => unit.kind === 'step' && unit.definition.cache !== undefined))
+    wf.kind === 'chain' && wf.executionUnits.some((unit) => unit.kind === 'step' && unit.definition.cache !== undefined))
   if (
     cachingWorkflow &&
     (!rawStorage.getCachedStep || !rawStorage.putCachedStep || !rawStorage.deleteExpiredCachedSteps)
@@ -599,11 +604,29 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     if (!registry.has(run.workflow)) {
       throw new WorkflowNotFoundError(run.workflow)
     }
-    const requeued = await storage.requeueRun(runId)
+    const options = await requeueOptionsFor(run)
+    const requeued = options ? await storage.requeueRun(runId, options) : await storage.requeueRun(runId)
     if (requeued) {
       requestFill()
     }
     return requeued
+  }
+
+  /**
+   * What resuming `run` keeps. A workflow written as a function may have caught
+   * some failed steps and carried on; those replay as failures, so only the
+   * step whose failure ended the run — none, for a cancelled run or one the
+   * function's own code failed — runs again.
+   */
+  async function requeueOptionsFor(run: WorkflowRun): Promise<RequeueOptions | undefined> {
+    if (registry.get(run.workflow)?.kind !== 'function') {
+      return undefined
+    }
+    const fatal = run.status === 'failed' ? run.error?.stepName : undefined
+    const keepFailed = (await storage.getStepResults(run.id))
+      .filter((step) => step.status === 'failed' && step.name !== fatal)
+      .map((step) => step.name)
+    return keepFailed.length > 0 ? { keepFailed } : undefined
   }
 
   /**
@@ -723,11 +746,14 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     existingSteps: readonly StepResult[],
   ): ExecutionContext {
     const replay = new Map(existingSteps.map((step) => [step.name, step]))
+    // Rows this execution has written, by step name: a step saved more than
+    // once in one execution — retrying, then completed — updates one row.
+    const written = new Map<string, Omit<StepResult, 'output'>>()
     const steps: Record<string, PersistedValue> = {}
     const observerSignal = activeRun.signals.observer.signal
 
     const stepRowOf = (record: Omit<StepRecord, 'output'>): Omit<StepResult, 'output'> => {
-      const existing = replay.get(record.name)
+      const existing = written.get(record.name) ?? replay.get(record.name)
       const now = Date.now()
 
       return {
@@ -738,32 +764,43 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
         error: record.error ?? null,
         attempts: record.attempts ?? 0,
         createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
+        updatedAt: record.updatedAt ?? now,
         // A suspended sleep or wait finishing on a later claim keeps the time
         // it began; an executor re-running a step passes a fresh one.
         startedAt: record.startedAt ?? existing?.startedAt ?? now,
         history: record.history ? [...record.history] : existing?.history ?? [],
+        kind: record.kind ?? existing?.kind ?? null,
       }
     }
 
-    const trySaveStep = (record: StepRecord): Promise<boolean> =>
-      storage.saveStepResult({ ...stepRowOf(record), output: record.output }, run.leaseId)
+    const trySaveStep = async (record: StepRecord): Promise<boolean> => {
+      const row = stepRowOf(record)
+      const saved = await storage.saveStepResult({ ...row, output: record.output }, run.leaseId)
+      if (saved) written.set(row.name, row)
+      return saved
+    }
 
-    const consumeEvent = async (name: string): Promise<ConsumeEventResult> => {
-      const record: Omit<StepRecord, 'output'> = { name, status: 'completed', attempts: 0 }
-      if (storage.consumeEvent) {
-        return await storage.consumeEvent(stepRowOf(record), run.leaseId)
+    const consumeEvent = async (name: string, updatedAt?: number, eventName = name): Promise<ConsumeEventResult> => {
+      const record: Omit<StepRecord, 'output'> = { name, status: 'completed', attempts: 0, updatedAt, kind: 'wait' }
+      // A wait named apart from its event needs an adapter that consumes by event name.
+      if (storage.consumeEvent && (eventName === name || storage.supportsEventNames === true)) {
+        const row = stepRowOf(record)
+        const consumed = eventName === name
+          ? await storage.consumeEvent(row, run.leaseId)
+          : await storage.consumeEvent(row, run.leaseId, eventName)
+        if (consumed.status === 'consumed') written.set(row.name, row)
+        return consumed
       }
-      // An adapter without consumeEvent: take, then save, putting the event
-      // back if the lease was lost in between.
-      const delivered = await storage.takeEvent(run.id, name)
+      // Otherwise take, then save, putting the event back if the lease was
+      // lost in between.
+      const delivered = await storage.takeEvent(run.id, eventName)
       if (!delivered) {
         return { status: 'none' }
       }
       if (await trySaveStep({ ...record, output: delivered.payload })) {
         return { status: 'consumed', payload: delivered.payload }
       }
-      await storage.deliverEvent(run.id, name, delivered.payload)
+      await storage.deliverEvent(run.id, eventName, delivered.payload)
       return { status: 'lease-lost' }
     }
 
@@ -776,6 +813,10 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       replay,
       steps,
       emit: (event) => emit(event, observerSignal),
+      onEvent(listener) {
+        activeRun.eventListeners.add(listener)
+        return () => activeRun.eventListeners.delete(listener)
+      },
       trySaveStep,
       consumeEvent,
       reportError,
@@ -839,46 +880,28 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       const existingSteps = await storage.getStepResults(run.id)
       const ctx = createExecutionContext(run, wf, activeRun, existingSteps)
 
-      let prev: PersistedValue = undefined
+      const outcome = wf.kind === 'function'
+        ? await executeFunction(ctx, wf)
+        : await executeUnits(wf.executionUnits, ctx, runSignal)
 
-      for (const unit of wf.executionUnits) {
-        // A cancellation or engine stop can land on any await between units.
-        // Check once here rather than in every executor.
-        if (runSignal.aborted) {
-          const latest = await storage.getRun(run.id)
-          if (!latest || latest.status === 'cancelled') {
-            return
-          }
-        }
-
-        const outcome = await dispatchUnit(unit, ctx, prev)
-
-        switch (outcome.kind) {
-          case 'advance':
-            prev = outcome.output
-            continue
-          case 'passthrough':
-            continue
-          case 'halt':
-            return
-          case 'suspend':
-            scheduleWake(outcome.wakeAt)
-            return
-          case 'complete':
-            await finishRun(run, ctx, outcome.output)
-            return
-          case 'failed':
-            await failRun(run, wf, ctx, outcome.stepName, outcome.error)
-            return
-        }
+      switch (outcome.kind) {
+        case 'halt':
+          return
+        case 'suspend':
+          scheduleWake(outcome.wakeAt)
+          return
+        case 'complete':
+          await finishRun(run, ctx, outcome.output)
+          return
+        case 'failed':
+          await failRun(run, wf, ctx, outcome.stepName, outcome.error)
+          return
+        case 'advance':
+        case 'passthrough':
+          throw new InternalError(`Run "${run.id}" ended on a "${outcome.kind}" outcome, which only continues a run`)
+        default:
+          return assertNever(outcome, 'unit outcome')
       }
-
-      const latest = await storage.getRun(run.id)
-      if (!latest || latest.status === 'cancelled') {
-        return
-      }
-
-      await finishRun(run, ctx, prev)
     } catch (error) {
       // Control-flow signals (cancel, stop, lease loss) unwind the run without
       // recording a failure; anything else is a genuine bug and propagates.
@@ -888,6 +911,48 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     } finally {
       cleanupActiveRun(run.id, activeRun)
     }
+  }
+
+  /**
+   * Run a chained workflow's units in order, threading each one's output to
+   * the next as `prev`, until one ends the run or the last one finishes.
+   */
+  async function executeUnits(
+    units: readonly ExecutionUnit[],
+    ctx: ExecutionContext,
+    runSignal: AbortSignal,
+  ): Promise<UnitOutcome> {
+    let prev: PersistedValue = undefined
+
+    for (const unit of units) {
+      // A cancellation or engine stop can land on any await between units.
+      // Check once here rather than in every executor.
+      if (runSignal.aborted) {
+        const latest = await storage.getRun(ctx.run.id)
+        if (!latest || latest.status === 'cancelled') {
+          return { kind: 'halt' }
+        }
+      }
+
+      const outcome = await dispatchUnit(unit, ctx, prev)
+
+      switch (outcome.kind) {
+        case 'advance':
+          prev = outcome.output
+          continue
+        case 'passthrough':
+          continue
+        default:
+          return outcome
+      }
+    }
+
+    const latest = await storage.getRun(ctx.run.id)
+    if (!latest || latest.status === 'cancelled') {
+      return { kind: 'halt' }
+    }
+
+    return { kind: 'complete', output: prev }
   }
 
   /** Mark a run completed and announce it. No-ops if the lease was lost. */
@@ -963,15 +1028,13 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
       return false
     }
 
-    const wf = registry.get(run.workflow)
-    const unit = wf?.executionUnits.find((u) => u.kind === 'waitForEvent' && u.name === eventName)
-    if (!unit || unit.kind !== 'waitForEvent') {
-      throw new ConfigError(`Workflow "${run.workflow}" has no waitForEvent step named "${eventName}"`)
-    }
-
-    const validated = validateEventPayload(eventName, unit.schema, payload)
+    const validated = validateEventPayload(eventName, eventSchemaOf(registry.get(run.workflow), run.workflow, eventName), payload)
     const delivered = await storage.deliverEvent(runId, eventName, validated)
     if (delivered) {
+      // A run executing here may be waiting for it in process, beside other work.
+      for (const listener of activeRuns.get(runId)?.eventListeners ?? []) {
+        listener(eventName)
+      }
       requestFill()
     }
     return delivered
@@ -1315,6 +1378,7 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
     const activeRun: ActiveRunState = {
       leaseId: run.leaseId,
       signals: { run: new AbortController(), observer: new AbortController() },
+      eventListeners: new Set(),
       heartbeatTimer: null,
       heartbeatInFlight: false,
     }
@@ -1407,10 +1471,34 @@ export function createEngine<const TWorkflows extends readonly AnyWorkflow[]>(
   } as Engine<WorkflowInputMap<TWorkflows>>
 }
 
+/**
+ * The schema an event's payload is validated against, if any: declared in a
+ * function's `events`, or on a chained workflow's `waitForEvent`. Throws if
+ * the workflow cannot wait for the event at all.
+ */
+function eventSchemaOf(
+  wf: AnyWorkflow | undefined,
+  workflowName: string,
+  eventName: string,
+): StandardSchemaV1<unknown, PersistedValue> | undefined {
+  if (wf?.kind === 'function') {
+    const schema = Object.hasOwn(wf.events, eventName) ? wf.events[eventName] : undefined
+    if (!schema) {
+      throw new ConfigError(`Workflow "${workflowName}" declares no event named "${eventName}"`)
+    }
+    return schema
+  }
+  const unit = wf?.executionUnits.find((u) => u.kind === 'waitForEvent' && u.name === eventName)
+  if (!unit || unit.kind !== 'waitForEvent') {
+    throw new ConfigError(`Workflow "${workflowName}" has no waitForEvent step named "${eventName}"`)
+  }
+  return unit.schema
+}
+
 /** Validate an event payload against the wait's schema (if any), returning the parsed value. */
 function validateEventPayload(
   eventName: string,
-  schema: StandardSchemaV1<PersistedValue> | undefined,
+  schema: StandardSchemaV1<unknown, PersistedValue> | undefined,
   payload: PersistedValue,
 ): PersistedValue {
   if (!schema) {
@@ -1436,16 +1524,10 @@ function runWithSignal<T>(
   }
 
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
+    const cleanup = onAbort(signal, () => {
       cleanup()
       reject(toError(signal.reason))
-    }
-
-    const cleanup = () => {
-      signal.removeEventListener('abort', onAbort)
-    }
-
-    signal.addEventListener('abort', onAbort, { once: true })
+    })
 
     Promise.resolve()
       .then(promiseFactory)

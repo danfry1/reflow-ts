@@ -54,4 +54,4 @@ If storage fails to read or write the cache, the step runs as if nothing was cac
 
 ## Storage
 
-The built-in SQLite, Postgres, and in-memory adapters store cached results in a table of their own, which outlives the runs that produced them. A [custom adapter](/guide/storage#custom-adapters) needs `getCachedStep`, `putCachedStep`, and `deleteExpiredCachedSteps`; an engine with a cached step refuses an adapter without them.
+The built-in SQLite, Postgres, and in-memory adapters store cached results in a table of their own, which outlives the runs that produced them. A [custom adapter](/guide/storage#custom-adapters) needs `getCachedStep`, `putCachedStep`, and `deleteExpiredCachedSteps`; an engine with a chained workflow that caches a step refuses an adapter without them, and a cached `step.run` in a [workflow written as a function](/guide/functions) fails its run with `ConfigError` when it is reached.

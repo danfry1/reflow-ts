@@ -20,6 +20,8 @@ So what matters is which names have results, not where the steps sit or what the
 | **Change the input schema** | Runs keep the input they were enqueued with; it is not checked against the new schema. |
 | **Remove a workflow from the engine** | Its runs are never claimed again. They stay `pending`, `sleeping`, or `waiting` until it is registered once more. |
 
+A [workflow written as a function](/guide/functions#changing-a-function-s-code) is matched by name in the same way, but runs from the top each time, so adding and reordering steps behaves a little differently there.
+
 ## Changing a workflow safely
 
 **Small changes in place.** Adding steps at the end, fixing a step's code, tuning retries, and removing steps nothing depends on are all safe to deploy with runs in flight.

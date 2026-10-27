@@ -649,6 +649,27 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
     },
   },
   {
+    name: 'requeueRun keeps the failed steps it is told to keep',
+    appliesTo: (storage) => storage.supportsKeepFailed === true,
+    async run(storage) {
+      if (storage.supportsKeepFailed !== true) return
+      await storage.createRun(makeRun({ status: 'failed' }))
+      await storage.saveStepResult(makeStep({ id: 's1', name: 'a', status: 'completed' }))
+      await storage.saveStepResult(makeStep({ id: 's2', name: 'caught', status: 'failed', output: null }))
+      await storage.saveStepResult(makeStep({ id: 's3', name: 'fatal', status: 'failed', output: null }))
+      await storage.saveStepResult(makeStep({ id: 's4', name: 'backing-off', status: 'retrying', output: 0 }))
+
+      assert(await storage.requeueRun('run_1', { keepFailed: ['caught', 'backing-off'] }), 'a failed run must requeue')
+
+      const steps = await storage.getStepResults('run_1')
+      assertEqual(
+        steps.map((step) => `${step.name}:${step.status}`),
+        ['a:completed', 'caught:failed'],
+        'only the named failed step is kept; a retrying step is discarded whatever its name',
+      )
+    },
+  },
+  {
     name: 'requeueRun refuses a run that is not in a resumable state',
     async run(storage) {
       await storage.createRun(makeRun({ status: 'running' }))
@@ -803,6 +824,66 @@ export const storageConformanceCases: readonly ConformanceCase[] = [
       assertEqual([saved?.name, saved?.status, saved?.output], ['e', 'completed', { n: 1 }], 'saved with the payload as its output')
       assertEqual((await storage.takeEvent('run_1', 'e'))?.payload, { n: 2 }, 'only that event is removed')
       assertEqual(await storage.consumeEvent(step, claimed.leaseId), { status: 'none' }, 'nothing left to consume')
+    },
+  },
+  {
+    name: 'consumeEvent takes the named event for a step named apart from it',
+    appliesTo: (storage) => storage.consumeEvent !== undefined && storage.supportsEventNames === true,
+    async run(storage) {
+      if (!storage.consumeEvent || storage.supportsEventNames !== true) return
+      await storage.createRun(makeRun())
+      const claimed = await claim(storage)
+      await storage.deliverEvent('run_1', 'approved', { round: 1 })
+      await storage.deliverEvent('run_1', 'approved', { round: 2 })
+      const { output: _unused, ...first } = makeStep({ id: 'w1', name: 'approval-1', attempts: 0 })
+      const { output: _unused2, ...second } = makeStep({ id: 'w2', name: 'approval-2', attempts: 0 })
+
+      assertEqual(await storage.consumeEvent(first, claimed.leaseId, 'approved'), { status: 'consumed', payload: { round: 1 } }, 'first wait takes the oldest')
+      assertEqual(await storage.consumeEvent(second, claimed.leaseId, 'approved'), { status: 'consumed', payload: { round: 2 } }, 'second wait takes the next')
+      assertEqual(
+        (await storage.getStepResults('run_1')).map((step) => [step.name, step.output]),
+        [['approval-1', { round: 1 }], ['approval-2', { round: 2 }]],
+        'each saved under its own step name',
+      )
+    },
+  },
+  {
+    name: 'waitRun waits for any of several events, and stays reclaimable when one is buffered',
+    appliesTo: (storage) => storage.supportsEventNames === true,
+    async run(storage) {
+      if (storage.supportsEventNames !== true) return
+      await storage.createRun(makeRun({ id: 'run_1' }))
+      await storage.createRun(makeRun({ id: 'run_2' }))
+      const first = await claim(storage)
+      const second = await claim(storage)
+      const [waitingId, bufferedId] = [first.id, second.id]
+      await storage.deliverEvent(bufferedId, 'b', {})
+
+      assert(await storage.waitRun(waitingId, first.leaseId, ['a', 'b'], null), 'wait must succeed')
+      assert(await storage.waitRun(bufferedId, second.leaseId, ['a', 'b'], null), 'wait must succeed')
+      assertEqual(
+        [(await storage.getRun(waitingId))?.status, (await storage.getRun(waitingId))?.waitingFor],
+        ['waiting', 'a, b'],
+        'waiting for both, listed',
+      )
+      assertEqual((await storage.getRun(bufferedId))?.status, 'pending', 'an event for the second name is already buffered')
+
+      await storage.deliverEvent(waitingId, 'b', {})
+      assertEqual((await storage.getRun(waitingId))?.status, 'pending', 'either name wakes it')
+    },
+  },
+  {
+    name: 'saveStepResult keeps what kind of operation a step row records',
+    async run(storage) {
+      await storage.createRun(makeRun())
+      await storage.saveStepResult(makeStep({ id: 's1', name: 'nap', status: 'sleeping', kind: 'sleep' }))
+      await storage.saveStepResult(makeStep({ id: 's2', name: 'old', status: 'completed' }))
+
+      assertEqual(
+        (await storage.getStepResults('run_1')).map((step) => [step.name, step.kind ?? null]),
+        [['nap', 'sleep'], ['old', null]],
+        'the kind saved, or null for a row saved without one',
+      )
     },
   },
   {

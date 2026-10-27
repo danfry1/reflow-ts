@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+Durable functions. A workflow can now be written as one async function, with
+`step.run`, `step.sleep`, and `step.waitForEvent` as its durable operations
+and plain TypeScript between them: branches, loops over data, steps run
+together, failures caught and recovered from. It runs on the same engine and
+storage as chained workflows, which are unchanged.
+
+**Upgrading:** nothing to change in workflow code. SQLite databases move to schema version 6 and Postgres schemas to version 3 on `initialize()`, each adding a nullable `kind` column to step rows. Open a database from before with `npx reflow-ts dashboard` and it asks for `--migrate`. On Postgres, a role allowed only to read and write rows cannot run the migration: run `initialize()` once as the schema's owner first. During a rolling deploy, workers still on 0.10 refuse the migrated database once they restart, so finish the rollout rather than rolling back. A custom storage adapter should store and return `StepResult.kind`, which the conformance suite now checks; one that does not still works, without the check it enables.
+
+### Added
+
+- **Workflows written as a function.** `createWorkflow(config, async ({ input, step }) => { ... })` defines a workflow as one async function whose durable operations are `step.run()`, `step.sleep()`, `step.sleepUntil()`, and `step.waitForEvent()`. Everything between them is ordinary code. `if` branches. A loop or `Promise.all(items.map(...))` runs a number of steps decided at run time, concurrently when started together. `try`/`catch` around a step recovers from its failure.
+  - **Replay.** A run resumes by calling the function again from the top: each operation that already finished returns its saved result without running, matched by name, so a function that branches differently on resume runs new steps instead of reusing others' results. Results come back in the order the operations first finished, so `Promise.race` between operations picks the same winner on every replay.
+  - **Failures.** A failed step rejects with `StepFailedError`, its `cause` the handler's error, and a failure the function caught replays as the same rejection, so it takes the same path again; `engine.resume()` keeps those caught failures and reruns only the step that ended the run. Anything that is not the step's own failure — storage failing, an output that cannot be saved, a misconfigured call — fails the run however the function catches it, so a `catch` meant for a declined card cannot take the wrong branch on a database outage.
+  - **Events.** Declared on the workflow with their schemas (`events: { shipped: schema }`), which type what `step.waitForEvent` resolves to and validate payloads in `sendEvent`. `step.waitForEvent(name, { timeout })` resolves to `null` when it times out, rather than failing the run. A wait can be named apart from its event (`{ event: 'approved' }`) to wait for the same event more than once, and several waits can be pending at once. An event sent through the engine running a wait wakes it at once; one sent through another engine reaches it within a second, even while other steps are running.
+  - **Concurrency.** The run suspends only once every operation in flight is sleeping, waiting, or backing off, so a sleep never cuts off a step still running beside it.
+  - **Types.** Step results are typed from their handlers and the run's output from what the function returns (`InferOutput`, and `output` on `testEngine().run()`). A result typed as an interface, as SDK responses are, is accepted; one holding a function, `Map`, `Set`, or promise is a type error at the handler. Durations are written one way throughout: `timeout: '30s'`, `retry: { initialDelay: '1s' }`, `sleep(name, '7d')`.
+  - **Names keep their kind.** Step rows record whether they are a step, a sleep, or a wait (`StepResult.kind`), so a deploy that reuses a name for another kind of operation fails the run with `ConfigError` instead of handing it the other's saved result.
+  - Retries, timeouts, caching, idempotency keys, hooks, streams, `testEngine`, the dashboard, and every storage adapter work as they do for chained workflows. A [guide](https://reflow.danfry.dev/guide/functions) covers writing them, changing them safely, and how the operations map onto Inngest, Cloudflare Workflows, and Temporal.
+- **`isRunControlError(error)`**, and `RunControlError` exported, so workflow code can tell the run being cancelled, losing its lease, or being suspended (`RunSuspendedError`, code `'RUN_SUSPENDED'`) from a failure, and rethrow it.
+- **`testEngine().run()` returns the run's `output`.**
+- **Storage adapter additions, all optional.** `requeueRun(runId, { keepFailed })` with `supportsKeepFailed` keeps the named failed steps when a run is resumed. `consumeEvent(step, leaseId, eventName)` and `waitRun` with a list of event names, with `supportsEventNames`, let a wait be named apart from its event and several waits be pending at once. The built-in adapters implement both and the conformance suite tests them. A custom adapter without them keeps the previous behaviour: resuming reruns caught failures, and a function workflow allows one pending wait at a time.
+- **`ChainWorkflow`**, the type of any chained workflow. `AnyWorkflow` now also includes workflows written as functions, so code that reads `executionUnits` or chains steps on an `AnyWorkflow` narrows on `workflow.kind === 'chain'` first, or uses `ChainWorkflow`.
+- **`ReflowErrorCode` gains `'RUN_SUSPENDED'`.** An exhaustive `switch` over the codes needs a case for it.
+
+### Fixed
+
+- **A step that resolves to `undefined` is typed `undefined`, not `never`.** The step after it received `prev: never`, and a step returning `T | undefined` lost the `undefined`, in `.step()` and `.parallel()` branches alike. Both now keep the type the handler returns, so code after such a step may now be asked by the compiler to handle `undefined` it was told could not happen. `InferSteps` of something that is not a workflow is now `Record<string, PersistedValue>` rather than `never`.
+- **A step handler that throws a control-flow error itself fails the step.** A handler throwing `RunCancelledError`, say, while nothing was cancelled, left the run `running` until its lease lapsed, and then again on every reclaim. It is now an ordinary failure.
+- **Thousands of steps running at once no longer slow each other down.** Each one listened for the run being cancelled on the same signal, and adding a listener there scans those already added, so a run of many concurrent steps took time growing with the square of their number. 40,000 concurrent steps now take about 0.3s rather than 8s.
+
 ## 0.10.0 — 2026-10-25
 
 Durability, tightened where it was weakest. A waiting run's event and the step
