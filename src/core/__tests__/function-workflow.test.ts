@@ -1909,3 +1909,25 @@ describe('workflows written as a function, PR review', () => {
     expect(await storage.getRun(run.id)).toMatchObject({ status: 'completed', output: ['gone', 'late'] })
   })
 })
+
+describe('the operation limit of a workflow written as a function', () => {
+  it('fails a run that starts more operations than its limit, and accepts a raised one', async () => {
+    const storage = new MemoryStorage()
+    await storage.initialize()
+    const loop = (name: string, maxOperations?: number) => createWorkflow({ name, input: z.object({ n: z.number() }), maxOperations }, async ({ input, step }) => {
+      for (let index = 0; index < input.n; index++) await step.run(`item-${index}`, async () => index)
+      return input.n
+    })
+    const capped = loop('capped', 3)
+    const plenty = loop('plenty', 10)
+    const engine = createEngine({ storage, workflows: [capped, plenty] })
+    const over = await engine.enqueue('capped', { n: 4 })
+    const within = await engine.enqueue('plenty', { n: 4 })
+    await engine.tick()
+    await engine.tick()
+
+    expect((await storage.getRun(over.id))?.error).toMatchObject({ stepName: 'item-3', code: 'CONFIG' })
+    expect((await storage.getRun(within.id))?.output).toBe(4)
+    expect(() => loop('bad', 0)).toThrow(ConfigError)
+  })
+})

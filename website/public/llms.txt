@@ -173,9 +173,9 @@ const withMetrics = base.step('metric', async () => { /* ... */ })
 // base, withLogging, and withMetrics are all independent
 ```
 
-### Workflows as Functions
+### Workflows as Functions (beta)
 
-The same workflow can be written as one async function. Each `step` call is durable, and the code between them is plain TypeScript, so branches, loops over data, running steps together, and recovering from a failure need nothing new:
+The same workflow can be written as one async function — new in 0.11, so its API may still change in a minor release. Each `step` call is durable, and the code between them is plain TypeScript, so branches, loops over data, running steps together, and recovering from a failure need nothing new:
 
 ```typescript
 const fulfilOrder = createWorkflow({
@@ -925,6 +925,7 @@ Creates a workflow written as a function. Takes the same `name`, `input`, `label
 |---|---|---|
 | `config.events` | `Record<string, StandardSchemaV1>` | Optional. Events `step.waitForEvent()` may wait for, with the schema `sendEvent` validates each payload against |
 | `config.onFailure` | `({ error, stepName, input }) => Promise<void>` | Optional. Called once a run has failed; `stepName` is empty when the function's own code threw |
+| `config.maxOperations` | `number` | Optional. The most operations one run may start (default 10,000); past it the run fails with `ConfigError` |
 | `handler` | `({ input, step, runId }) => Promise<T>` | The workflow. Its return value is the run's output |
 
 | Operation | Resolves to | Description |

@@ -23,7 +23,7 @@ Returns a [`Workflow`](/api/workflow) with `.step()`, `.parallel()`, `.onFailure
 
 The builder is **immutable** — every method returns a new `Workflow`, so a base workflow can be branched without the branches affecting each other. See [Workflows](/guide/workflows).
 
-## `createWorkflow(config, handler)`
+## `createWorkflow(config, handler)` <Badge type="warning" text="beta" />
 
 Creates a workflow written as a function. See [Workflows as Functions](/guide/functions).
 
@@ -45,6 +45,7 @@ It takes the same `name`, `input`, `label`, and `concurrency` as above, and:
 |---|---|---|
 | `config.events` | `Record<string, StandardSchemaV1>` | Optional. The events `step.waitForEvent()` may wait for, each with the schema `sendEvent` validates its payload against. |
 | `config.onFailure` | `({ error, stepName, input }) => Promise<void>` | Optional. Called once a run has failed. `stepName` is empty when the function's own code threw. |
+| `config.maxOperations` | `number` | Optional. The most operations one run may start (default 10,000). A run replays every earlier operation each time it resumes; past the limit it fails with `ConfigError`. |
 | `handler` | `({ input, step, runId }) => Promise<T>` | The workflow. What it returns is the run's output. |
 
 `step` has these operations. Each takes a name unique within the run:

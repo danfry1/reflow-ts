@@ -73,7 +73,7 @@ export default defineConfig({
           text: 'Core Concepts',
           items: [
             { text: 'Workflows', link: '/guide/workflows' },
-            { text: 'Workflows as Functions', link: '/guide/functions' },
+            { text: 'Workflows as Functions (beta)', link: '/guide/functions' },
             { text: 'The Engine', link: '/guide/engine' },
             { text: 'Retry & Timeouts', link: '/guide/retry' },
             { text: 'Caching Steps', link: '/guide/caching' },

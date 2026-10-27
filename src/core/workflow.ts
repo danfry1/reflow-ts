@@ -338,6 +338,8 @@ export interface WorkflowDefinition<
  *
  * @typeParam TOutput - What the function returns: the run's output
  * @typeParam TEvents - `{ eventName: payloadType }` for the events it declares
+ *
+ * @beta
  */
 export interface FunctionWorkflow<
   TName extends string = string,
@@ -353,11 +355,17 @@ export interface FunctionWorkflow<
   readonly '~handler': (ctx: WorkflowContext<PersistedValue, Record<string, PersistedValue>>) => Promise<PersistedValue | void>
   /** The declared events, with the schema each payload is validated against. */
   readonly events: Readonly<Record<string, StandardSchemaV1<unknown, PersistedValue>>>
+  /** The most operations one run may start. See {@link FunctionWorkflowConfig.maxOperations}. */
+  readonly maxOperations: number
   /** Type-only: carries the output and event types for inference. Never set at runtime. */
   readonly '~types'?: { readonly output: TOutput; readonly events: TEvents }
 }
 
-/** Context passed to a workflow written as a function. */
+/**
+ * Context passed to a workflow written as a function.
+ *
+ * @beta
+ */
 export interface WorkflowContext<
   TInput extends PersistedValue,
   TEvents extends Record<string, PersistedValue> = {},
@@ -370,7 +378,11 @@ export interface WorkflowContext<
   runId: string
 }
 
-/** A `step.run` handler, as the engine calls it. */
+/**
+ * A `step.run` handler, as the engine calls it.
+ *
+ * @beta
+ */
 export type StepRunHandler = (ctx: StepRunContext) => Promise<unknown>
 
 /**
@@ -378,6 +390,8 @@ export type StepRunHandler = (ctx: StepRunContext) => Promise<unknown>
  * plain data — objects (interfaces included), arrays, strings, numbers,
  * booleans, `null`, `undefined`, and `Date` — and not functions, `Map`s,
  * `Set`s, promises, `bigint`s, or symbols, anywhere inside.
+ *
+ * @beta
  */
 export type Persistable<T, TDepth extends readonly unknown[] = []> =
   // `unknown` and `any` say nothing either way, as an SDK's free-form field
@@ -400,13 +414,23 @@ export type Persistable<T, TDepth extends readonly unknown[] = []> =
  * `T` when it can be saved, and otherwise a type no value has, named for the
  * reason — so a handler returning something that cannot be saved is an error
  * where it returns it.
+ *
+ * @beta
  */
 export type Saveable<T> = Persistable<T> extends true ? T : { readonly 'a step result or run output must be data that can be saved': never }
 
-/** A `step.run` handler resolving to `TOutput`, which must be data that can be saved. */
+/**
+ * A `step.run` handler resolving to `TOutput`, which must be data that can be saved.
+ *
+ * @beta
+ */
 export type StepHandler<TOutput> = (ctx: StepRunContext) => Promise<Saveable<TOutput>>
 
-/** Options for `step.waitForEvent()`. */
+/**
+ * Options for `step.waitForEvent()`.
+ *
+ * @beta
+ */
 export interface WaitForEventOptions<TEventName extends string = string> {
   /**
    * The event to wait for, when the wait has a name of its own — to wait for
@@ -424,6 +448,8 @@ export interface WaitForEventOptions<TEventName extends string = string> {
  * What `step.waitForEvent()` resolves to: the payload, or also `null` when a
  * timeout may be set — including one that is optional, or set on only some
  * of a union of option types.
+ *
+ * @beta
  */
 export type WaitForEventResult<TPayload, TOptions> = TOptions extends unknown
   ? 'timeout' extends keyof TOptions
@@ -441,6 +467,8 @@ export type WaitForEventResult<TPayload, TOptions> = TOptions extends unknown
  * finished. Code between steps runs again each time, so anything with an
  * effect or a result that can differ, such as a request, the time, or a
  * random number, belongs inside `step.run()`.
+ *
+ * @beta
  */
 export interface WorkflowSteps<TEvents extends Record<string, PersistedValue> = {}> {
   /**
@@ -494,7 +522,11 @@ export interface WorkflowSteps<TEvents extends Record<string, PersistedValue> = 
   ): Promise<WaitForEventResult<TEvents[TEventName], TOptions>>
 }
 
-/** Context passed to a step handler in a workflow written as a function. */
+/**
+ * Context passed to a step handler in a workflow written as a function.
+ *
+ * @beta
+ */
 export interface StepRunContext {
   /** Aborted on cancellation, lease loss, or the attempt's timeout. */
   signal: AbortSignal
@@ -510,6 +542,8 @@ export interface StepRunContext {
  * Retries for `step.run()`: how many attempts, and how long to wait between
  * them. `initialDelay` is milliseconds or a duration such as `'30s'`
  * (default one second), growing by `backoff` (default `'linear'`).
+ *
+ * @beta
  */
 export type FunctionRetryConfig = Pick<RetryConfig, 'maxAttempts'> & Partial<Pick<RetryConfig, 'backoff'>> & {
   initialDelay?: number | string
@@ -518,12 +552,18 @@ export type FunctionRetryConfig = Pick<RetryConfig, 'maxAttempts'> & Partial<Pic
 /**
  * Reuse a `step.run()` result from an earlier run: as {@link StepCache}, but
  * `key` takes no arguments, as everything the step depends on is in scope.
+ *
+ * @beta
  */
 export type FunctionStepCache =
   | Exclude<StepCache<PersistedValue, PersistedValue>, object>
   | (Omit<Extract<StepCache<PersistedValue, PersistedValue>, object>, 'key'> & { key?: () => PersistedValue })
 
-/** Options for `step.run()` in a workflow written as a function. */
+/**
+ * Options for `step.run()` in a workflow written as a function.
+ *
+ * @beta
+ */
 export interface FunctionStepConfig {
   retry?: FunctionRetryConfig
   /** Give up on an attempt after this long: milliseconds, or a duration such as `'30s'`. */
@@ -537,7 +577,11 @@ export interface FunctionStepConfig {
   handler: StepRunHandler
 }
 
-/** Configuration for a workflow written as a function. */
+/**
+ * Configuration for a workflow written as a function.
+ *
+ * @beta
+ */
 export interface FunctionWorkflowConfig<
   TName extends string,
   TInput extends PersistedValue,
@@ -550,6 +594,14 @@ export interface FunctionWorkflowConfig<
    * is empty when the function's own code threw rather than a step.
    */
   onFailure?: (ctx: FailureContext<TInput>) => Promise<void>
+  /**
+   * The most operations one run may start, counting each `step.run`, sleep,
+   * and wait once (default 10,000). A run resumes by replaying every
+   * operation before the point it stopped, so one that grows without bound
+   * costs more on each resume; past the limit it fails with `ConfigError`.
+   * Raise it for a run that needs more, or split the work across runs.
+   */
+  maxOperations?: number
 }
 
 /** Configuration shared by both ways of writing a workflow. */
@@ -580,15 +632,25 @@ export type InferInput<W> = W extends WorkflowDefinition<any, infer I> ? I : nev
 /**
  * Extract a run's output type. A chained workflow's output may come from
  * `complete()` anywhere in the chain, so it is untyped.
+ *
+ * @beta
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type InferOutput<W> = W extends FunctionWorkflow<any, any, infer O, any> ? O : PersistedValue
 
-/** Extract the `{ eventName: payloadType }` map of a workflow written as a function. */
+/**
+ * Extract the `{ eventName: payloadType }` map of a workflow written as a function.
+ *
+ * @beta
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type InferEvents<W> = W extends FunctionWorkflow<any, any, any, infer E> ? E : Record<string, PersistedValue>
 
-/** Map a workflow tuple/array to `{ workflowName: outputType }` */
+/**
+ * Map a workflow tuple/array to `{ workflowName: outputType }`
+ *
+ * @beta
+ */
 export type WorkflowOutputMap<T extends readonly AnyWorkflow[]> = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [W in T[number] as W extends WorkflowDefinition<infer N, any> ? N : never]: InferOutput<W>
@@ -621,18 +683,16 @@ type NormalizeOutput<T> = T extends void ? undefined : T
 export type PrettyStepsMap<T extends Record<string, unknown>> = Prettify<T>
 
 /**
- * Create a new workflow definition, written as chained steps or as a function.
+ * Create a workflow written as a function: one async function whose durable
+ * operations are `step.run`, `step.sleep`, `step.sleepUntil`, and
+ * `step.waitForEvent`, with ordinary code between them. See the guide's
+ * "Workflows as Functions".
+ *
+ * @beta Workflows written as a function are new: their API may still change in a minor release.
  *
  * @example
  * ```ts
  * const workflow = createWorkflow({
- *   name: 'process-content',
- *   input: z.object({ url: z.string() }),
- * })
- *   .step('scrape', async ({ input }) => { ... })
- *   .step('summarize', async ({ prev }) => { ... })
- *
- * const sameWorkflow = createWorkflow({
  *   name: 'process-content',
  *   input: z.object({ url: z.string() }),
  * }, async ({ input, step }) => {
@@ -650,7 +710,21 @@ export function createWorkflow<
   config: FunctionWorkflowConfig<TName, TInput, TEvents>,
   handler: (ctx: WorkflowContext<TInput, TEvents>) => Promise<Saveable<TOutput>>,
 ): FunctionWorkflow<TName, TInput, NormalizeOutput<TOutput>, TEvents>
-// Last, so `ReturnType<typeof createWorkflow>` is the chained builder it always was.
+/**
+ * Create a new workflow definition, built by chaining steps.
+ *
+ * Declared last, so `ReturnType<typeof createWorkflow>` is the chained builder.
+ *
+ * @example
+ * ```ts
+ * const workflow = createWorkflow({
+ *   name: 'process-content',
+ *   input: z.object({ url: z.string() }),
+ * })
+ *   .step('scrape', async ({ input }) => { ... })
+ *   .step('summarize', async ({ prev }) => { ... })
+ * ```
+ */
 export function createWorkflow<TName extends string, TInput extends PersistedValue>(
   config: WorkflowConfig<TName, TInput>,
 ): Workflow<TName, TInput, undefined, {}>
@@ -674,6 +748,7 @@ export function createWorkflow<TName extends string, TInput extends PersistedVal
     // type here loses nothing it relies on.
     '~handler': handler as unknown as FunctionWorkflow['~handler'],
     events: config.events ?? {},
+    maxOperations: resolveMaxOperations(config.name, config.maxOperations),
     failureHandler: config.onFailure,
     label: config.label,
     concurrency,
@@ -884,6 +959,18 @@ function buildWorkflow<
       return parseWith(inputSchema, input)
     },
   }
+}
+
+/** The most operations a function workflow's run may start, unless it says otherwise. */
+const DEFAULT_MAX_OPERATIONS = 10_000
+
+/** A function workflow's operation limit, refusing one that is not a positive integer. */
+function resolveMaxOperations(workflowName: string, maxOperations: number | undefined): number {
+  if (maxOperations === undefined) return DEFAULT_MAX_OPERATIONS
+  if (!Number.isInteger(maxOperations) || maxOperations < 1) {
+    throw new ConfigError(`Workflow "${workflowName}" maxOperations must be a positive integer`)
+  }
+  return maxOperations
 }
 
 /** Validate a workflow's input against its schema. */

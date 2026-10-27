@@ -1,4 +1,8 @@
-# Workflows as Functions
+# Workflows as Functions <Badge type="warning" text="beta" />
+
+::: warning Beta
+Workflows written as a function are new in 0.11. They are tested as thoroughly as chained workflows and safe to run, but their API may still change in a minor release while it settles. Chained workflows are unaffected.
+:::
 
 A workflow can also be written as one async function. Its durable operations are calls on `step`, and everything between them is ordinary TypeScript: `if` for a branch, `for` for a loop, `Promise.all` to run steps together, `try`/`catch` to handle a failure.
 
@@ -76,9 +80,11 @@ const id = crypto.randomUUID()
 const id = await step.run('make-id', async () => crypto.randomUUID())
 ```
 
+Replaying is quick — a few thousand finished steps take tens of milliseconds — but it happens on every resume, so a run's cost grows with how many operations it has done. A run that loops for ever, or resumes thousands of times, is better split into runs that each do a bounded piece of the work. A run may start at most `maxOperations` operations (10,000 unless the workflow's config says otherwise), and fails with `ConfigError` past it.
+
 Because results are matched by **name** rather than position, a function that takes a different branch when it resumes does not receive another step's result. It reaches a name with no saved result and runs that step.
 
-Saved results are handed back **in the order the operations first finished**, so a `Promise.race` between operations picks the same winner on every replay as it did the first time. That holds for operations: a race against a promise that is not a step, such as a plain `setTimeout`, can go either way when the run resumes.
+Saved results are handed back **in the order the operations first finished**, so a `Promise.race` between operations picks the same winner on every replay as it did the first time — as long as the race is made as the operations are started, with no `await` of anything else in between. (On replay, results come back at once: an `await` between starting two operations and racing them lets both settle first, and the race then takes the first in the array rather than the first to finish.) A race against a promise that is not an operation, such as a plain `setTimeout`, can also go either way when the run resumes.
 
 ### Names
 

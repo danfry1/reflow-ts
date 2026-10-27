@@ -28,7 +28,7 @@ import type { ExecutionContext, UnitOutcome } from './types'
 import { reachWait } from './wait-for-event'
 
 /** The parts of a workflow written as a function that {@link executeFunction} runs. */
-export type FunctionBody = Pick<FunctionWorkflow, 'name' | '~handler' | 'events'>
+export type FunctionBody = Pick<FunctionWorkflow, 'name' | '~handler' | 'events' | 'maxOperations'>
 
 /** One durable operation the function has started and not yet finished. */
 interface Operation {
@@ -507,6 +507,12 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
       throw new ConfigError(`Every step in workflow "${body.name}" needs a non-empty name`)
     }
     if (names.has(name)) throw new DuplicateStepError(body.name, name)
+    if (names.size >= body.maxOperations) {
+      throw new ConfigError(
+        `Workflow "${body.name}" started more than ${body.maxOperations} operations in one run, at "${name}". ` +
+        'A run replays every operation before the point it stopped each time it resumes; raise maxOperations, or split the work across runs.',
+      )
+    }
     names.add(name)
     kinds.set(name, kind)
     const operation: Operation = { name, kind, state: RUNNING, used: false, releasing: false }
