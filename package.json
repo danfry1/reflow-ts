@@ -105,14 +105,14 @@
     "@types/pg": "8.23.1",
     "@vitest/coverage-v8": "4.1.11",
     "better-sqlite3": "13.0.3",
-    "happy-dom": "21.0.1",
+    "happy-dom": "21.0.3",
     "pg": "8.23.1",
     "syncpack": "15.3.3",
     "tsdown": "0.23.1",
     "typescript": "7.0.2",
     "vitepress": "1.6.4",
     "vitest": "4.1.11",
-    "zod": "4.6.6"
+    "zod": "4.6.7"
   },
   "dependencies": {
     "@standard-schema/spec": "^1.1.0"
