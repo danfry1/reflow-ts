@@ -1,6 +1,6 @@
 # Failure Handling
 
-When a step fails after exhausting its retries, the run is marked `failed` and execution stops. Attach an `onFailure` handler to run compensation logic — the saga pattern.
+When a run fails — a step exhausts its retries, a wait times out, a parallel branch fails — it is marked `failed` and execution stops. Attach an `onFailure` handler to run compensation logic — the saga pattern.
 
 ```typescript
 const workflow = createWorkflow({ name: 'transfer', input: schema })
@@ -26,10 +26,12 @@ const workflow = createWorkflow({ name: 'transfer', input: schema })
 | Field | Type | Description |
 |---|---|---|
 | `error` | `Error` | The error that caused the failure |
-| `stepName` | `string` | The step that failed |
+| `stepName` | `string` | The step, parallel branch, or wait whose failure ended the run (empty for a function workflow's own code) |
 | `input` | `TInput` | The original validated workflow input |
 
 Use `stepName` to decide which compensations to run — it tells you how far the run progressed before failing. For [parallel groups](/guide/parallel), `stepName` is the branch that actually caused the failure, not a sibling aborted by the failure propagation.
+
+In a [workflow written as a function](/guide/functions#failure-handling), `onFailure` goes in the config rather than on a chain, and receives the same fields. There you can also catch a step's failure with `try`/`catch` and carry on.
 
 ## `onFailure` is best-effort
 

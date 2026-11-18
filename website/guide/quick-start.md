@@ -69,7 +69,7 @@ if (info) {
 ## 5. Shut down cleanly
 
 ```typescript
-await engine.stop() // stops polling, clears schedules, waits for in-flight work
+await engine.stop() // stops polling, aborts in-flight runs (another engine reclaims them), ends streams
 ```
 
 ## Without a polling loop
@@ -82,7 +82,7 @@ await engine.enqueue('process-content', { url: '…' })
 await engine.tick()
 ```
 
-Or use the dedicated [test helper](/guide/testing), which runs a workflow to completion synchronously and returns typed results.
+Or use the dedicated [test helper](/guide/testing), which runs a workflow in one pass in memory and returns typed results. (A workflow that sleeps or waits for an event needs a real engine.)
 
 ## Where to go next
 

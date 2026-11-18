@@ -27,7 +27,40 @@ const storage = new SQLiteStorage('./workflows.db')
 
 SQLite adapter for Node.js using the built-in [`node:sqlite`](https://nodejs.org/api/sqlite.html) module — no native dependencies. Requires **Node.js ≥ 22.5** (no flag needed from Node 22.13 and 23.4; earlier releases need `--experimental-sqlite`). WAL mode with transactional claiming. See [Storage › Node built-in](/guide/storage#sqlitestorage-node-js-built-in).
 
-All three SQLite constructors take a database file path. Pass `:memory:` for an ephemeral database.
+All three SQLite constructors take a database file path — `:memory:` for an ephemeral database — and an optional `SQLiteStorageOptions`:
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `readOnly` | `boolean` | `false` | Open the database for reading only: every write fails, `initialize()` included, and the file is left exactly as it was. The file must already exist. For inspecting a database another process owns, or a backup |
+
+`storage.schemaVersion()` returns `{ current, latest }`: the database's schema version and the one this build writes. When `current` is behind, `initialize()` migrates it; when it is ahead, `initialize()` throws [`ConfigError`](/api/errors).
+
+## `PostgresStorage`
+
+```typescript
+import { PostgresStorage } from 'reflow-ts/postgres'
+const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL ?? 'postgres://localhost/app' })
+```
+
+PostgreSQL adapter, for running workflows from many processes on many machines against one database. Uses [`pg`](https://node-postgres.com/) (an optional peer dependency). See [Storage › PostgreSQL](/guide/storage#postgresstorage).
+
+`new PostgresStorage(options: PostgresStorageOptions)` takes one of:
+
+| Option | Type | Description |
+|---|---|---|
+| `pool` | `pg.Pool` | A pool you already have. Reflow borrows clients from it and never ends it |
+| `connectionString` | `string` | Reflow creates its own pool from it |
+| `poolConfig` | `PoolConfig` | With `connectionString`: other settings for that pool, such as `max` or `ssl` |
+
+and, with either:
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `schema` | `string` | `'reflow'` | The Postgres schema Reflow's tables live in, created if missing. Lowercase letters, digits, and underscores, starting with a letter or underscore, at most 63 characters; anything else throws [`ConfigError`](/api/errors) |
+
+- `initialize()` creates or migrates the tables. Many processes may call it at once: they take turns under an advisory lock. When the schema is already current it changes nothing, so the app can run as a role that may only read and write rows once the schema's owner has migrated it. A database newer than this build throws `ConfigError`.
+- `close()` ends the pool Reflow created, in the background; a pool you passed in is left to you. `await storage.end()` does the same and resolves once the pool has ended.
+- `POSTGRES_SCHEMA_VERSION` is the schema version this build writes.
 
 ## `MemoryStorage`
 
@@ -45,7 +78,41 @@ const te = testEngine({ workflows: [orderWorkflow] })
 const result = await te.run('order-fulfillment', { orderId: 'x', amount: 1 })
 ```
 
-Creates a test engine backed by `MemoryStorage` that runs a workflow to completion in a single tick and returns typed step results keyed by name. See [Testing](/guide/testing).
+Creates a test engine backed by a fresh `MemoryStorage` for each run. `run()` enqueues the run, executes a single `tick()`, and resolves to a `RunResult`:
+
+```typescript
+interface RunResult<TSteps, TOutput> {
+  status: 'completed' | 'failed'
+  output?: TOutput  // undefined when the run failed
+  steps: { [name]: StepOutput<T> }  // also SkippedStepOutput for a step with `when`
+}
+
+type StepOutput<T> =
+  | { status: 'completed'; output: T; error: null }
+  | { status: 'failed'; output: null; error: string }
+
+interface SkippedStepOutput { status: 'skipped'; output: null; error: null }
+```
+
+Check `status` before reading `output`: it is `null` for a failed step. A run that is still not finished after one tick — a sleep that has not elapsed, a wait with no event yet — throws [`TestRunIncompleteError`](/api/errors) with its `runId` and `status`. `StepOutput`, `SkippedStepOutput`, `RunResult`, and `TestEngine` are exported from `reflow-ts/test`. See [Testing](/guide/testing).
+
+## `storageConformanceCases`
+
+```typescript
+import { storageConformanceCases } from 'reflow-ts/conformance'
+```
+
+The contract every adapter must meet, as a list of `ConformanceCase`s to run against your own [custom adapter](/guide/storage#custom-adapters) with any test runner. Each case receives a freshly initialized, empty storage:
+
+```typescript
+interface ConformanceCase {
+  readonly name: string
+  appliesTo?(storage: StorageAdapter): boolean  // false for an optional feature the adapter lacks
+  run(storage: StorageAdapter): Promise<void>
+}
+```
+
+When `appliesTo` returns `false`, `run` passes without checking anything; report the case as skipped, e.g. `it.skipIf(testCase.appliesTo?.(storage) === false)`.
 
 ## `StorageAdapter`
 
@@ -66,7 +133,7 @@ interface StorageAdapter {
   readonly supportsEventNames?: boolean
   getCachedStep?(key: string): Promise<CachedStep | null>
   putCachedStep?(entry: CachedStep): Promise<void>
-  deleteExpiredCachedSteps?(now: number): Promise<number>
+  deleteExpiredCachedSteps?(now: number, limit: number): Promise<number>
   getRun(runId: string): Promise<WorkflowRun | null>
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
   requeueRun(runId: string, options?: RequeueOptions): Promise<boolean>
@@ -100,9 +167,11 @@ interface StorageAdapter {
 | `deliverEvent` | Durably buffer an event and wake the run if it is `waiting`. Return `false` if the run does not exist. Backs `engine.sendEvent()`. |
 | `takeEvent` | Atomically consume the oldest buffered event for `(runId, eventName)`, or return `null`. |
 | `consumeEvent` | Optional. In one transaction, and only while `leaseId` is held: consume the oldest buffered event named `eventName` (or, without it, `step.name`) for `step.runId` and save `step` with the event's payload as its output. Returns `{ status: 'consumed', payload }`, `{ status: 'none' }`, or `{ status: 'lease-lost' }`, changing nothing in the last two cases. Without it, an event taken by a process that dies before saving the step is lost. |
-| `getCachedStep` / `putCachedStep` / `deleteExpiredCachedSteps` | Optional, together. Read, store (replacing by `key`), and delete expired [cached step results](/guide/caching): `{ key, workflow, stepName, output, createdAt, expiresAt }`. `getCachedStep` returns an entry whether or not it has expired. An engine with a cached step refuses an adapter without all three. |
+| `getCachedStep` / `putCachedStep` / `deleteExpiredCachedSteps` | Optional, together. Read, store (replacing by `key`), and delete expired [cached step results](/guide/caching): `{ key, workflow, stepName, output, createdAt, expiresAt }`. `getCachedStep` returns an entry whether or not it has expired. `deleteExpiredCachedSteps` deletes up to `limit` entries expired at or before `now` and returns how many; `engine.prune()` calls it in batches until one comes back short. An engine with a cached step refuses an adapter without all three. |
 | `getRun` / `getStepResults` | Read a run / its step results. |
-| `listRuns` | List runs most-recent-first, filtered by `status` / `workflow` and paged with `limit` / `before`. Backs `engine.listRuns()`. |
+| `getStepResultsForRuns` | Optional. The step results of several runs at once, keyed by run id, each list ordered as `getStepResults` orders it; a run with no steps, or that does not exist, maps to `[]`. Readers such as the dashboard fall back to one `getStepResults` per run. |
+| `runActivity` | Optional. How many runs started, completed, and failed in each time bucket (`{ workflow?, since, bucketMs, buckets }` → `{ started, completed, failed }` arrays). The dashboard falls back to counting a sample of recent runs. |
+| `listRuns` | List runs most-recent-first, filtered by `status` / `workflow` and paged with `limit` and the keyset cursor `before` / `beforeId`: with both, return runs strictly after that `(createdAt, id)` position, so pages are exact even when timestamps tie. Backs `engine.listRuns()`. |
 | `requeueRun` | Reset a `failed` / `cancelled` run to `pending`, clear `finishedAt` / `output` / `error`, and discard its `failed` and `retrying` step results, except the `failed` ones named in `options.keepFailed`. Return `false` if the run is not in a resumable state. Backs `engine.resume()`. |
 | `supportsKeepFailed` | Optional. Set to `true` when `requeueRun` honours `keepFailed`: a [workflow written as a function](/guide/functions#when-a-step-fails) uses it to keep failures it caught when a run is resumed. Without it they are discarded and run again. |
 | `supportsEventNames` | Optional. Set to `true` when `consumeEvent` honours `eventName` (consume that event for a step named apart from it) and `waitRun` accepts a list of names (wait for any; the buffered check covers all; `waitingFor` lists them joined by `', '`). A workflow written as a function needs it to name a wait apart from its event atomically, and to have several waits pending at once. |

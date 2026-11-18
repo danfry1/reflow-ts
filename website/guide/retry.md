@@ -29,9 +29,13 @@ The delay between attempts grows with the backoff strategy:
 | Field | Type | Description |
 |---|---|---|
 | `maxAttempts` | `number` | Maximum attempts before the step fails (must be ≥ 1) |
-| `backoff` | `'linear' \| 'exponential'` | Delay growth strategy |
+| `backoff` | `'linear' \| 'exponential'` | Delay growth strategy (required) |
 | `initialDelayMs` | `number` | Base delay in ms (default `1000`) |
 | `timeoutMs` | `number` | Per-attempt timeout (see below) |
+
+A step's return value is saved, so return plain data — `response.json()`, not the `Response`.
+
+In a [workflow written as a function](/guide/functions#step-run-name-handler-config), `step.run` takes the same settings under different names: `retry.initialDelay` and `timeout`, as milliseconds or a duration such as `'30s'`. There `backoff` is optional and defaults to `'linear'`.
 
 ## Backoff is durable
 
@@ -42,15 +46,16 @@ On a [started](/guide/engine#polling-vs-manual-ticks) engine, the run is suspend
 - a crash or deploy **does not reset the attempt count** — whichever engine picks the run up continues at the next attempt, and `maxAttempts` holds across restarts.
 
 ```typescript
-const { run, steps } = await engine.getRunStatus(runId)
-run.status     // 'sleeping'
-run.wakeAt     // when the next attempt starts
-steps[0].status   // 'retrying'
-steps[0].attempts // attempts made so far
-steps[0].error    // the latest attempt's error
+const info = await engine.getRunStatus(runId)
+const step = info?.steps.find((s) => s.name === 'call-api')
+info?.run.status // 'sleeping'
+info?.run.wakeAt // when the next attempt starts
+step?.status     // 'retrying'
+step?.attempts   // attempts made so far
+step?.error      // the latest attempt's error
 ```
 
-A started engine wakes a run backing off for under five minutes on time; longer backoffs are picked up by the next poll after they end. `onStepStart` fires once, before the first attempt, and `stepComplete` once the step finally succeeds.
+A started engine wakes a run backing off for under five minutes on time; longer backoffs are picked up by the next poll after they end. `onStepStart` fires once, before the first attempt, and `onStepComplete` once the step finally succeeds.
 
 Two cases wait in process instead, as before:
 
@@ -67,7 +72,8 @@ Stop a step from hanging indefinitely with `timeoutMs`:
 .step('call-external-api', {
   timeoutMs: 5000, // fail the attempt after 5 seconds
   handler: async ({ input, signal }) => {
-    return await fetch(`https://slow-api.example.com/${input.id}`, { signal })
+    const response = await fetch(`https://slow-api.example.com/${input.id}`, { signal })
+    return await response.json()
   },
 })
 ```

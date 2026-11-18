@@ -18,7 +18,7 @@ So what matters is which names have results, not where the steps sit or what the
 | **Add a step before the point the run has reached** | Runs the new step **late** — after the work it was meant to come before. |
 | **Change what a step returns** | Later steps receive the **old shape** from runs that finished it before the deploy, whatever their types say. |
 | **Change the input schema** | Runs keep the input they were enqueued with; it is not checked against the new schema. |
-| **Remove a workflow from the engine** | Its runs are never claimed again. They stay `pending`, `sleeping`, or `waiting` until it is registered once more. |
+| **Remove a workflow from the engine** | Its runs are never claimed again. They stay `pending`, `running`, `sleeping`, or `waiting` until it is registered once more. |
 
 A [workflow written as a function](/guide/functions#changing-a-function-s-code) is matched by name in the same way, but runs from the top each time, so adding and reordering steps behaves a little differently there.
 

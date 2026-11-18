@@ -17,7 +17,7 @@ const orderWorkflow = createWorkflow({
 })
   .step('charge', async ({ input, idempotencyKey }) => {
     // Steps run at least once; the key lets Stripe drop a repeated charge
-    const charge = await stripe.charges.create({ amount: input.amount }, { idempotencyKey })
+    const charge = await stripe.paymentIntents.create({ amount: input.amount, currency: 'usd' }, { idempotencyKey })
     return { chargeId: charge.id }
   })
   .step('fulfill', async ({ prev }) => {
@@ -68,9 +68,8 @@ Now the user is charged but never got their welcome email. Worse — you don't k
 
 | | Reflow | Temporal | Inngest |
 |---|---|---|---|
-| Infrastructure | A SQLite file, or your Postgres | Temporal Server + DB | Cloud service |
-| Type safety | Full end-to-end | Partial | Partial |
-| Setup | `npm install reflow-ts` | Cluster deployment | Account + SDK |
+| Infrastructure | A SQLite file, or your Postgres | Temporal Server + DB | Inngest's server (hosted or self-hosted) |
+| Setup | `npm install reflow-ts` | Cluster deployment | Account or self-hosted server, plus the SDK |
 | Best for | Apps, CLIs, and AI agents, from one process to many machines | Very large, multi-language systems | Serverless |
 
 **Don't use Reflow when:**
@@ -97,8 +96,9 @@ Reflow's overhead is small — most of the cost in real workflows is your own st
 # Node.js 22.13+ or Bun — SQLite is built in, nothing else to install
 npm install reflow-ts        # or: bun add reflow-ts
 
-# Older Node (18.18+), or to use better-sqlite3
-npm install reflow-ts better-sqlite3
+# Older Node, or to use better-sqlite3
+npm install reflow-ts better-sqlite3      # Node 22+
+npm install reflow-ts better-sqlite3@12   # Node 18.18–21
 
 # PostgreSQL, for workers on many machines
 npm install reflow-ts pg
@@ -121,7 +121,7 @@ const storage = new SQLiteStorage('./reflow.db')
 
 // PostgreSQL
 import { PostgresStorage } from 'reflow-ts/postgres'
-const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL })
+const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL ?? 'postgres://localhost/app' })
 ```
 
 `node:sqlite` is still marked experimental by Node, which prints an `ExperimentalWarning` once at startup; it works unflagged from Node 22.13 and 23.4 (Node 22.5–22.12 need `--experimental-sqlite`). If you'd rather not see the warning, or you're on an older Node, use `reflow-ts/sqlite-node` with `better-sqlite3`. On Node 18–21, pin `better-sqlite3@12`: version 13 requires Node 22, and Reflow accepts `better-sqlite3 >= 9`.
@@ -129,9 +129,9 @@ const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL
 Reflow uses [Standard Schema](https://github.com/standard-schema/standard-schema) for input validation, so you can bring any compatible library:
 
 ```bash
-bun add zod        # or
-bun add valibot    # or
-bun add arktype    # or any Standard Schema-compatible library
+npm install zod        # or
+npm install valibot    # or
+npm install arktype    # or any Standard Schema-compatible library
 ```
 
 ## Core Concepts
@@ -220,7 +220,8 @@ await engine.start(1000) // poll every 1000ms (default)
 const run = await engine.enqueue('order-fulfillment', { orderId: 'ORD_1', amount: 100 })
 // run.id is a unique identifier for this run
 
-// Stop polling (waits for in-flight work to finish)
+// Stop polling and abort in-flight runs; another engine reclaims them later.
+// Schedules stay registered.
 await engine.stop()
 ```
 
@@ -352,7 +353,7 @@ const workflow = createWorkflow({ name: 'conditional', input: schema })
   })
 ```
 
-The optional value passed to `complete()` is persisted as the step result and visible via `getRunStatus()`. Early completion is crash-safe — if the engine crashes after saving the step but before marking the run completed, recovery will detect the early-complete marker and finish the run without re-executing later steps.
+The optional value passed to `complete()` is persisted as the step result and as the run's `output`, both visible via `getRunStatus()`. Early completion is crash-safe — if the engine crashes after saving the step but before marking the run completed, recovery will detect the early-complete marker and finish the run without re-executing later steps.
 
 ### Parallel Steps
 
@@ -573,8 +574,9 @@ Prevent steps from hanging indefinitely:
 ```typescript
 .step('call-external-api', {
   timeoutMs: 5000, // Fail after 5 seconds
-  handler: async ({ input }) => {
-    return await fetch(`https://slow-api.example.com/${input.id}`)
+  handler: async ({ input, signal }) => {
+    const response = await fetch(`https://slow-api.example.com/${input.id}`, { signal })
+    return await response.json() // return plain data, not the Response
   },
 })
 ```
@@ -710,7 +712,7 @@ const storage = new SQLiteStorage('./workflows.db')
 ```typescript
 import { PostgresStorage } from 'reflow-ts/postgres'
 
-const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL })
+const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL ?? 'postgres://localhost/app' })
 // or share your app's pool: new PostgresStorage({ pool })
 ```
 
@@ -737,7 +739,7 @@ interface StorageAdapter {
   readonly supportsEventNames?: boolean
   getCachedStep?(key: string): Promise<CachedStep | null>
   putCachedStep?(entry: CachedStep): Promise<void>
-  deleteExpiredCachedSteps?(now: number): Promise<number>
+  deleteExpiredCachedSteps?(now: number, limit: number): Promise<number>
   getRun(runId: string): Promise<WorkflowRun | null>
   listRuns(filter?: ListRunsFilter): Promise<WorkflowRun[]>
   requeueRun(runId: string, options?: RequeueOptions): Promise<boolean>
@@ -765,7 +767,7 @@ Persisted workflow input and step output must be plain data: objects, arrays, st
 
 ## Testing
 
-Reflow includes a test helper that runs a workflow to completion in memory and returns typed results:
+Reflow includes a test helper that runs a workflow in one pass in memory and returns typed results. A workflow that sleeps or waits for an event cannot finish in one pass, so `run()` throws `TestRunIncompleteError` for it; test those with `createEngine` and `MemoryStorage` (from `reflow-ts/test`), driven by `tick()` and `sendEvent()`.
 
 ```typescript
 import { testEngine } from 'reflow-ts/test'
@@ -775,7 +777,7 @@ const te = testEngine({ workflows: [orderWorkflow] })
 const result = await te.run('order-fulfillment', { orderId: 'test', amount: 100 })
 
 result.status              // 'completed' | 'failed'
-result.steps.charge.output // { chargeId: string } — fully typed
+result.steps.charge.output // { chargeId: string } once completed; null if it failed
 result.steps.charge.status // 'completed' | 'failed'
 result.steps.charge.error  // string | null
 // a step with `when` that did not run: { status: 'skipped', output: null, error: null }
@@ -793,8 +795,8 @@ describe('order workflow', () => {
     const result = await te.run('order-fulfillment', { orderId: 'ORD_1', amount: 100 })
 
     expect(result.status).toBe('completed')
-    expect(result.steps.charge.output.chargeId).toBeTruthy()
-    expect(result.steps.fulfill.output.trackingNumber).toBeTruthy()
+    expect(result.steps.charge.output?.chargeId).toBeTruthy()
+    expect(result.steps.fulfill.output?.trackingNumber).toBeTruthy()
   })
 })
 ```
@@ -894,7 +896,7 @@ hooks: {
 | `RunCancelledError` | `RUN_CANCELLED` | Run cancelled via `engine.cancel()` | `runId` |
 | `RunNotFoundError` | `RUN_NOT_FOUND` | `waitForRun()` with an unknown run id | `runId` |
 | `LeaseExpiredError` | `LEASE_EXPIRED` | Worker lost its lease on a run | `runId` |
-| `RunSuspendedError` | `RUN_SUSPENDED` | A workflow written as a function is suspended to sleep or wait; its pending operations reject with it | `runId` |
+| `RunSuspendedError` | `RUN_SUSPENDED` | A workflow written as a function is suspended to sleep or wait. Raised inside the engine; the function never sees it. Type-only export: match on `code === 'RUN_SUSPENDED'` or `isRunControlError()` | `runId` |
 | `WaitTimeoutError` | `WAIT_TIMEOUT` | A `waitForEvent` step's `timeoutMs` elapsed | `eventName`, `timeoutMs` |
 | `ParallelCompleteError` | `PARALLEL_COMPLETE` | `complete()` called inside a parallel branch | `stepName` |
 | `StorageError` | `STORAGE` | A storage backend operation failed; driver error on `cause` | `operation`, `cause` |
@@ -979,7 +981,7 @@ Adds a step to the workflow. Accepts either a handler function or a config objec
 | Parameter | Type | Description |
 |---|---|---|
 | `maxAttempts` | `number` | Maximum number of attempts, at least 1. Without `retry`, a step gets one attempt |
-| `backoff` | `'linear' \| 'exponential'` | Backoff strategy between retries |
+| `backoff` | `'linear' \| 'exponential'` | Backoff strategy between retries (required) |
 | `initialDelayMs` | `number` | Base delay in milliseconds (default: 1000) |
 | `timeoutMs` | `number` | Timeout per attempt. Step-level `timeoutMs` takes precedence |
 
@@ -1010,7 +1012,7 @@ Branch names share the same namespace as `.step()` names — duplicate names acr
 
 ### `workflow.onFailure(handler)`
 
-Attaches a failure handler for compensation logic. Receives `{ error, stepName, input }`. Called when a step fails after exhausting all retry attempts.
+Attaches a failure handler for compensation logic. Receives `{ error, stepName, input }`. Called whenever the run fails: a step exhausting its retries, a wait timing out, a parallel branch failing. An error it throws is reported to `onError` as a `HookError`.
 
 ### `createEngine(config)`
 
@@ -1105,7 +1107,7 @@ Returns how many runs are in each status, optionally for one `workflow`.
 
 ### `engine.prune({ olderThan, statuses? })`
 
-Deletes finished runs that finished longer ago than `olderThan` (ms or a duration string like `'30d'`), with their steps and events. Never touches a run that can still progress. Returns how many were deleted.
+Deletes finished runs that finished longer ago than `olderThan` (ms or a duration string like `'30d'`), with their steps and events. Never touches a run that can still progress. Also deletes every expired cached step result. Returns how many runs were deleted.
 
 ### `testEngine(config)`
 

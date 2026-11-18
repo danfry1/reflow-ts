@@ -14,7 +14,8 @@ await engine.start(1000) // poll every 1000ms (default)
 
 const run = await engine.enqueue('order-fulfillment', { orderId: 'ORD_1', amount: 100 })
 
-// Stop polling (waits for in-flight work to finish)
+// Stop polling and abort in-flight runs; another engine reclaims them later.
+// Schedules stay registered.
 await engine.stop()
 ```
 

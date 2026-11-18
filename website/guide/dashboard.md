@@ -19,9 +19,9 @@ npx reflow-ts dashboard ./app.db
 # http://127.0.0.1:4400/  (read-only)
 ```
 
-Open the address it prints. That is all: it needs Node 22.5 or later, or Bun, and nothing else.
+Open the address it prints. That is all: it needs Bun or Node 22.13 / 23.4 or later, and nothing else. On older Node, install `better-sqlite3` and it uses that.
 
-It cannot change anything. It opens the file read-only, so it is safe to point at a live database or a backup, and with no engine attached there is nothing to cancel or resume with. It listens only on your own machine (`127.0.0.1`), and answers only to requests addressed to that host and port. Pass `--port` to pick another port.
+It changes nothing unless you pass `--migrate`. It opens the file read-only, so it is safe to point at a live database or a backup, and with no engine attached there is nothing to cancel or resume with. It listens only on your own machine (`127.0.0.1`), and answers only to requests addressed to that host and port. Pass `--port` to pick another port.
 
 A database from an older version of Reflow is refused rather than upgraded behind your back; start your app on the new version once, or pass `--migrate`. The command never creates a database at a path that does not exist.
 
@@ -156,7 +156,7 @@ allowedHosts: ['reflow.internal:4400'],
 A sidebar lists every workflow, with how many of its runs have failed or are still in progress, so switching between them is one click. Pick one and its runs fill the middle; pick a run and its detail opens beside them, so moving to the next run — a click, or the arrow keys — never means going back. On a phone the panes show one at a time.
 
 - **Workflows.** Each workflow you defined, with its steps in order and how many of its runs are failed, waiting, sleeping, or completed. A workflow is the recipe; every `enqueue()` starts a new, independent run of it.
-- **A workflow's runs**, newest first. Each run is labelled by its input — *email: ada@example.com* — so runs of the same workflow can be told apart, with one line on where it stands (*Retrying capture in 3s, after 2 failed attempts*, *Waiting for approved, times out in 23h*) and its steps so far. Counts by status double as filters.
+- **A workflow's runs**, newest first. Each run is shown by its [label](#naming-runs), idempotency key, or short id — *order ORD_1042* — so runs of the same workflow can be told apart, with one line on where it stands (*Retrying capture in 3s, after 2 failed attempts*, *Waiting for approved, times out in 23h*) and its steps so far. Counts by status double as filters.
 - **One run.** Where it stands in a sentence, then each step with its status, how long it took, and where it fell in the run's time. A retried step lists every attempt with its error and the wait before the next; a stretch where nothing ran, such as a crash before another engine picked the run up, is called out between steps. Then the run's input and output.
 - **All runs**, across workflows, for triage — every failed run, say.
 - **Schedules**, with when each next fires.

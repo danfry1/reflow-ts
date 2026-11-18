@@ -24,7 +24,7 @@ await engine.schedule('report',  input, { cron: '0 9 * * 1-5' })  // 09:00, week
 
 `{ every }` takes milliseconds or a unit-suffixed string (`'500ms'`, `'30s'`, `'24h'`, `'7d'`) — the same form [`.sleep()`](/guide/sleep) accepts. A bare number is milliseconds.
 
-`{ cron }` takes the standard five fields — `minute hour day-of-month month day-of-week` — with wildcards, ranges, lists, a `/step` suffix, three-letter month and day names, and the `@hourly` / `@daily` / `@weekly` / `@monthly` / `@yearly` aliases:
+`{ cron }` takes the standard five fields — `minute hour day-of-month month day-of-week` — with wildcards, ranges, lists, a `/step` suffix, three-letter month and day names, and the `@hourly` / `@daily` (or `@midnight`) / `@weekly` / `@monthly` / `@yearly` (or `@annually`) aliases. Day-of-week `0` and `7` both mean Sunday:
 
 | Expression | Fires |
 |---|---|
@@ -50,8 +50,8 @@ You can check an expression, or preview its occurrences, without registering any
 ```typescript
 import { parseCron, nextCronOccurrence } from 'reflow-ts'
 
-const cron = parseCron('0 9 * * 1-5')       // throws ConfigError if malformed
-new Date(nextCronOccurrence(cron, Date.now()))
+const cron = parseCron('0 9 * * 1-5')         // throws ConfigError if malformed
+new Date(nextCronOccurrence(cron, Date.now())) // throws ConfigError if it can never occur
 ```
 
 ## Schedules are stored, not held in memory
@@ -81,7 +81,7 @@ A worker only claims schedules for workflows it has registered, so in a fleet wh
 
 ## Identity
 
-The key defaults to a hash of the workflow name, the interval, and the canonical form of the input, so instances agree without configuration. Set `options.key` when you want to control it:
+The key defaults to a hash of the workflow name, the recurrence (interval or cron expression), and the canonical form of the input, so instances agree without configuration. Set `options.key` when you want to control it:
 
 ```typescript
 // Keep one identity while the input changes

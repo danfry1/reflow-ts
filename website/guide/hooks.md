@@ -20,7 +20,7 @@ const engine = createEngine({
       alerting.notify(`${workflow} failed at ${stepName}: ${error.message}`)
     },
     onError: (error) => {
-      // background failures (scheduled enqueues, poll cycles)
+      // background failures, and hooks or onFailure handlers that throw
       console.error('Engine error:', error)
     },
   },
@@ -36,10 +36,10 @@ Every hook receives an event carrying `runId` and `workflow`. The shapes mirror 
 | `onRunStart` | An engine picks up a run to execute it: when it first starts, and again each time it resumes — after a sleep, a wait, a retry backoff, or crash recovery | — |
 | `onStepStart` | Before each step runs | `stepName` |
 | `onStepSkipped` | A step's [`when`](/api/workflow) predicate returned false | `stepName` |
-| `onStepComplete` | After a step's result is persisted | `stepName`, `output`, `attempts` |
+| `onStepComplete` | After a step's result is persisted | `stepName`, `output`, `attempts`, `cached` (true when the output was reused from the [step cache](/guide/caching)) |
 | `onRunComplete` | A run finishes successfully | `output` (the run's final result) |
 | `onRunFailed` | A run fails | `stepName`, `error` |
-| `onError` | A background operation fails (scheduled enqueue, poll cycle) | _(receives the `Error` directly)_ |
+| `onError` | A background operation fails (scheduled enqueue, poll, or claim), or a hook, stream delivery, or `onFailure` handler throws (as a `HookError`) | _(receives the `Error` directly)_ |
 
 ## Hooks may be async
 

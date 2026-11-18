@@ -9,7 +9,7 @@ const cancelled = await engine.cancel(run.id)
 // true if cancelled, false if the run already completed / failed / cancelled
 ```
 
-Cancellation aborts the current step's `AbortSignal` immediately and prevents later steps from starting. The run's status becomes `cancelled`.
+Cancellation is recorded at once: the run's status becomes `cancelled` and no later step starts. On the engine that called `cancel()`, the current step's `AbortSignal` aborts immediately. A run executing in another process is aborted at that process's next heartbeat — within `heartbeatIntervalMs`, 10 seconds with the default lease.
 
 ## Cooperate with the signal
 
