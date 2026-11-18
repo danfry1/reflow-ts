@@ -18,7 +18,7 @@ const run = info?.run
 | `output` | A completed run's final output: the last step's output, or the value passed to [`complete()`](/guide/early-completion). `undefined` otherwise |
 | `error` | A failed run's `{ stepName, message, code }`, or `null` |
 | `wakeAt` | When a sleeping run wakes, or a waiting run times out; `null` otherwise |
-| `waitingFor` | The event a waiting run is waiting for; `null` otherwise |
+| `waitingFor` | The event a waiting run is waiting for; `null` otherwise. A [function workflow](/guide/functions) waiting on several events lists them, separated by `', '` |
 
 `error.code` is the error's string `code` when it has one — a Reflow code such as `'STEP_TIMEOUT'` or `'WAIT_TIMEOUT'`, or a system code such as `'ECONNREFUSED'` — so failures can be grouped without parsing messages:
 

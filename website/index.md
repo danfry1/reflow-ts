@@ -22,7 +22,7 @@ npm install reflow-ts
 
 </div>
 
-<p class="home-facts"><span>Node 18 or later, and Bun</span><span>SQLite in a file next to your app, or PostgreSQL</span><span>Zod, Valibot, ArkType, or any Standard Schema</span><span>MIT licensed</span></p>
+<p class="home-facts"><span>Node 18.18 or later, and Bun</span><span>SQLite in a file next to your app, or PostgreSQL</span><span>Zod, Valibot, ArkType, or any Standard Schema</span><span>MIT licensed</span></p>
 
 </section>
 
@@ -133,8 +133,7 @@ npx reflow-ts dashboard ./app.db
 
 |  | Reflow | Temporal | Inngest |
 |---|---|---|---|
-| What you run | Your app, and a SQLite file or your Postgres | A cluster, a database, and workers | A hosted service and an SDK |
-| Type safety | End to end, inferred | Partial | Partial |
+| What you run | Your app, and a SQLite file or your Postgres | A cluster, a database, and workers | Inngest's server, hosted or self-hosted, and an SDK |
 | Good for | Apps, CLIs, and agents, from one process to many machines | Very large, multi-language systems | Serverless functions |
 
 <p>Reflow is for apps that need multi-step work to be reliable without running workflow infrastructure. Start on SQLite and move to Postgres when workers span machines, without changing a workflow. It is not built for workflows written in several languages, for sub-second dispatch at very high volume, or for teams already on Temporal.</p>

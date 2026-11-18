@@ -46,7 +46,7 @@ When workers run on more than one machine, use [PostgreSQL](/guide/storage#postg
 
 ```typescript
 import { PostgresStorage } from 'reflow-ts/postgres'
-const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL })
+const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL ?? 'postgres://localhost/app' })
 ```
 
 ::: tip node:sqlite prints an experimental warning
@@ -69,9 +69,9 @@ See [Storage](/guide/storage) for the in-memory adapter and how to write your ow
 Reflow validates workflow input with [Standard Schema](https://github.com/standard-schema/standard-schema), so any compatible library works:
 
 ```bash
-bun add zod        # or
-bun add valibot    # or
-bun add arktype    # or any Standard Schema-compatible library
+npm install zod        # or
+npm install valibot    # or
+npm install arktype    # or any Standard Schema-compatible library
 ```
 
 Next: [Quick Start](/guide/quick-start) walks through defining and running a workflow.

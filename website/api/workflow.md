@@ -35,7 +35,7 @@ Adds a sequential step. Accepts either a bare handler or a config object.
 | `retry` | `RetryConfig` | Optional retry configuration. |
 | `timeoutMs` | `number` | Optional timeout per attempt (ms). Takes precedence over `retry.timeoutMs`. |
 | `when` | `(ctx) => boolean \| Promise<boolean>` | Optional predicate. Receives `{ input, prev, steps }`. When it returns `false` the step is skipped (see below). |
-| `cache` | `number \| string \| { ttl, key?, version? }` | Optional. Reuse the step's result from an earlier run for `ttl` (ms or a duration such as `'24h'`), keyed on `{ input, prev, steps }` or what `key({ input, prev, steps })` returns; change `version` to discard results from older code. Sequential steps only. See [Caching Steps](/guide/caching). |
+| `cache` | `number \| string \| { ttl, key?, version? }` | Optional. Reuse the step's result from an earlier run for `ttl` (ms or a duration such as `'24h'`), keyed on `{ input, prev, steps }` or what `key({ input, prev, steps })` returns; change `version` to discard results from older code. Sequential steps only: on a `.parallel()` branch it throws [`ConfigError`](/api/errors), as does a `ttl` of zero or less. See [Caching Steps](/guide/caching). |
 
 **Conditional steps (`when`):**
 
@@ -65,8 +65,8 @@ The types follow the skip rather than assuming the step ran. After a conditional
 
 | Field | Type | Description |
 |---|---|---|
-| `maxAttempts` | `number` | Maximum attempts (default `1`, no retry) |
-| `backoff` | `'linear' \| 'exponential'` | Backoff strategy between retries |
+| `maxAttempts` | `number` | Required. Maximum attempts, the first included. Without `retry` a step makes one attempt |
+| `backoff` | `'linear' \| 'exponential'` | Required. Backoff strategy between retries |
 | `initialDelayMs` | `number` | Base delay in ms (default `1000`) |
 | `timeoutMs` | `number` | Timeout per attempt; step-level `timeoutMs` wins |
 
@@ -114,13 +114,13 @@ Durably pauses the workflow until an external event named `name` is delivered vi
 | Option | Type | Description |
 |---|---|---|
 | `schema` | `StandardSchemaV1<T>` | Validates the payload on delivery; infers the `prev`/`steps[name]` type as `T`. |
-| `timeoutMs` | `number` | If set, the run fails with [`WaitTimeoutError`](/api/errors) when no event arrives within this many ms. |
+| `timeoutMs` | `number` | If set, the run fails with [`WaitTimeoutError`](/api/errors) when no event arrives within this many ms. Milliseconds only; anything but a positive number throws [`ConfigError`](/api/errors). |
 
 Delivery is durable and order-independent — an event sent before the run reaches the wait is buffered and consumed when it gets there. `name` shares the step namespace (duplicates throw [`DuplicateStepError`](/api/errors)). See [Waiting for Events](/guide/wait-for-event).
 
 ## `.onFailure(handler)`
 
-Attaches a compensation handler, called when a step fails after exhausting its retries.
+Attaches a compensation handler, called once the run has failed — a step exhausting its retries, a parallel branch failing, a wait timing out, or a `when` predicate throwing.
 
 ```typescript
 .onFailure(async ({ error, stepName, input }) => {
@@ -131,7 +131,7 @@ Attaches a compensation handler, called when a step fails after exhausting its r
 | Field | Type | Description |
 |---|---|---|
 | `error` | `Error` | The error that caused the failure |
-| `stepName` | `string` | The step (or parallel branch) that failed |
+| `stepName` | `string` | The step, parallel branch, or wait whose failure ended the run |
 | `input` | `TInput` | The original validated input |
 
-The handler runs after the run is already marked `failed`; errors it throws are swallowed. See [Failure Handling](/guide/failure-handling).
+The handler runs after the run is already marked `failed`; an error it throws cannot change that, and goes to the engine's `onError` as a [`HookError`](/api/errors). See [Failure Handling](/guide/failure-handling).

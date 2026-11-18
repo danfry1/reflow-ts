@@ -17,7 +17,7 @@ const storage = new SQLiteStorage('./workflows.db')
 
 ## SQLiteStorage (Node.js)
 
-For Node.js. Uses [`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3) (a native addon), persists to disk, and runs in WAL mode. Install `better-sqlite3` alongside Reflow.
+For Node.js. Uses [`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3) (a native addon), persists to disk, and runs in WAL mode. Install `better-sqlite3` alongside Reflow. `better-sqlite3` 13 needs Node 22, so on Node 18–21 install `better-sqlite3@12`.
 
 ```typescript
 import { SQLiteStorage } from 'reflow-ts/sqlite-node'
@@ -62,8 +62,10 @@ npm install reflow-ts pg
 ```typescript
 import { PostgresStorage } from 'reflow-ts/postgres'
 
-const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL })
+const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL ?? 'postgres://localhost/app' })
 ```
+
+Reflow creates its own pool from a connection string; `poolConfig` passes other pool settings, such as `max` or `ssl`. `close()` ends that pool in the background, and `await storage.end()` waits for it to finish.
 
 Or hand it the pool your app already has; Reflow borrows connections from it and leaves it open on `close()`:
 
@@ -71,7 +73,7 @@ Or hand it the pool your app already has; Reflow borrows connections from it and
 const storage = new PostgresStorage({ pool })
 ```
 
-`initialize()` — which `engine.start()` calls — creates a `reflow` schema and its tables, so they never meet your app's; pass `schema: 'jobs'` to name it yourself. It is safe for every process to start at once: they take turns under an advisory lock, and each migration runs exactly once. Needs PostgreSQL 14 or later.
+`initialize()` — which `engine.start()` calls — creates a `reflow` schema and its tables, so they never meet your app's; pass `schema: 'jobs'` to name it yourself. It is safe for every process to start at once: they take turns under an advisory lock, and each migration runs exactly once. When the schema is already current, `initialize()` changes nothing, so you can run it once as the schema's owner — at deploy time, say — and run the app as a role that may only read and write rows. Needs PostgreSQL 14 or later.
 
 Every process runs the same engine against the same database, and they share the work: claiming takes each due run with `FOR UPDATE SKIP LOCKED`, so no two workers take one run and none waits on another. Crash recovery, leases, schedules, events, and [per-workflow concurrency limits](/guide/concurrency#limiting-one-workflow) all hold across machines. On a table of a million runs, a claim takes a few milliseconds.
 
@@ -114,12 +116,16 @@ Implement the [`StorageAdapter`](/api/storage) interface to back Reflow with any
 
 - `claimDueSchedule(workflowNames, now)` must claim a due [schedule](/guide/scheduling) **and advance its next occurrence in the same transaction**, so one occurrence cannot fire on two workers.
 - To support [per-workflow concurrency](/guide/concurrency#limiting-one-workflow), set `supportsConcurrencyLimits = true` and honour `claimNextRun`'s third argument, a map of workflow name to limit: skip a workflow whose live `running` runs already reach its limit, counted **in the same transaction as the claim**.
-- To support [cached steps](/guide/caching), implement `getCachedStep(key)`, `putCachedStep(entry)`, and `deleteExpiredCachedSteps(now)`, keeping entries in a table of their own: they outlive the runs that produced them.
-- Implement `consumeEvent(step, leaseId)` so a [waiting run](/guide/wait-for-event) takes its event and records the step **in one transaction, under the lease**. Without it the engine takes the event and saves the step as two writes, and an event taken by a process that dies between them is lost.
+- To support [cached steps](/guide/caching), implement `getCachedStep(key)`, `putCachedStep(entry)`, and `deleteExpiredCachedSteps(now, limit)` — which deletes at most `limit` expired entries and returns how many it deleted — keeping entries in a table of their own: they outlive the runs that produced them.
+- Implement `consumeEvent(step, leaseId, eventName?)` so a [waiting run](/guide/wait-for-event) takes its event and records the step **in one transaction, under the lease**. Without it the engine takes the event and saves the step as two writes, and an event taken by a process that dies between them is lost.
+- For [workflows written as functions](/guide/functions):
+  - set `supportsEventNames = true` once `consumeEvent` honours its `eventName` argument and `waitRun` accepts a list of names. Without it, a function workflow can have only one pending wait at a time, and each wait must be named after its event.
+  - set `supportsKeepFailed = true` once `requeueRun(runId, { keepFailed })` keeps the named `failed` steps. Without it, resuming a run re-runs steps whose failure the function had caught.
+  - store and return `StepResult.kind`, so a replay can tell a step from a sleep or wait of the same name.
 
 See the [Storage API reference](/api/storage) for the full interface and each method's contract.
 
-Two methods are optional, and only make the [dashboard](/guide/dashboard) cheaper to run against your storage; it works without them:
+Two further optional methods only make the [dashboard](/guide/dashboard) cheaper to run against your storage; it works without them:
 
 - `getStepResultsForRuns(runIds)` — several runs' steps in one read, rather than one `getStepResults` call per listed run.
 - `runActivity({ workflow?, since, bucketMs, buckets })` — runs started, completed, and failed per time bucket. Without it the dashboard counts a sample of recent runs and shows only the stretch of time that sample covers.
@@ -135,10 +141,13 @@ import { storageConformanceCases } from 'reflow-ts/conformance'
 import { MyStorage } from './my-storage'
 
 for (const testCase of storageConformanceCases) {
-  it(testCase.name, async () => {
+  it(testCase.name, async (context) => {
     const storage = new MyStorage(/* ... */)
     await storage.initialize()
     try {
+      if (testCase.appliesTo?.(storage) === false) {
+        context.skip() // covers an optional method this adapter doesn't implement
+      }
       await testCase.run(storage)
     } finally {
       storage.close()

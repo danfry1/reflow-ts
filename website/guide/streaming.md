@@ -22,14 +22,14 @@ The yielded [`EngineEvent`](/api/events) is a discriminated union on `type`, so 
 ```typescript
 for await (const event of engine.stream()) {
   switch (event.type) {
-    case 'stepComplete': /* event.stepName, event.output, event.attempts */ break
+    case 'stepComplete': /* event.stepName, event.output, event.attempts, event.cached */ break
     case 'runComplete':  /* event.output */ break
     case 'runFailed':    /* event.stepName, event.error */ break
   }
 }
 ```
 
-The variants are `runStart`, `stepStart`, `stepComplete`, `runComplete`, and `runFailed` — all carrying `runId` and `workflow`. Across a multi-workflow engine, one stream sees events from every run.
+The variants are `runStart`, `stepStart`, `stepSkipped`, `stepComplete`, `runComplete`, and `runFailed` — all carrying `runId` and `workflow`. Across a multi-workflow engine, one stream sees events from every run.
 
 ## Backpressure
 

@@ -16,7 +16,7 @@ const fulfilOrder = createWorkflow({
   events: { shipped: z.object({ tracking: z.string() }) },
 }, async ({ input, step }) => {
   const payment = await step.run('charge', async ({ idempotencyKey }) => {
-    const charge = await stripe.paymentIntents.create({ amount: 5000 }, { idempotencyKey })
+    const charge = await stripe.paymentIntents.create({ amount: 5000, currency: 'usd' }, { idempotencyKey })
     return { paymentIntent: charge.id }
   })
 
@@ -113,7 +113,7 @@ const summary = await step.run('summarize', {
 | `timeout` | Give up on an attempt after this long: milliseconds, or a duration. |
 | `cache` | Reuse the result from an earlier run: a duration, or `{ ttl, key?, version? }`. See [Caching Steps](/guide/caching). |
 
-Durations are written the same way everywhere in this API — `timeout`, `initialDelay`, `sleep`, a wait's `timeout` — as milliseconds or a string such as `'500ms'`, `'30s'`, `'24h'`, `'7d'`.
+Durations are written the same way everywhere in the function API — `timeout`, `initialDelay`, `sleep`, a wait's `timeout` — as milliseconds or a string such as `'500ms'`, `'30s'`, `'24h'`, `'7d'`. (A chained workflow's `timeoutMs`, `initialDelayMs`, and wait `timeoutMs` take milliseconds only.)
 
 Without a `key`, a cached step is keyed on the workflow input, every result handed to the function before the step was called, and every failure or timed-out wait it had seen by then: everything its code could depend on. When steps run concurrently, which of their results came first can differ between runs, and so can that key — a miss, never a wrong hit. Give a cached step that runs beside others its own `key`.
 
@@ -245,9 +245,9 @@ Some defaults differ, and are worth setting explicitly in code you may move:
 
 | | Reflow | Inngest | Cloudflare Workflows |
 |---|---|---|---|
-| Attempts per step | 1, unless `retry` says more | 5 (4 retries) | 6 (5 retries), exponential from 10s |
+| Attempts per step | 1, unless `retry` says more | 5 (4 retries) | 6 (5 retries), exponential from 10s, with a 10-minute step timeout |
 | A wait without a timeout | Waits until the event arrives | Needs a timeout | Times out after 24 hours, and fails the instance |
 | Step results | Saved with `Date` and `undefined` kept | JSON: a `Date` comes back as a string | Serializable values only |
-| Step options | `{ retry, timeout, handler }` | Set per function | `step.do(name, config, fn)` |
+| Step options | `{ retry, timeout, cache, handler }` | Set per function | `step.do(name, config, fn)` |
 
 Reflow runs in your process against your SQLite or Postgres database, with no service to deploy. Moving a function workflow to Inngest or Cloudflare Workflows later, should you outgrow it, is mostly a matter of swapping the calls above and setting those defaults; Temporal splits steps into separately deployed activities, so moving there is a larger change.

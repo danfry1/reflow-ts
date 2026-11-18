@@ -10,7 +10,7 @@
  * ```ts
  * import { PostgresStorage } from 'reflow-ts/postgres'
  *
- * const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL })
+ * const storage = new PostgresStorage({ connectionString: process.env.DATABASE_URL ?? 'postgres://localhost/app' })
  * const engine = createEngine({ storage, workflows: [order] })
  * await engine.start()
  * ```

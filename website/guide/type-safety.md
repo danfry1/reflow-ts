@@ -8,6 +8,7 @@ Reflow tracks types through the entire workflow chain — most mistakes are comp
 - **`steps`** — typed access to every prior step's output by name.
 - **Engine** — `enqueue()` only accepts registered workflow names with matching input.
 - **Test engine** — `run()` returns typed step results keyed by step name.
+- **[Workflows written as functions](/guide/functions)** — each `step.run` result is typed from its handler, `step.waitForEvent` from the event's schema in `events`, and the run's output from what the function returns.
 
 ```typescript
 // These are all compile-time errors:
@@ -24,4 +25,4 @@ workflow.step('x', async ({ prev }) => {
 
 ## Inference helpers
 
-For building typed wrappers around Reflow, several helper types are exported — `InferInput`, `InferSteps`, `WorkflowInputMap`, `WorkflowStepsMap`, and the `StepContext` / `StepConfig` / `EngineEvent` types. See the [Types reference](/api/types).
+For building typed wrappers around Reflow, several helper types are exported — `InferInput`, `InferSteps`, `InferOutput`, `InferEvents`, `WorkflowInputMap`, `WorkflowStepsMap`, `WorkflowOutputMap`, the `ChainWorkflow` / `FunctionWorkflow` types (a workflow's `kind` is `'chain'` or `'function'`), and the `StepContext` / `StepConfig` / `EngineEvent` types. See the [Types reference](/api/types).

@@ -489,9 +489,10 @@ export class LeaseExpiredError extends RunControlError {
 }
 
 /**
- * Rejects the durable operations of a workflow written as a function once its
- * run has been suspended, so the function unwinds instead of carrying on. The
- * run resumes later by running the function again from the top.
+ * Raised inside the engine when a workflow written as a function is suspended
+ * to sleep or wait. The function never sees it: its pending operations are
+ * left unsettled rather than rejected, so it stays where it is instead of
+ * unwinding. The run resumes later by running the function again from the top.
  *
  * Recognise it, and the other control-flow errors, with {@link isRunControlError}.
  */

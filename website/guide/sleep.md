@@ -54,3 +54,7 @@ await engineB.start() // polls, reclaims the woken run, finishes it
 ## Zero-length sleep
 
 `.sleep('noop', 0)` (or any already-elapsed duration) completes in the same tick without suspending — useful when a duration is computed and may be zero.
+
+## In a workflow written as a function
+
+[`step.sleep(name, duration)`](/guide/functions#step-sleep-name-duration-and-step-sleepuntil-name-time) takes the same durations, and `step.sleepUntil(name, time)` pauses until a `Date` or epoch time.

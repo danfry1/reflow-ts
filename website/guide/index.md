@@ -1,6 +1,6 @@
 # What is Reflow
 
-Reflow is durable workflow execution for TypeScript. You define a multi-step operation — a signup, an import, an AI pipeline — as a chain of steps, and Reflow makes each step durable: persisted, retryable, and resumable after a crash. It runs on a SQLite file with no external services.
+Reflow is durable workflow execution for TypeScript. You define a multi-step operation — a signup, an import, an AI pipeline — as a chain of steps, and Reflow makes each step durable: persisted, retryable, and resumable after a crash. It runs on a SQLite file next to your app, or on your PostgreSQL database — there is no workflow service to deploy.
 
 ## The problem
 
@@ -19,7 +19,7 @@ Now the user is charged but never got their welcome email — and you don't know
 
 The usual fix is to hand-roll checkpoint logic: state columns, retry loops, deduplication. That's a few hundred lines of infrastructure that's hard to test and easy to get wrong.
 
-**Reflow makes each step durable instead.** If the process crashes after step 2 of 5, a new engine instance reclaims the stale run once its lease expires and picks up at step 3. Active workers heartbeat their lease while they run, completed steps are never re-executed, and each step's output is persisted in SQLite.
+**Reflow makes each step durable instead.** If the process crashes after step 2 of 5, a new engine instance reclaims the stale run once its lease expires and picks up at step 3. Active workers heartbeat their lease while they run, completed steps are never re-executed, and each step's output is persisted in SQLite or Postgres.
 
 ## Who is this for
 
@@ -31,7 +31,7 @@ The usual fix is to hand-roll checkpoint logic: state columns, retry loops, dedu
 
 **Don't use Reflow when:**
 
-- You need distributed execution across multiple machines.
+- You need workflows written in several languages, or event histories in the millions per run.
 - You need sub-second pickup of work enqueued by a different process (it waits for the next poll).
 - You're already running Temporal or similar.
 
@@ -39,10 +39,9 @@ The usual fix is to hand-roll checkpoint logic: state columns, retry loops, dedu
 
 |  | Reflow | Temporal | Inngest |
 |---|---|---|---|
-| Infrastructure | None (SQLite file) | Temporal Server + DB | Cloud service |
-| Type safety | Full end-to-end | Partial | Partial |
-| Setup | `bun add reflow-ts` | Cluster deployment | Account + SDK |
-| Best for | Single-process apps, CLIs, AI agents | Large distributed systems | Serverless |
+| What you run | Your app, and a SQLite file or your Postgres | Temporal Server, a database, and workers | Inngest's server (hosted or self-hosted) and an SDK |
+| Setup | `npm install reflow-ts` | Cluster deployment | Account or self-hosted server, plus the SDK |
+| Best for | Apps, CLIs, and AI agents, from one process to many machines | Very large, multi-language systems | Serverless functions |
 
 ## Next steps
 

@@ -32,6 +32,9 @@ Each `.step()` handler receives a single context object:
 | `prev` | The return value of the previous step (`undefined` for the first step). |
 | `steps` | Typed access to **all** previously completed step results by name, e.g. `steps.charge.chargeId`. |
 | `signal` | An `AbortSignal`, aborted when the run is cancelled, its lease is lost, or the step times out. |
+| `runId` | The id of the run this step belongs to. |
+| `attempt` | Which attempt at this step this is, from 1. |
+| `idempotencyKey` | The same every time this step runs for this run — across retries, crashes, and other processes — and different for every other step and run. Pass it to APIs that accept an idempotency key, such as a payment provider. |
 | `complete(value?)` | Finish the workflow early, skipping remaining steps. See [Early Completion](/guide/early-completion). |
 
 ## `prev` vs `steps`

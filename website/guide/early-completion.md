@@ -16,7 +16,7 @@ const workflow = createWorkflow({ name: 'conditional', input: schema })
   })
 ```
 
-The optional value passed to `complete()` is persisted as that step's result and is visible via [`getRunStatus()`](/api/engine). Calling `complete()` with no argument finishes the run with an `undefined` step output.
+The optional value passed to `complete()` is persisted as that step's result and as the run's `output`, both visible via [`getRunStatus()`](/api/engine). Calling `complete()` with no argument finishes the run with an `undefined` step output.
 
 ::: tip Return the call
 Write `return complete(...)`. `complete()` throws internally to unwind the handler, so anything after it won't run — returning it makes that explicit and keeps the types honest.

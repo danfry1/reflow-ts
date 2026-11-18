@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitepress'
 
 const description =
-  'Durable workflow execution for TypeScript. Multi-step workflows with full type safety, automatic retries, and crash recovery — powered by SQLite, no external services required.'
+  'Durable workflow execution for TypeScript. Multi-step workflows with full type safety, automatic retries, and crash recovery — on a SQLite file or your PostgreSQL database, with no workflow service to run.'
 
 export default defineConfig({
   title: 'Reflow',
@@ -100,6 +100,7 @@ export default defineConfig({
             { text: 'Testing', link: '/guide/testing' },
             { text: 'Type Safety', link: '/guide/type-safety' },
             { text: 'Error Handling', link: '/guide/error-handling' },
+            { text: 'Migrating to 0.11', link: '/guide/migrating-0-11' },
             { text: 'Migrating to 0.8', link: '/guide/migrating-0-8' },
             { text: 'Migrating to 0.7', link: '/guide/migrating-0-7' },
             { text: 'Migrating to 0.6', link: '/guide/migrating-0-6' },
@@ -114,6 +115,7 @@ export default defineConfig({
             { text: 'Engine methods', link: '/api/engine' },
             { text: 'Events & Streams', link: '/api/events' },
             { text: 'Storage', link: '/api/storage' },
+            { text: 'Dashboard', link: '/api/dashboard' },
             { text: 'Errors', link: '/api/errors' },
             { text: 'Types', link: '/api/types' },
           ],

@@ -35,7 +35,7 @@ So a step whose effect must not happen twice — charging a card, sending an ema
 
 The provider sees the same key on the repeat and returns the first charge rather than making a second. For your own database, the same idea: write with the key as a unique column, or upsert, so a repeat changes nothing. Where an API takes no key, check before acting — look the order up before shipping it.
 
-Steps also get `runId`, and `attempt` — which attempt at this step this is, from 1. For a step in sequence on a started engine, the count is saved with each retry, so it carries on after a crash: an attempt cut off by one ended without a result, and is made again under the same number. A [parallel branch](/guide/parallel), or a step on an engine driven only by `tick()`, waits out its retries in memory, so after a crash its count starts again from 1. Use `idempotencyKey`, not `attempt`, to recognise a repeat.
+Steps also get `runId`, and `attempt` — which attempt at this step this is, from 1. For a step in sequence on a started engine, the count is saved with each retry that has a backoff delay, so it carries on after a crash: an attempt cut off by one ended without a result, and is made again under the same number. Zero-delay retries (`initialDelayMs: 0`), a [parallel branch](/guide/parallel), and a step on an engine driven only by `tick()` retry in memory, so after a crash their count starts again from 1. Use `idempotencyKey`, not `attempt`, to recognise a repeat.
 
 [Parallel branches](/guide/parallel) follow the same rule, and recovery is per-branch: already-completed branches are skipped on resume.
 

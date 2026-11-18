@@ -19,7 +19,7 @@ const workflow = createWorkflow({
 | `config.label` | `(input) => string` | Optional. Names each run for people, from its typed input — an order number, a user id — wherever runs are listed, such as the [dashboard](/guide/dashboard#naming-runs). Without it a run is shown by its idempotency key, or else its id. |
 | `config.concurrency` | `number` | Optional. The most runs of this workflow running at once, across every process sharing the storage; the rest wait as `pending`. See [limiting a workflow](/guide/concurrency#limiting-one-workflow). |
 
-Returns a [`Workflow`](/api/workflow) with `.step()`, `.parallel()`, `.onFailure()`, and `.parseInput()`.
+Returns a [`Workflow`](/api/workflow) (`kind: 'chain'`) with `.step()`, `.parallel()`, `.sleep()`, `.waitForEvent()`, `.onFailure()`, and `.parseInput()`.
 
 The builder is **immutable** — every method returns a new `Workflow`, so a base workflow can be branched without the branches affecting each other. See [Workflows](/guide/workflows).
 
@@ -44,20 +44,44 @@ It takes the same `name`, `input`, `label`, and `concurrency` as above, and:
 | Parameter | Type | Description |
 |---|---|---|
 | `config.events` | `Record<string, StandardSchemaV1>` | Optional. The events `step.waitForEvent()` may wait for, each with the schema `sendEvent` validates its payload against. |
-| `config.onFailure` | `({ error, stepName, input }) => Promise<void>` | Optional. Called once a run has failed. `stepName` is empty when the function's own code threw. |
-| `config.maxOperations` | `number` | Optional. The most operations one run may start (default 10,000). A run replays every earlier operation each time it resumes; past the limit it fails with `ConfigError`. |
+| `config.onFailure` | `({ error, stepName, input }) => Promise<void>` | Optional. Called once a run has failed. `stepName` is empty when the function's own code threw. An error it throws goes to `onError` as a [`HookError`](/api/errors). |
+| `config.maxOperations` | `number` | Optional. The most operations one run may start (default 10,000). A run replays every earlier operation each time it resumes; past the limit it fails with `ConfigError`. Must be a positive integer, or `createWorkflow` throws `ConfigError`. |
 | `handler` | `({ input, step, runId }) => Promise<T>` | The workflow. What it returns is the run's output. |
 
 `step` has these operations. Each takes a name unique within the run:
 
 | Operation | Resolves to | Description |
 |---|---|---|
-| `step.run(name, handler \| config)` | The handler's result | A durable step. `config` takes `handler`, `retry` (`{ maxAttempts, backoff?, initialDelay? }`), `timeout`, and `cache` (with `key: () => value`). Rejects with `StepFailedError` once every attempt has failed; any other error fails the run. |
+| `step.run(name, handler \| config)` | The handler's result | A durable step. `config` takes `handler`, `retry` (`{ maxAttempts, backoff?, initialDelay? }`; `backoff` defaults to `'linear'`, `initialDelay` to one second), `timeout`, and `cache` (with `key: () => value`). Rejects with `StepFailedError` once every attempt has failed; any other error fails the run. |
 | `step.sleep(name, duration)` | `undefined` | Durably pause for milliseconds or a duration such as `'7d'`. |
 | `step.sleepUntil(name, time)` | `undefined` | Durably pause until a `Date` or epoch time. |
-| `step.waitForEvent(name, { event?, timeout? })` | The payload, or `null` on timeout | Wait for a declared event — `event`, when the wait has a name of its own, or else `name`. Several may be pending at once. |
+| `step.waitForEvent(name, { event?, timeout? })` | The payload, or `null` on timeout | Wait for a declared event — `event`, when the wait has a name of its own, or else `name`. `timeout` is milliseconds or a duration such as `'3d'`. Several may be pending at once on an adapter with `supportsEventNames` (all the built-in ones). |
 
-Returns a `FunctionWorkflow` (`kind: 'function'`), which has `.parseInput()` and no builder methods. `InferOutput<typeof workflow>` is what its function returns, and `InferEvents<typeof workflow>` its events' payload types.
+Durations — `timeout`, `retry.initialDelay`, `sleep`, a wait's `timeout` — are milliseconds or a string such as `'30s'`, `'15m'`, `'7d'`.
+
+A `step.run` handler receives a `StepRunContext`:
+
+| Field | Type | Description |
+|---|---|---|
+| `signal` | `AbortSignal` | Aborted on cancellation, lease loss, or the attempt's timeout |
+| `runId` | `string` | The run's id |
+| `attempt` | `number` | Which attempt at this step this is, from 1 |
+| `idempotencyKey` | `string` | The same every time this step runs for this run, and unique to it. Pass it to APIs that accept one |
+
+These mistakes are refused when the operation is started; left uncaught, they fail the run:
+
+| Mistake | Error |
+|---|---|
+| Two operations in one run share a name | [`DuplicateStepError`](/api/errors) |
+| An empty name | `ConfigError` |
+| Starting an operation from inside a `step.run` handler | `ConfigError` |
+| Waiting for an event not declared in `events` | `ConfigError` |
+| A wait `timeout` of zero or less, or a `sleepUntil` time that is not a valid date | `ConfigError` |
+| A name an earlier execution of the run saved as a different kind of operation (a sleep that is now a step, after a deploy) | `ConfigError` |
+| Several waits pending at once on an adapter without `supportsEventNames` | `ConfigError` |
+| More than `maxOperations` operations | `ConfigError` |
+
+Returns a `FunctionWorkflow` (`kind: 'function'`), which has `.parseInput()` and no builder methods. `InferOutput<typeof workflow>` is what its function returns, and `InferEvents<typeof workflow>` its events' payload types. The handler's types — `WorkflowContext`, `WorkflowSteps`, `StepRunContext`, `FunctionStepConfig`, `FunctionRetryConfig`, `FunctionStepCache`, `WaitForEventOptions` — are exported from `reflow-ts`, all marked beta.
 
 ## `workflow.parseInput(input)`
 
