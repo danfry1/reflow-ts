@@ -670,6 +670,8 @@ export async function executeFunction(ctx: ExecutionContext, body: FunctionBody)
         if (operation) {
           letGo(name)
           operation.releasing = true
+          // An earlier check may have seen this operation still running.
+          queueCheck()
         }
         if (at !== undefined) await inOrder(at)
         if (!settledWith.ok) throw settledWith.error
