@@ -1,3 +1,4 @@
+import { setImmediate as nextTurn } from 'node:timers/promises'
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { z } from 'zod'
 import {
@@ -107,6 +108,39 @@ describe('workflows written as a function', () => {
   })
 
   describe('replay', () => {
+    it('delivers a new asynchronous step before replaying later saved steps', async () => {
+      const ran: string[] = []
+      const workflow = (updated: boolean) => createWorkflow({ name: 'insert-step', input: z.object({}) }, async ({ step }) => {
+        const fresh = updated ? await step.run('new', async () => {
+          // Let the progress check triggered by the await observe a running step.
+          await nextTurn()
+          await nextTurn()
+          ran.push('new')
+          return 'new'
+        }) : null
+        const saved = await step.run('saved', async () => {
+          ran.push('saved')
+          return 'saved'
+        })
+        return step.run('finish', async () => {
+          if (!updated) throw new Error('retry after deploy')
+          return [fresh, saved]
+        })
+      })
+
+      const first = createEngine({ storage, workflows: [workflow(false)] })
+      const run = await first.enqueue('insert-step', {})
+      await first.tick()
+      expect(await storage.getRun(run.id)).toMatchObject({ status: 'failed' })
+
+      const next = createEngine({ storage, workflows: [workflow(true)] })
+      expect(await next.resume(run.id)).toBe(true)
+      await next.tick()
+
+      expect(await storage.getRun(run.id)).toMatchObject({ status: 'completed', output: ['new', 'saved'] })
+      expect(ran).toStrictEqual(['saved', 'new'])
+    })
+
     it('resumes after a sleep without running finished steps again', async () => {
       vi.useFakeTimers({ toFake: ['Date'] })
       const ran: string[] = []
