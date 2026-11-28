@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.1 — 2026-11-28
+
+### Fixed
+
+- **A resumed function workflow no longer hangs when a new step comes before saved ones.** After a deploy added an asynchronous step ahead of steps an earlier execution had already finished, resuming the run saved the new step's result but never handed it back: it waited its turn behind the saved steps, which the function could not reach while it awaited the new one. The run now notices once it goes quiet and lets the result through, without rerunning the saved steps. Thanks to [@mmgoodnow](https://github.com/mmgoodnow) for finding and fixing it (#143).
+- **Docs tooling moves to Vite 6.4.5**, clearing a moderate advisory in the development server. Nothing in the published package changes.
+
 ## 0.11.0 — 2026-10-27
 
 Durable functions, in beta. A workflow can now be written as one async
