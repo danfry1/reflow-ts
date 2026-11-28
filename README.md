@@ -1148,6 +1148,10 @@ Thanks to everyone who has opened an issue or a pull request. Each one has shape
       <a href="https://github.com/shishantbiswas"><img src="https://github.com/shishantbiswas.png?size=128" width="64" height="64" alt="shishantbiswas" /><br /><sub><b>shishantbiswas</b></sub></a><br />
       <sub><a href="https://github.com/search?q=repo%3Adanfry1%2Freflow-ts+author%3Ashishantbiswas&type=issues">1 issue</a></sub>
     </td>
+    <td align="center" valign="top" width="120">
+      <a href="https://github.com/mmgoodnow"><img src="https://github.com/mmgoodnow.png?size=128" width="64" height="64" alt="mmgoodnow" /><br /><sub><b>mmgoodnow</b></sub></a><br />
+      <sub><a href="https://github.com/search?q=repo%3Adanfry1%2Freflow-ts+author%3Ammgoodnow&type=issues">1 pull request</a></sub>
+    </td>
   </tr>
 </table>
 <!-- contributors:end -->
